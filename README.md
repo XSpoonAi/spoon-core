@@ -669,7 +669,7 @@ This project is licensed under the [MIT License](LICENSE).
 ---
 
 <div align="center">
-  <p>Made with ❤️ | Developed by the XSpoonAi Team</p>
+  <p>Made with ❤️ | Developed by the SpoonOS Team</p>
   <p>
     <a href="https://github.com/XSpoonAi">GitHub</a> •
     <a href="hhttps://x.com/Spoonai_OS">Twitter</a> •
