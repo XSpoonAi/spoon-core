@@ -289,7 +289,7 @@ chmod 600 .env
 For first-time users, follow this step-by-step setup:
 
 1. **Get your API keys:**
-   - Visit [OpenAI Platform](https://platform.openai.com/api-keys) or [Anthropic Console](https://console.anthropic.com/keys)
+   - Visit [OpenAI Platform](https://platform.openai.com/api-keys) or [Anthropic Console](https://console.anthropic.com)
    - Create a new API key
    - Copy the key securely
 
