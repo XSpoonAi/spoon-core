@@ -237,7 +237,7 @@ PRIVATE_KEY: 0x12...ab34
 
 #### Method 4: Configuration File
 
-The CLI automatically creates a configuration file at `~/.config/spoonai/config.json`:
+The CLI creates a configuration file at `config.json` in the project root directory:
 
 ```json
 {
@@ -246,7 +246,8 @@ The CLI automatically creates a configuration file at `~/.config/spoonai/config.
     "anthropic": "sk-ant-your-anthropic-api-key-here",
     "deepseek": "your-deepseek-api-key-here"
   },
-  "default_agent": "spoon_react"
+  "base_url": "your_base_url_here",
+  "default_agent": "default"
 }
 ```
 
@@ -270,8 +271,8 @@ python -c "import os; print('OpenAI:', 'SET' if os.getenv('OPENAI_API_KEY') else
 # Start CLI and test
 python main.py
 
-# Load an agent and test
-> load-agent chat
+# start chat and test
+> action chat
 > Hello, can you respond to test the API connection?
 ```
 
@@ -337,7 +338,7 @@ For first-time users, follow this step-by-step setup:
 
    ```bash
    python main.py
-   > load-agent chat
+   > action chat
    > Hello! Please confirm you can access the API.
    ```
 
@@ -719,7 +720,7 @@ spoon_toolkits/                ← This is a standalone tool library (installabl
 
 ##### 0. Install Dependencies
 
-If you haven’t already installed the `spoon-toolkits` package, clone and install it locally:
+If you haven't already installed the `spoon-toolkits` package, clone and install it locally:
 
 ```bash
 git clone https://github.com/XSpoonAi/spoon-toolkit.git
@@ -840,7 +841,7 @@ class SpoonThirdWebMCP(SpoonReactAI, MCPClientMixin):
         - contract logs or Transfer events → use `get_contract_events_from_thirdweb_insight`
         - USDT transfers across chains → use `get_multichain_transfers_from_thirdweb_insight`
         - recent cross-chain transactions → use `get_transactions`
-        - a specific contract’s transaction history → use `get_contract_transactions`
+        - a specific contract's transaction history → use `get_contract_transactions`
         - contract function call history (e.g., swap, approve) → use `get_contract_transactions_by_signature`
         - recent block info by chain → use `get_blocks_from_thirdweb_insight`
         - wallet activity across chains → use `get_wallet_transactions_from_thirdweb_insight`
@@ -915,7 +916,7 @@ This is useful when:
 
 You want to quickly try a public Agent from GitHub
 
-You don’t want to define Tool, ToolManager, or custom logic
+You don't want to define Tool, ToolManager, or custom logic
 
 You want to orchestrate many agents from different repos
 

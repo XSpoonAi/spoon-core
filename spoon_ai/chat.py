@@ -43,17 +43,31 @@ def to_dict(message: Message) -> dict:
 
 class ChatBot:
     # def __init__(self, model_name: str = "gpt-4.5-preview", llm_config: dict = None, llm_provider: str = "openai", api_key: str = None):
-    def __init__(self, model_name: str = "claude-3-7-sonnet-20250219", llm_config: dict = None, llm_provider: str = "anthropic", api_key: str = None):
+    def __init__(self, model_name: str = None, llm_config: dict = None, llm_provider: str = None, api_key: str = None, base_url: str = None):
+        # Use parameters provided by user first
         self.llm_provider = llm_provider
         self.model_name = model_name
         self.api_key = api_key
         self.llm_config = llm_config
         self.output_index = 0
-        
-        if llm_provider == "openai":
-            self.llm = AsyncOpenAI()
-            self.llm.api_key = api_key if api_key else os.getenv("OPENAI_API_KEY")
-        elif llm_provider == "anthropic":
+        self.base_url = base_url
+
+        # If llm_provider is not specified, determine it from environment variables
+        if self.llm_provider is None:
+            if os.getenv("OPENAI_API_KEY"):
+                logger.info("Using OpenAI API")
+                self.model_name = self.model_name or "gpt-4.1"
+                self.llm_provider = "openai"
+            elif os.getenv("ANTHROPIC_API_KEY"):
+                logger.info("Using Anthropic API")
+                self.model_name = self.model_name or "claude-3-7-sonnet-20250219"
+                self.llm_provider = "anthropic"
+            else:
+                raise ValueError("No API key provided, please set OPENAI_API_KEY or ANTHROPIC_API_KEY")
+
+        if self.llm_provider == "openai":
+            self.llm = AsyncOpenAI(api_key=api_key if api_key else os.getenv("OPENAI_API_KEY"), base_url=base_url if base_url else os.getenv("BASE_URL"))
+        elif self.llm_provider == "anthropic":
             http_client = AsyncClient(follow_redirects=True)
             self.llm = AsyncAnthropic(api_key=api_key if api_key else os.getenv("ANTHROPIC_API_KEY"), http_client=http_client)
         else:

@@ -1,5 +1,6 @@
 from typing import Union, Dict, Any, Optional, List, AsyncIterator, AsyncContextManager
 import asyncio
+import uuid
 from contextlib import asynccontextmanager
 
 from fastmcp.client.transports import (FastMCPTransport, PythonStdioTransport,
@@ -21,6 +22,8 @@ class MCPClientMixin:
         # We'll keep track of the active client session
         self._active_session = None
         self._session_lock = asyncio.Lock()
+        # save the session for each task
+        self._task_sessions = {}
     
     @asynccontextmanager
     async def get_session(self):
@@ -31,13 +34,34 @@ class MCPClientMixin:
         Yields:
             An active client session
         """
-        async with self._session_lock:
-            if self._active_session is None:
-                self._active_session = await self._client.__aenter__()
+        # Generate a unique task ID using UUID
+        task_id = id(asyncio.current_task())
+        
+        # Check if the current task already has a session
+        if task_id in self._task_sessions:
             try:
-                yield self._active_session
+                yield self._task_sessions[task_id]
             finally:
                 pass
+            return
+        
+        # If not, create a new session
+        async with self._session_lock:
+            # Create a new session for the current task
+            session = await self._client.__aenter__()
+            self._task_sessions[task_id] = session
+            
+            try:
+                yield session
+            finally:
+                # Clean up the session
+                try:
+                    await self._client.__aexit__(None, None, None)
+                except Exception as e:
+                    logger.error(f"Error closing MCP session: {e}")
+                finally:
+                    if task_id in self._task_sessions:
+                        del self._task_sessions[task_id]
     
     async def list_mcp_tools(self):
         """Get the list of available tools from the MCP server"""
@@ -171,7 +195,11 @@ class MCPClientMixin:
         Clean up resources (no explicit disconnection needed with context manager pattern)
         """
         logger.info("MCP client resources cleaned up")
-        # The context manager will automatically handle proper cleanup
-        if self._active_session:
-            await self._active_session.__aexit__(None, None, None)
-            self._active_session = None
+        # Clean up all task sessions
+        for task_id, session in list(self._task_sessions.items()):
+            try:
+                await self._client.__aexit__(None, None, None)
+            except Exception as e:
+                logger.error(f"Error closing MCP session during cleanup: {e}")
+            finally:
+                del self._task_sessions[task_id]

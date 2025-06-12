@@ -85,25 +85,35 @@ class BaseAgent(BaseModel, ABC):
         if request is not None:
             self.memory.add_message(Message(role=Role.USER, content=request))
         results: List[str] = []
-        async with self.state_context(AgentState.RUNNING):
-            while (
-                self.current_step < self.max_steps and
-                self.state == AgentState.RUNNING
-            ):
-                self.current_step += 1
-                logger.info(f"Agent {self.name} is running step {self.current_step}/{self.max_steps}")
+        try:
+            async with self.state_context(AgentState.RUNNING):
+                while (
+                    self.current_step < self.max_steps and
+                    self.state == AgentState.RUNNING
+                ):
+                    self.current_step += 1
+                    logger.info(f"Agent {self.name} is running step {self.current_step}/{self.max_steps}")
+                    
+                    step_result = await self.step()
+                    if self.is_stuck():
+                        self.handle_struck_state()
+                    
+                    results.append(f"Step {self.current_step}: {step_result}")
+                    logger.info(f"Step {self.current_step}: {step_result}")
                 
-                step_result = await self.step()
-                if self.is_stuck():
-                    self.handle_struck_state()
-                
-                results.append(f"Step {self.current_step}: {step_result}")
-                logger.info(f"Step {self.current_step}: {step_result}")
+                if self.current_step >= self.max_steps:
+                    results.append(f"Step {self.current_step}: Stuck in loop. Resetting state.")
             
-            if self.current_step >= self.max_steps:
-                results.append(f"Step {self.current_step}: Stuck in loop. Resetting state.")
-                
-        return "\n".join(results) if results else "No results"
+            return "\n".join(results) if results else "No results"
+        except Exception as e:
+            logger.error(f"Error during agent run: {e}")
+            raise
+        finally:
+            # Always reset to IDLE state after run completes or fails
+            if self.state != AgentState.IDLE:
+                logger.info(f"Resetting agent {self.name} state from {self.state} to IDLE")
+                self.state = AgentState.IDLE
+                self.current_step = 0
     
     async def step(self) -> str:
         raise NotImplementedError("Subclasses must implement this method")
@@ -255,3 +265,11 @@ class BaseAgent(BaseModel, ABC):
         finally:
             # Signal that the task is done
             self.task_done.set()
+            
+            # Reset state to IDLE but preserve chat history
+            if hasattr(self, 'reset_state'):
+                self.reset_state()
+            elif self.state != AgentState.IDLE:
+                logger.info(f"Resetting agent {self.name} state from {self.state} to IDLE")
+                self.state = AgentState.IDLE
+                self.current_step = 0

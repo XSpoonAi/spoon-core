@@ -8,36 +8,37 @@ class ConfigManager:
     
     def __init__(self):
         """Initialize the configuration manager"""
-        self.config_dir = Path.home()/ ".config" / "spoonai"
-        self.config_dir.mkdir(parents=True, exist_ok=True)
-        self.config_file = self.config_dir / "config.json"
+        # Use relative path from current working directory
+        self.config_file = Path("config.json")
         self.config = self._load_config()
     
     def _load_config(self) -> Dict[str, Any]:
         """Load configuration file"""
-        if not self.config_file.exists():
-            # Create default configuration
-            default_config = {
-                "api_keys": {
-                    "openai": os.environ.get("OPENAI_API_KEY", ""),
-                    "anthropic": os.environ.get("ANTHROPIC_API_KEY", ""),
-                    "deepseek": os.environ.get("DEEPSEEK_API_KEY", "")
-                },
-                "default_agent": "default"
-            }
-            self._save_config(default_config)
-            return default_config
-        
+        # Try to load existing configuration
         try:
-            with open(self.config_file, 'r') as f:
-                return json.load(f)
+            if self.config_file.exists():
+                with open(self.config_file, 'r') as f:
+                    return json.load(f)
         except Exception as e:
             print(f"Error loading config: {e}")
-            # Return empty configuration
             return {
                 "api_keys": {},
+                "base_url": "",
                 "default_agent": "default"
             }
+        
+        # Create default configuration if loading fails or file doesn't exist
+        default_config = {
+            "api_keys": {
+                "openai": os.environ.get("OPENAI_API_KEY", ""),
+                "anthropic": os.environ.get("ANTHROPIC_API_KEY", ""),
+                "deepseek": os.environ.get("DEEPSEEK_API_KEY", "")
+            },
+            "base_url": os.environ.get("BASE_URL", ""),
+            "default_agent": "default"
+        }
+        self._save_config(default_config)
+        return default_config
     
     def _save_config(self, config: Dict[str, Any]) -> None:
         """Save configuration to file"""

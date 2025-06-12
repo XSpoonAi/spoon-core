@@ -159,8 +159,12 @@ class ToolCallAgent(ReActAgent):
     def _should_finish_execution(self, name: str, result: Any, **kwargs) -> bool:
         return True
     
-    def clear(self):
-        self.memory.clear()
+    def reset_state(self):
+        """Reset only the agent state and step counter without clearing memory"""
         self.tool_calls = []
         self.state = AgentState.IDLE
         self.current_step = 0
+    
+    def clear(self):
+        self.memory.clear()
+        self.reset_state()

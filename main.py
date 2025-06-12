@@ -1,12 +1,14 @@
 import argparse
 import asyncio
 import logging
+from dotenv import load_dotenv
 
 from cli.commands import SpoonAICLI
 
 logging.getLogger("requests").setLevel(logging.ERROR)
 logging.getLogger("urllib3").setLevel(logging.ERROR)
 
+load_dotenv(override=True)
 async def main():
     parser = argparse.ArgumentParser(description="SpoonAI CLI")
     parser.add_argument('--server', action='store_true', help='Start the server')
