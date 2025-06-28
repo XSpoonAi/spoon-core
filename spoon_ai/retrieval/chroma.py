@@ -2,14 +2,9 @@ import os
 from typing import List, Dict, Any
 import uuid
 import openai
+from .base import BaseRetrievalClient, Document
 
-# Simple document class to replace langchain's Document
-class Document:
-    def __init__(self, page_content: str, metadata: Dict[str, Any] = None):
-        self.page_content = page_content
-        self.metadata = metadata or {}
-
-class ChromaClient:
+class ChromaClient(BaseRetrievalClient):
     def __init__(self, config_dir: str):
         try:
             import chromadb
