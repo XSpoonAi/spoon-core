@@ -113,48 +113,6 @@ class ToolCallAgent(ReActAgent):
             self.add_message("tool", result, tool_call_id=tool_call.id)
             results.append(result)
         return "\n\n".join(results)
-        
-    # async def execute_tool(self, tool_call: ToolCall) -> str:
-    #     if tool_call.function.name not in self.avaliable_tools.tool_map:
-    #         if not hasattr(self, "call_mcp_tool"):
-    #             raise ValueError(f"Tool {tool_call.function.name} not found")
-    #         # kwargs = json.loads(tool_call.function.arguments or {})
-
-    #         kwargs = (
-    #             json.loads(tool_call.function.arguments)
-    #             if isinstance(tool_call.function.arguments, str)
-    #             else tool_call.function.arguments
-    #             if isinstance(tool_call.function.arguments, dict)
-    #             else {}
-    #         )    
-    #         result = await self.call_mcp_tool(tool_call.function.name, **kwargs)
-    #         return result
-    #     if not tool_call or not tool_call.function or not tool_call.function.name:
-    #         return "Error: Invalid tool call"
-        
-        
-    #     name = tool_call.function.name
-    #     if name not in self.avaliable_tools.tool_map:
-    #         return f"Error: Tool {name} not found"
-        
-    #     try:
-    #         args = json.loads(tool_call.function.arguments or {})
-    #         result = await self.avaliable_tools.execute(name=name, tool_input=args)
-            
-    #         observation = (
-    #             f"Observed output of cmd {name} execution: {result}"
-    #             if result
-    #             else f"cmd {name} execution without any output"
-    #         )
-            
-    #         self._handle_special_tool(name, result)
-    #         return observation
-        
-    #     except Exception as e:
-    #         logger.error(f"Error executing tool {name}: {e}")
-    #         return f"Error: {e}"
-            
-
 
     async def execute_tool(self, tool_call: ToolCall) -> str:
         def parse_tool_arguments(arguments):

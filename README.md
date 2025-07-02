@@ -107,37 +107,12 @@ pip install spoon-ai-sdk
 
 SCDF supports various API services and requires proper configuration of environment variables and API keys. This section provides comprehensive guidance on setting up your environment.
 
-### 📋 Environment Variables Reference
-
-| Variable Name             | Description                                        | Required     | How to Obtain                                           |
-| ------------------------- | -------------------------------------------------- | ------------ | ------------------------------------------------------- |
-| `OPENAI_API_KEY`          | OpenAI API key for GPT models                      | Optional\*   | [OpenAI Platform](https://platform.openai.com/api-keys) |
-| `ANTHROPIC_API_KEY`       | Anthropic API key for Claude models                | Optional\*   | [Anthropic Console](https://console.anthropic.com/keys) |
-| `DEEPSEEK_API_KEY`        | DeepSeek API key for DeepSeek models               | Optional\*   | [DeepSeek Platform](https://platform.deepseek.com/)     |
-| `PRIVATE_KEY`             | Blockchain wallet private key                      | Optional\*\* | Export from your wallet (MetaMask, etc.)                |
-| `RPC_URL`                 | RPC endpoint for interacting with blockchain nodes | Optional     | Provided by your RPC provider (e.g., BaneLabs, Infura)  |
-| `SCAN_URL`                | URL of the blockchain explorer                     | Optional     | Provided by your explorer service (e.g., Blockscout)    |
-| `CHAIN_ID`                | Numeric chain ID for your target network           | Optional     | Refer to your network documentation                     |
-| `DATABASE_URL`            | Database connection URL                            | Optional     | Your database provider                                  |
-| `REDIS_HOST`              | Redis server host                                  | Optional     | Redis configuration                                     |
-| `REDIS_PORT`              | Redis server port                                  | Optional     | Redis configuration                                     |
-| `REDIS_PASSWORD`          | Redis server password                              | Optional     | Redis configuration                                     |
-| `GITHUB_TOKEN`            | GitHub API token                                   | Optional     | [GitHub Settings](https://github.com/settings/tokens)   |
-| `GO_PLUS_LABS_APP_KEY`    | GoPlus Labs API key                                | Optional     | [GoPlus Labs](https://gopluslabs.io/)                   |
-| `GO_PLUS_LABS_APP_SECRET` | GoPlus Labs API secret                             | Optional     | [GoPlus Labs](https://gopluslabs.io/)                   |
-
-\*At least one LLM API key is required for the framework to function.
-\*\*Required only for cryptocurrency-related operations.
-
 ### 🔧 Configuration Methods
-
-SpoonOS loads configuration automatically from a .env file located in the project root.
 
 #### Method 1: .env File (Recommended for Development)
 
 SpoonOS automatically loads environment variables using the python-dotenv package. This allows you to configure all your API keys and network settings in a simple .env file.
 
-Steps:
 1、Create a `.env` file in the project root directory. You can use the provided template:
 Copy the Example File
 
@@ -663,24 +638,20 @@ from spoon_ai.agents import SpoonReactAI
 
 # Using OpenAI's GPT-4
 openai_agent = SpoonReactAI(
-    llm=ChatBot(model="gpt-4", provider="openai")
+    llm=ChatBot(model_name="gpt-4", llm_provider="openai")
 )
 
 # Using Anthropic's Claude
 claude_agent = SpoonReactAI(
-    llm=ChatBot(model="claude-3-opus-20240229", provider="anthropic")
+    llm=ChatBot(model_name="claude-3-7-sonnet-20250219", llm_provider="anthropic")
 )
 
-# Using DeepSeek
-deepseek_agent = SpoonReactAI(
-    llm=ChatBot(model="deepseek-llm", provider="deepseek")
-)
 
 # Using OpenRouter (OpenAI-compatible API)
 openrouter_agent = SpoonReactAI(
     llm=ChatBot(
-        model="anthropic/claude-3.5-sonnet",  # or any model available on OpenRouter
-        provider="openai",  # Use openai provider for compatibility
+        model_name="anthropic/claude-3.5-sonnet",  # or any model available on OpenRouter
+        llm_provider="openai",  # Use openai provider for compatibility
         base_url="https://openrouter.ai/api/v1"  # OpenRouter API endpoint
         # Uses OPENAI_API_KEY environment variable with your OpenRouter API key
     )
