@@ -17,15 +17,15 @@ logger = getLogger(__name__)
 class Memory(BaseModel):
     messages: List[Message] = Field(default_factory=list)
     max_messages: int = 100
-    
+
     def add_message(self, message:  Message) -> None:
         self.messages.append(message)
         if len(self.messages) > self.max_messages:
             self.messages.pop(0)
-    
+
     def get_messages(self) -> List[Message]:
         return self.messages
-    
+
     def clear(self) -> None:
         self.messages.clear()
 
@@ -72,7 +72,7 @@ class ChatBot:
             self.llm = AsyncAnthropic(api_key=api_key if api_key else os.getenv("ANTHROPIC_API_KEY"), http_client=http_client)
         else:
             raise ValueError(f"Invalid LLM provider: {llm_provider}")
-    
+
     async def ask(self, messages: List[Union[dict, Message]], system_msg: Optional[str] = None, output_queue: Optional[asyncio.Queue] = None) -> str:
         formatted_messages = [] if system_msg is None else [{"role": "system", "content": system_msg}]
         for message in messages:
@@ -82,7 +82,7 @@ class ChatBot:
                 formatted_messages.append(to_dict(message))
             else:
                 raise ValueError(f"Invalid message type: {type(message)}")
-        
+
         if self.llm_provider == "openai":
             response = await self.llm.chat.completions.create(messages=formatted_messages, model=self.model_name, max_tokens=4096, temperature=0.3, stream=False)
             return response.choices[0].message.content
@@ -95,12 +95,12 @@ class ChatBot:
                 messages=[m for m in formatted_messages if m.get("role") != "system"]
             )
             return response.content[0].text
-    
+
     # @retry(stop=stop_after_attempt(3), wait=wait_random_exponential(min=1, max=60))
     async def ask_tool(self,messages: List[Union[dict, Message]], system_msg: Optional[str] = None, tools: Optional[List[dict]] = None, tool_choice: Optional[str] = None, output_queue: Optional[asyncio.Queue] = None, **kwargs):
         if tool_choice not in ["auto", "none", "required"]:
             tool_choice = "auto"
-        
+
         formatted_messages = [] if system_msg is None else [{"role": "system", "content": system_msg}]
         for message in messages:
             if isinstance(message, dict):
@@ -109,31 +109,40 @@ class ChatBot:
                 formatted_messages.append(to_dict(message))
             else:
                 raise ValueError(f"Invalid message type: {type(message)}")
-        
+
         try:
             if self.llm_provider == "openai":
                 response = await self.llm.chat.completions.create(
-                    messages=formatted_messages, 
-                    model=self.model_name, 
-                    max_tokens=4096, 
+                    messages=formatted_messages,
+                    model=self.model_name,
+                    max_tokens=4096,
                     temperature=0.3,
-                    stream=False, 
-                    tools=tools, 
-                    tool_choice=tool_choice, 
+                    stream=False,
+                    tools=tools,
+                    tool_choice=tool_choice,
                     **kwargs
                 )
-                return response.choices[0].message
+                choice = response.choices[0]
+                message = choice.message
+
+                # Create LLMResponse with finish_reason information
+                return LLMResponse(
+                    content=message.content or "",
+                    tool_calls=message.tool_calls or [],
+                    finish_reason=choice.finish_reason,
+                    native_finish_reason=getattr(choice, 'native_finish_reason', None)
+                )
             elif self.llm_provider == "anthropic":
                 def to_anthropic_tools(tools: List[dict]) -> List[dict]:
                     return [{"name": tool["function"]["name"], "description": tool["function"]["description"], "input_schema": tool["function"]["parameters"]} for tool in tools]
-                
+
                 # 转换消息格式为 Anthropic 格式
                 anthropic_messages = []
                 system_content = system_msg or ""
-                
+
                 for message in formatted_messages:
                     role = message.get("role")
-                    
+
                     # Anthropic 只支持 user 和 assistant 角色
                     if role == "system":
                         # 系统消息已在上面处理，这里跳过
@@ -158,7 +167,7 @@ class ChatBot:
                                     arguments = json.loads(tool_fn.get("arguments", "{}"))
                                 except:
                                     arguments = {}
-                                
+
                                 content.append({
                                     "type": "tool_use",
                                     "id": tool_call.get("id"),
@@ -167,7 +176,7 @@ class ChatBot:
                                 })
                         else:
                             content = message.get("content")
-                        
+
                         anthropic_messages.append({
                             "role": "assistant",
                             "content": content
@@ -177,12 +186,15 @@ class ChatBot:
                             "role": "user",
                             "content": message.get("content")
                         })
-                
+
                 content = ""
                 buffer = ""
                 buffer_type = ""
                 current_tool = None
                 tool_calls = []
+                finish_reason = None
+                native_finish_reason = None
+
                 async with self.llm.messages.stream(
                     model=self.model_name,
                     max_tokens=4096,
@@ -193,9 +205,23 @@ class ChatBot:
                     **kwargs
                 ) as stream:
                     async for chunk in stream:
-                        if chunk.type in ["message_start", "text", "input_json", "message_delta", "message_stop"]:
+                        if chunk.type == "message_start":
                             continue
-                        if chunk.type == "content_block_start":
+                        elif chunk.type == "message_delta":
+                            # Extract finish_reason from message delta
+                            if hasattr(chunk, 'delta') and hasattr(chunk.delta, 'stop_reason'):
+                                finish_reason = chunk.delta.stop_reason
+                                native_finish_reason = chunk.delta.stop_reason
+                            continue
+                        elif chunk.type == "message_stop":
+                            # Extract finish_reason from message stop
+                            if hasattr(chunk, 'message') and hasattr(chunk.message, 'stop_reason'):
+                                finish_reason = chunk.message.stop_reason
+                                native_finish_reason = chunk.message.stop_reason
+                            continue
+                        elif chunk.type in ["text", "input_json"]:
+                            continue
+                        elif chunk.type == "content_block_start":
                             buffer_type = chunk.content_block.type
                             if output_queue:
                                     output_queue.put_nowait({"type": "start", "content_block": chunk.content_block.model_dump(), "index": self.output_index})
@@ -207,19 +233,19 @@ class ChatBot:
                                         "arguments": {}
                                     }
                                 }
-                                
+
                                 continue
-                        if chunk.type == "content_block_delta" and chunk.delta.type == "text_delta":
+                        elif chunk.type == "content_block_delta" and chunk.delta.type == "text_delta":
                             buffer += chunk.delta.text
                             if output_queue:
                                 output_queue.put_nowait({"type": "text_delta", "delta": chunk.delta.text, "index": self.output_index})
                             continue
-                        if chunk.type == "content_block_delta" and chunk.delta.type == "input_json_delta":
+                        elif chunk.type == "content_block_delta" and chunk.delta.type == "input_json_delta":
                             buffer += chunk.delta.partial_json
                             if output_queue:
                                 output_queue.put_nowait({"type": "input_json_delta", "delta": chunk.delta.partial_json, "index": self.output_index})
 
-                        if chunk.type == "content_block_stop":
+                        elif chunk.type == "content_block_stop":
                             content += buffer
                             if buffer_type == "tool_use":
                                 current_tool["function"]["arguments"] = buffer
@@ -231,7 +257,21 @@ class ChatBot:
                             if output_queue:
                                 output_queue.put_nowait({"type": "stop", "content_block": chunk.content_block.model_dump(), "index": self.output_index})
                             self.output_index += 1
-                return LLMResponse(content=content, tool_calls=tool_calls)
+
+                # Map Anthropic stop reasons to standard finish reasons
+                if finish_reason == "end_turn":
+                    finish_reason = "stop"
+                elif finish_reason == "max_tokens":
+                    finish_reason = "length"
+                elif finish_reason == "tool_use":
+                    finish_reason = "tool_calls"
+
+                return LLMResponse(
+                    content=content,
+                    tool_calls=tool_calls,
+                    finish_reason=finish_reason,
+                    native_finish_reason=native_finish_reason
+                )
         except Exception as e:
             logger.error(f"Error during tool call: {e}")
             raise e

@@ -507,6 +507,22 @@ The ReAct agent workflow includes the following key steps:
 
 This cycle repeats continuously until the task is completed or the preset goal is achieved.
 
+#### Agent Termination
+
+SpoonOS agents now use an intelligent termination mechanism based on LLM finish reasons rather than explicit termination tools. This provides more natural and efficient conversation completion:
+
+**Finish Reason Termination:**
+- Agents automatically detect when the LLM indicates task completion through `finish_reason: "stop"` and `native_finish_reason: "stop"`
+- This allows for immediate termination of straightforward queries without unnecessary tool execution steps
+- The agent gracefully transitions to `FINISHED` state and returns the response content
+
+**Benefits:**
+- **Improved Efficiency**: Prevents unnecessary step execution for simple questions
+- **Natural Flow**: Allows LLM to signal completion organically
+- **Provider Compatibility**: Works with both OpenAI and Anthropic LLM providers
+- **Backward Compatibility**: Maintains existing agent functionality for complex multi-step tasks</search>
+</search_and_replace>
+
 ### Custom Tools
 
 Creating custom tools is one of SpoonAI's most powerful features. Each tool should inherit from the `BaseTool` class:
@@ -937,14 +953,14 @@ from spoon_ai.agents.spoon_react import SpoonReactAI
 from spoon_ai.agents.mcp_client_mixin import MCPClientMixin
 from fastmcp.client.transports import SSETransport
 from spoon_ai.tools.tool_manager import ToolManager
-from spoon_ai.tools import Terminate
+
 from pydantic import Field
 class SpoonReactMCP(SpoonReactAI, MCPClientMixin):
     description: str = ()
     system_prompt: str = """ """
     name: str = "spoon_react_mcp"
     description: str = "A smart ai agent in neo blockchain with mcp"
-    avaliable_tools: ToolManager = Field(default_factory=lambda: ToolManager([Terminate()]))
+    avaliable_tools: ToolManager = Field(default_factory=lambda: ToolManager([]))
     def __init__(self, **kwargs):
         super().__init__(**kwargs)
         MCPClientMixin.__init__(self, mcp_transport=kwargs.get('mcp_transport', SSETransport("http://127.0.0.1:8123/sse")))
@@ -1047,7 +1063,7 @@ import asyncio
 from typing import Any, Dict, List, Optional
 
 # Import base tool classes and tool manager
-from spoon_ai.tools import BaseTool, ToolManager, Terminate
+from spoon_ai.tools import BaseTool, ToolManager
 
 from tools import (
 MyCustomTool,

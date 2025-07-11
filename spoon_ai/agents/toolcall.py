@@ -12,8 +12,8 @@ from spoon_ai.agents.react import ReActAgent
 from spoon_ai.prompts.toolcall import \
     NEXT_STEP_PROMPT as TOOLCALL_NEXT_STEP_PROMPT
 from spoon_ai.prompts.toolcall import SYSTEM_PROMPT as TOOLCALL_SYSTEM_PROMPT
-from spoon_ai.schema import TOOL_CHOICE_TYPE, AgentState, ToolCall, ToolChoice
-from spoon_ai.tools import Terminate, ToolManager
+from spoon_ai.schema import TOOL_CHOICE_TYPE, AgentState, ToolCall, ToolChoice, Message, Role
+from spoon_ai.tools import ToolManager
 from mcp.types import Tool as MCPTool
 from spoon_ai.tools.mcp_tool import MCPTool as SpoonMCPTool
 
@@ -30,7 +30,7 @@ class ToolCallAgent(ReActAgent):
     next_step_prompt: str = TOOLCALL_NEXT_STEP_PROMPT
 
     avaliable_tools: ToolManager = Field(default_factory=ToolManager)
-    special_tool_names: List[str] = Field(default_factory=lambda: [Terminate().name])
+    special_tool_names: List[str] = Field(default_factory=list)
 
     tool_choices: TOOL_CHOICE_TYPE = ToolChoice.AUTO # type: ignore
 
@@ -98,6 +98,16 @@ class ToolCallAgent(ReActAgent):
             output_queue=self.output_queue,
         )
 
+        # Check for finish_reason termination before processing tools
+        if self._should_terminate_on_finish_reason(response):
+            logger.info(f"🏁 {self.name} terminating due to finish_reason signals")
+            self.state = AgentState.FINISHED
+            self.add_message("assistant", response.content or "Task completed")
+            # Set a flag to indicate finish_reason termination and store the content
+            self._finish_reason_terminated = True
+            self._final_response_content = response.content or "Task completed"
+            return False
+
         self.tool_calls = response.tool_calls
 
         logger.info(colored(f"🤔 {self.name}'s thoughts: {response.content}", "cyan"))
@@ -129,6 +139,76 @@ class ToolCallAgent(ReActAgent):
             logger.error(traceback.format_exc())
             self.add_message("assistant", f"Error encountered while thinking: {e}")
             return False
+
+    async def run(self, request: Optional[str] = None) -> str:
+        """Override run method to handle finish_reason termination specially."""
+        if self.state != AgentState.IDLE:
+            raise RuntimeError(f"Agent {self.name} is not in the IDLE state")
+
+        self.state = AgentState.RUNNING
+
+        if request is not None:
+            self.memory.add_message(Message(role=Role.USER, content=request))
+
+        # Reset finish_reason termination flag
+        self._finish_reason_terminated = False
+        self._final_response_content = None
+
+        results: List[str] = []
+        try:
+            async with self.state_context(AgentState.RUNNING):
+                while (
+                    self.current_step < self.max_steps and
+                    self.state == AgentState.RUNNING
+                ):
+                    self.current_step += 1
+                    logger.info(f"Agent {self.name} is running step {self.current_step}/{self.max_steps}")
+
+                    step_result = await self.step()
+                    if self.is_stuck():
+                        self.handle_struck_state()
+
+                    # Check if terminated by finish_reason
+                    if hasattr(self, '_finish_reason_terminated') and self._finish_reason_terminated:
+                        # Return the LLM content directly without step formatting
+                        final_content = getattr(self, '_final_response_content', step_result)
+                        # Clean up flags
+                        self._finish_reason_terminated = False
+                        if hasattr(self, '_final_response_content'):
+                            delattr(self, '_final_response_content')
+                        return final_content
+
+                    results.append(f"Step {self.current_step}: {step_result}")
+                    logger.info(f"Step {self.current_step}: {step_result}")
+
+                if self.current_step >= self.max_steps:
+                    results.append(f"Step {self.current_step}: Stuck in loop. Resetting state.")
+
+            return "\n".join(results) if results else "No results"
+        except Exception as e:
+            logger.error(f"Error during agent run: {e}")
+            raise
+        finally:
+            # Always reset to IDLE state after run completes or fails
+            if self.state != AgentState.IDLE:
+                logger.info(f"Resetting agent {self.name} state from {self.state} to IDLE")
+                self.state = AgentState.IDLE
+                self.current_step = 0
+
+    async def step(self) -> str:
+        """Override the step method to handle finish_reason termination properly."""
+        should_act = await self.think()
+        if not should_act:
+            if self.state == AgentState.FINISHED:
+                # For finish_reason termination, return a simple message
+                # The run() method will handle returning the actual content
+                return "Task completed based on finish_reason signal"
+            else:
+                # Default behavior for other cases
+                self.state = AgentState.FINISHED
+                return "Thinking completed. No action needed. Task finished."
+
+        return await self.act()
 
     async def act(self) -> str:
         if not self.tool_calls:
@@ -205,6 +285,11 @@ class ToolCallAgent(ReActAgent):
 
     def _should_finish_execution(self, name: str, result: Any, **kwargs) -> bool:
         return True
+
+    def _should_terminate_on_finish_reason(self, response) -> bool:
+        """Check if agent should terminate based on finish_reason signals."""
+        return (getattr(response, 'finish_reason', None) == "stop" and
+                getattr(response, 'native_finish_reason', None) == "stop")
 
     def clear(self):
         self.memory.clear()
