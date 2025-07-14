@@ -5,13 +5,13 @@ from typing import Dict, Any, Optional
 
 class ConfigManager:
     """Configuration management class for user settings like API keys"""
-    
+
     def __init__(self):
         """Initialize the configuration manager"""
         # Use relative path from current working directory
         self.config_file = Path("config.json")
         self.config = self._load_config()
-    
+
     def _load_config(self) -> Dict[str, Any]:
         """Load configuration file"""
         # Try to load existing configuration
@@ -26,7 +26,7 @@ class ConfigManager:
                 "base_url": "",
                 "default_agent": "default"
             }
-        
+
         # Create default configuration if loading fails or file doesn't exist
         default_config = {
             "api_keys": {
@@ -39,7 +39,7 @@ class ConfigManager:
         }
         self._save_config(default_config)
         return default_config
-    
+
     def _save_config(self, config: Dict[str, Any]) -> None:
         """Save configuration to file"""
         try:
@@ -47,7 +47,7 @@ class ConfigManager:
                 json.dump(config, f, indent=2)
         except Exception as e:
             print(f"Error saving config: {e}")
-    
+
     def get(self, key: str, default: Any = None) -> Any:
         """Get configuration item"""
         keys = key.split('.')
@@ -58,7 +58,7 @@ class ConfigManager:
             else:
                 return default
         return value
-    
+
     def set(self, key: str, value: Any) -> None:
         """Set configuration item"""
         keys = key.split('.')
@@ -69,17 +69,32 @@ class ConfigManager:
             config = config[k]
         config[keys[-1]] = value
         self._save_config(self.config)
-    
+
     def list_config(self) -> Dict[str, Any]:
         """List all configuration items"""
         return self.config
-    
+
     def get_api_key(self, provider: str) -> Optional[str]:
         """Get API key for specified provider"""
         return self.get(f"api_keys.{provider}")
-    
+
     def set_api_key(self, provider: str, api_key: str) -> None:
         """Set API key for specified provider"""
         self.set(f"api_keys.{provider}", api_key)
         # Also set environment variable
-        os.environ[f"{provider.upper()}_API_KEY"] = api_key 
+        os.environ[f"{provider.upper()}_API_KEY"] = api_key
+
+    def get_model_name(self) -> Optional[str]:
+        """Get configured model name"""
+        return self.get("model_name")
+
+    def get_base_url(self) -> Optional[str]:
+        """Get configured base URL"""
+        return self.get("base_url")
+
+    def get_llm_provider(self) -> Optional[str]:
+        """Get LLM provider from model name or configuration"""
+        if self.get("llm_provider"):
+            return self.get("llm_provider")
+        else:
+            return 'openai'

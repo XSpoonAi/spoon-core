@@ -97,41 +97,57 @@ uv pip install -r requirements.txt
 uv pip install -e .
 ```
 
-### Install via pip (Coming Soon)
+### Install via pip
 
 ```bash
 pip install spoon-ai-sdk
 ```
 
-## Environment Variables and API Key Configuration
+## Environment Variables and API Key Configuration (.env Recommended)
 
 SCDF supports various API services and requires proper configuration of environment variables and API keys. This section provides comprehensive guidance on setting up your environment.
 
-### 📋 Environment Variables Reference
-
-| Variable Name             | Description                                        | Required     | How to Obtain                                           |
-| ------------------------- | -------------------------------------------------- | ------------ | ------------------------------------------------------- |
-| `OPENAI_API_KEY`          | OpenAI API key for GPT models                      | Optional\*   | [OpenAI Platform](https://platform.openai.com/api-keys) |
-| `ANTHROPIC_API_KEY`       | Anthropic API key for Claude models                | Optional\*   | [Anthropic Console](https://console.anthropic.com/keys) |
-| `DEEPSEEK_API_KEY`        | DeepSeek API key for DeepSeek models               | Optional\*   | [DeepSeek Platform](https://platform.deepseek.com/)     |
-| `PRIVATE_KEY`             | Blockchain wallet private key                      | Optional\*\* | Export from your wallet (MetaMask, etc.)                |
-| `RPC_URL`                 | RPC endpoint for interacting with blockchain nodes | Optional     | Provided by your RPC provider (e.g., BaneLabs, Infura)  |
-| `SCAN_URL`                | URL of the blockchain explorer                     | Optional     | Provided by your explorer service (e.g., Blockscout)    |
-| `CHAIN_ID`                | Numeric chain ID for your target network           | Optional     | Refer to your network documentation                     |
-| `DATABASE_URL`            | Database connection URL                            | Optional     | Your database provider                                  |
-| `REDIS_HOST`              | Redis server host                                  | Optional     | Redis configuration                                     |
-| `REDIS_PORT`              | Redis server port                                  | Optional     | Redis configuration                                     |
-| `REDIS_PASSWORD`          | Redis server password                              | Optional     | Redis configuration                                     |
-| `GITHUB_TOKEN`            | GitHub API token                                   | Optional     | [GitHub Settings](https://github.com/settings/tokens)   |
-| `GO_PLUS_LABS_APP_KEY`    | GoPlus Labs API key                                | Optional     | [GoPlus Labs](https://gopluslabs.io/)                   |
-| `GO_PLUS_LABS_APP_SECRET` | GoPlus Labs API secret                             | Optional     | [GoPlus Labs](https://gopluslabs.io/)                   |
-
-\*At least one LLM API key is required for the framework to function.
-\*\*Required only for cryptocurrency-related operations.
-
 ### 🔧 Configuration Methods
 
-#### Method 1: Environment Variables (Recommended)
+#### Method 1: .env File (Recommended for Development)
+
+SpoonOS automatically loads environment variables using the python-dotenv package. This allows you to configure all your API keys and network settings in a simple .env file.
+
+1、Create a `.env` file in the project root directory. You can use the provided template:
+Copy the Example File
+
+```bash
+# Copy the example file and edit it
+cp .env.example .env
+```
+
+2、Fill in Your API Keys and Config Values
+Open .env and set your API keys, private keys, RPC URLs, etc.
+
+```bash
+# LLM API Keys
+OPENAI_API_KEY=sk-your-openai-api-key-here
+ANTHROPIC_API_KEY=sk-your-anthropic-api-key-here
+DEEPSEEK_API_KEY=your-deepseek-api-key-here
+
+# Blockchain
+PRIVATE_KEY=your-wallet-private-key
+RPC_URL=https://mainnet-1.rpc.banelabs.org
+SCAN_URL=https://xt4scan.ngd.network/
+CHAIN_ID=47763
+```
+
+3、Load the .env File in Your Python Code
+At the very top of your entry script (e.g., main.py, SpoonAgent.py, etc), add:
+
+```python
+from dotenv import load_dotenv
+load_dotenv(override=True)
+```
+
+This ensures that SpoonOS will load your .env variables at runtime, even if your system shell has conflicting environment variables.
+
+#### Method2 : Environment Variables
 
 **Linux/macOS:**
 
@@ -160,47 +176,6 @@ $env:PRIVATE_KEY="your-wallet-private-key-here"
 # Make them persistent
 [Environment]::SetEnvironmentVariable("OPENAI_API_KEY", "sk-your-openai-api-key-here", "User")
 [Environment]::SetEnvironmentVariable("ANTHROPIC_API_KEY", "sk-ant-your-anthropic-api-key-here", "User")
-```
-
-#### Method 2: .env File (Recommended for Development)
-
-Create a `.env` file in the project root directory. You can use the provided template:
-
-```bash
-# Copy the example file and edit it
-cp .env.example .env
-
-# Edit the .env file with your actual API keys
-nano .env  # or use your preferred editor
-```
-
-Example `.env` file content:
-
-```bash
-# LLM API Keys (at least one required)
-OPENAI_API_KEY=sk-your-openai-api-key-here
-ANTHROPIC_API_KEY=sk-ant-your-anthropic-api-key-here
-DEEPSEEK_API_KEY=your-deepseek-api-key-here
-
-# Blockchain (optional - only for crypto operations)
-PRIVATE_KEY=your-wallet-private-key-here
-
-# RPC and network configuration
-RPC_URL=https://mainnet-1.rpc.banelabs.org
-SCAN_URL=https://xt4scan.ngd.network/
-CHAIN_ID=47763
-
-# Optional: Database and Redis configuration
-DATABASE_URL=sqlite:///./spoonai.db
-REDIS_HOST=localhost
-REDIS_PORT=6379
-REDIS_PASSWORD=your-redis-password
-```
-
-**Important:** Ensure your `.env` file has proper permissions:
-
-```bash
-chmod 600 .env
 ```
 
 #### Method 3: CLI Configuration Commands
@@ -323,16 +298,19 @@ chmod 600 .env
 OpenRouter provides an OpenAI-compatible API interface that allows you to access multiple AI models through a single API key. To use OpenRouter:
 
 1. **Get your OpenRouter API key:**
+
    - Visit [OpenRouter Platform](https://openrouter.ai/keys)
    - Register an account and create an API key
 
 2. **Set environment variables:**
+
    ```bash
    # Use OPENAI_API_KEY environment variable to store OpenRouter API key
    export OPENAI_API_KEY="sk-or-your-openrouter-api-key-here"
    ```
 
 3. **Use OpenRouter in your code:**
+
    ```python
    from spoon_ai.chat import ChatBot
    from spoon_ai.agents import SpoonReactAI
@@ -340,8 +318,8 @@ OpenRouter provides an OpenAI-compatible API interface that allows you to access
    # Configure to use OpenRouter
    openrouter_agent = SpoonReactAI(
        llm=ChatBot(
-           model="anthropic/claude-3.5-sonnet",  # Model name supported by OpenRouter
-           provider="openai",                    # Use openai provider
+           model_name="anthropic/claude-sonnet-4",  # Model name supported by OpenRouter，value:GPT-4o ...
+           llm_provider="openai",                    # Use openai provider
            base_url="https://openrouter.ai/api/v1"  # OpenRouter API endpoint
            # Automatically uses OpenRouter API key from OPENAI_API_KEY environment variable
        )
@@ -351,68 +329,10 @@ OpenRouter provides an OpenAI-compatible API interface that allows you to access
 4. **Supported model examples:**
    - `openai/gpt-4` - GPT-4 model
    - `openai/gpt-3.5-turbo` - GPT-3.5 Turbo
-   - `anthropic/claude-3.5-sonnet` - Claude 3.5 Sonnet
+   - `anthropic/claude-sonnet-4` - Claude 3.5 Sonnet
    - `anthropic/claude-3-opus` - Claude 3 Opus
    - `meta-llama/llama-3.1-8b-instruct` - Llama 3.1 8B
    - For more models, see [OpenRouter Models List](https://openrouter.ai/models)
-
-### 🚀 Quick Setup Guide
-
-For first-time users, follow this step-by-step setup:
-
-1. **Get your API keys:**
-
-   - Visit [OpenAI Platform](https://platform.openai.com/api-keys), [Anthropic Console](https://console.anthropic.com/keys), or [OpenRouter Platform](https://openrouter.ai/keys)
-   - Create a new API key
-   - Copy the key securely
-
-2. **Set environment variables:**
-
-   ```bash
-   export ANTHROPIC_API_KEY="your-key-here"
-   # OR
-   export OPENAI_API_KEY="your-key-here"
-   # OR (for OpenRouter, use OPENAI_API_KEY with OpenRouter API key)
-   export OPENAI_API_KEY="sk-or-your-openrouter-api-key-here"
-   ```
-
-3. **Verify setup:**
-
-   ```bash
-   python main.py
-   > action chat
-   > Hello! Please confirm you can access the API.
-   ```
-
-4. **Optional: Configure for crypto operations:**
-   ```bash
-   export PRIVATE_KEY="your-wallet-private-key"
-   ```
-
-### ❗ Troubleshooting
-
-#### Common Issues:
-
-**"API key not found" error:**
-
-```bash
-# Check if environment variable is set
-echo $OPENAI_API_KEY
-
-# If empty, set it:
-export OPENAI_API_KEY="your-key-here"
-```
-
-**"Invalid API key" error:**
-
-- Verify the key is correct and active
-- Check for extra spaces or characters
-- Ensure the key has proper permissions
-
-**Configuration not persisting:**
-
-- Add export commands to your shell profile (~/.bashrc, ~/.zshrc)
-- Or use the CLI config command for persistent storage
 
 ## Quick Start
 
@@ -587,6 +507,22 @@ The ReAct agent workflow includes the following key steps:
 
 This cycle repeats continuously until the task is completed or the preset goal is achieved.
 
+#### Agent Termination
+
+SpoonOS agents now use an intelligent termination mechanism based on LLM finish reasons rather than explicit termination tools. This provides more natural and efficient conversation completion:
+
+**Finish Reason Termination:**
+- Agents automatically detect when the LLM indicates task completion through `finish_reason: "stop"` and `native_finish_reason: "stop"`
+- This allows for immediate termination of straightforward queries without unnecessary tool execution steps
+- The agent gracefully transitions to `FINISHED` state and returns the response content
+
+**Benefits:**
+- **Improved Efficiency**: Prevents unnecessary step execution for simple questions
+- **Natural Flow**: Allows LLM to signal completion organically
+- **Provider Compatibility**: Works with both OpenAI and Anthropic LLM providers
+- **Backward Compatibility**: Maintains existing agent functionality for complex multi-step tasks</search>
+</search_and_replace>
+
 ### Custom Tools
 
 Creating custom tools is one of SpoonAI's most powerful features. Each tool should inherit from the `BaseTool` class:
@@ -718,24 +654,20 @@ from spoon_ai.agents import SpoonReactAI
 
 # Using OpenAI's GPT-4
 openai_agent = SpoonReactAI(
-    llm=ChatBot(model="gpt-4", provider="openai")
+    llm=ChatBot(model_name="gpt-4", llm_provider="openai")
 )
 
 # Using Anthropic's Claude
 claude_agent = SpoonReactAI(
-    llm=ChatBot(model="claude-3-opus-20240229", provider="anthropic")
+    llm=ChatBot(model_name="claude-3-7-sonnet-20250219", llm_provider="anthropic")
 )
 
-# Using DeepSeek
-deepseek_agent = SpoonReactAI(
-    llm=ChatBot(model="deepseek-llm", provider="deepseek")
-)
 
 # Using OpenRouter (OpenAI-compatible API)
 openrouter_agent = SpoonReactAI(
     llm=ChatBot(
-        model="anthropic/claude-3.5-sonnet",  # or any model available on OpenRouter
-        provider="openai",  # Use openai provider for compatibility
+        model_name="anthropic/claude-3.5-sonnet",  # or any model available on OpenRouter
+        llm_provider="openai",  # Use openai provider for compatibility
         base_url="https://openrouter.ai/api/v1"  # OpenRouter API endpoint
         # Uses OPENAI_API_KEY environment variable with your OpenRouter API key
     )
@@ -773,13 +705,26 @@ spoon_toolkits/                ← This is a standalone tool library (installabl
 
 ##### 0. Install Dependencies
 
-If you haven't already installed the `spoon-toolkits` package, clone and install it locally:
+You have two ways to install the spoon-toolkits package:
+
+Option 1: Install from GitHub source (for development or latest changes):
 
 ```bash
 git clone https://github.com/XSpoonAi/spoon-toolkit.git
 cd spoon-toolkit
 pip install -e .
 ```
+
+Option 2: Install from PyPI (recommended for general use):
+
+```bash
+pip install spoon-toolkits
+
+```
+
+👉 Tip:
+
+Use Option 1 if you want to modify the toolkit source code or track the latest updates.
 
 ##### 1. Register the tool to the MCP service（Take the third_web tool as an example）
 
@@ -851,7 +796,6 @@ mcp_tools = MCPToolsCollection()
 if __name__ == "__main__":
     # Start MCP server when this script is run directly
     asyncio.run(mcp_tools.run())
-        await self.mcp.run_async(transport="sse", port=8765, **kwargs)
 ```
 
 Before calling the agent, make sure the MCP service is running:
@@ -928,6 +872,7 @@ async def main():
     # Query standard ERC20 transfer events (Transfer)
     info_agent.clear()
     result = await info_agent.run("Get the last 10 Transfer events from the USDT contract on Ethereum using client ID xxxx.")
+    print(result)
 
 if __name__ == "__main__":
     asyncio.run(main())
@@ -1008,14 +953,14 @@ from spoon_ai.agents.spoon_react import SpoonReactAI
 from spoon_ai.agents.mcp_client_mixin import MCPClientMixin
 from fastmcp.client.transports import SSETransport
 from spoon_ai.tools.tool_manager import ToolManager
-from spoon_ai.tools import Terminate
+
 from pydantic import Field
 class SpoonReactMCP(SpoonReactAI, MCPClientMixin):
     description: str = ()
     system_prompt: str = """ """
     name: str = "spoon_react_mcp"
     description: str = "A smart ai agent in neo blockchain with mcp"
-    avaliable_tools: ToolManager = Field(default_factory=lambda: ToolManager([Terminate()]))
+    avaliable_tools: ToolManager = Field(default_factory=lambda: ToolManager([]))
     def __init__(self, **kwargs):
         super().__init__(**kwargs)
         MCPClientMixin.__init__(self, mcp_transport=kwargs.get('mcp_transport', SSETransport("http://127.0.0.1:8123/sse")))
@@ -1118,7 +1063,7 @@ import asyncio
 from typing import Any, Dict, List, Optional
 
 # Import base tool classes and tool manager
-from spoon_ai.tools import BaseTool, ToolManager, Terminate
+from spoon_ai.tools import BaseTool, ToolManager
 
 from tools import (
 MyCustomTool,
