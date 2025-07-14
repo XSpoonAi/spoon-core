@@ -10,6 +10,53 @@ import logging
 
 logger = logging.getLogger(__name__)
 
+# Monkey patch to fix FastMCP SSE server issue
+def _patch_fastmcp_sse():
+    """Patch FastMCP to handle the SSE server TypeError"""
+    try:
+        from fastmcp.server.server import FastMCP
+        from mcp.server.sse import SseServerTransport
+        from starlette.applications import Starlette
+        from starlette.routing import Route, Mount
+        
+        original_sse_app = FastMCP.sse_app
+        
+        def patched_sse_app(self) -> Starlette:
+            """Return a properly configured SSE server app."""
+            sse = SseServerTransport(self.settings.message_path)
+            
+            async def handle_sse(request):
+                async with sse.connect_sse(
+                    request.scope,
+                    request.receive,
+                    request._send,
+                ) as streams:
+                    await self._mcp_server.run(
+                        streams[0],
+                        streams[1],
+                        self._mcp_server.create_initialization_options(),
+                    )
+            
+            # Create a proper ASGI app wrapper for handle_post_message
+            async def message_app(scope, receive, send):
+                await sse.handle_post_message(scope, receive, send)
+            
+            return Starlette(
+                debug=self.settings.debug,
+                routes=[
+                    Route(self.settings.sse_path, endpoint=handle_sse),
+                    Mount(self.settings.message_path, app=message_app),
+                ],
+            )
+        
+        FastMCP.sse_app = patched_sse_app
+        logger.info("FastMCP SSE server patched successfully")
+    except Exception as e:
+        logger.debug(f"FastMCP patch not applied: {e}")
+
+# Apply patch when module is imported
+_patch_fastmcp_sse()
+
 class MCPClientMixin:
     def __init__(self, mcp_transport: Union[str, WSTransport, SSETransport, PythonStdioTransport, FastMCPTransport]):
         self.mcp_transport = mcp_transport
