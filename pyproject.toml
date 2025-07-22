@@ -11,7 +11,7 @@ authors = [
 description = "SDK for SpoonAI tools and agents" # A brief description
 readme = "README.md" # If you have a README file
 # packages = ["spoon_ai"] # REMOVED: Invalid field here
-requires-python = ">=3.9" # Specify supported Python version
+requires-python = ">=3.10" # Specify supported Python version
 classifiers = [
     "Programming Language :: Python :: 3",
     "License :: OSI Approved :: MIT License", # Choose an appropriate license

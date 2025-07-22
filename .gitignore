@@ -15,3 +15,7 @@ uv.lock
 .idea/
 
 history.txt
+
+.venv/
+.DS_Store
+CLAUDE.md

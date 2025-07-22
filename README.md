@@ -38,6 +38,7 @@ SpoonOS is a living, evolving agentic operating system. Its SCDF is purpose-buil
 - **🧠 ReAct Intelligent Agent** - Advanced agent architecture combining reasoning and action
 - **🔧 Custom Tool Ecosystem** - Modular tool system for easily extending agent capabilities
 - **💬 Multi-Model Support** - Compatible with major large language models including OpenAI, Anthropic, DeepSeek, and more Web3 fine-tuned LLM
+- **⚡ Prompt Caching** - Intelligent caching for Anthropic models to reduce token costs and improve response times
 - **🌐 Web3-Native Interoperability** - Enables AI agents to communicate and coordinate across ecosystems via DID and ZKML-powered interoperability protocols.
 - **🔌 MCP (Message Connectivity Protocol)** – Dynamic, protocol-driven tool invocation system. Agents can discover and execute tools at runtime over `stdio`, `http`, or `websocket` transports — without hardcoding or restarts.
 - **📡 Scalable Data Access** – Combined with MCP, agents gain seamless access to structured/unstructured data, including databases, Web3 RPCs, external APIs, and more.
@@ -264,6 +265,20 @@ Community Agent Mode: Use mcp-proxy to connect to open-source agents hosted on G
 📁 [Full guide](/doc/mcp_mode_usage.md)
 
 📁 [Example mcp](/examples/mcp/)
+
+## ⚡ Prompt Caching
+
+SpoonOS supports prompt caching for Anthropic models to reduce costs and improve performance. Enable/disable globally:
+
+```python
+from spoon_ai.chat import ChatBot
+
+# Enable prompt caching (default: True)
+chatbot = ChatBot(
+    llm_provider="anthropic",
+    enable_prompt_cache=True
+)
+```
 
 ## 🗂️ Project Structure
 
