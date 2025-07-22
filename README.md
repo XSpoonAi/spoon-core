@@ -39,7 +39,7 @@ SpoonOS is a living, evolving agentic operating system. Its SCDF is purpose-buil
 - **🔧 Custom Tool Ecosystem** - Modular tool system for easily extending agent capabilities
 - **💬 Multi-Model Support** - Compatible with major large language models including OpenAI, Anthropic, DeepSeek, and more Web3 fine-tuned LLM
 - **🌐 Web3-Native Interoperability** - Enables AI agents to communicate and coordinate across ecosystems via DID and ZKML-powered interoperability protocols.
-- **🔌 MCP (Message Connectivity Protocol)** – Dynamic, protocol-driven tool invocation system. Agents can discover and execute tools at runtime over `stdio`, `http`, or `websocket` transports — without hardcoding or restarts.
+- **🔌 MCP (Model Context Protocol)** – Dynamic, protocol-driven tool invocation system. Agents can discover and execute tools at runtime over `stdio`, `http`, or `websocket` transports — without hardcoding or restarts.
 - **📡 Scalable Data Access** – Combined with MCP, agents gain seamless access to structured/unstructured data, including databases, Web3 RPCs, external APIs, and more.
 - **💻 Interactive CLI** - Feature-rich command line interface
 - **🔄 State Management** - Comprehensive session history and state persistence
@@ -253,7 +253,7 @@ Register your own tools, override run(), or extend with MCP integrations. See do
 
 ## 🔌 Advanced: Use Web3 Tools via MCP
 
-SpoonOS supports runtime pluggable agents using the MCP (Message Connectivity Protocol) — allowing your agent to connect to a live tool server (via SSE/WebSocket/HTTP) and call tools like get_contract_events or get_wallet_activity with no extra code.
+SpoonOS supports runtime pluggable agents using the MCP (Model Context Protocol) — allowing your agent to connect to a live tool server (via SSE/WebSocket/HTTP) and call tools like get_contract_events or get_wallet_activity with no extra code.
 
 Two ways to build MCP-powered agents:
 
