@@ -7,7 +7,7 @@ import shlex
 import sys
 import traceback
 from pathlib import Path
-from typing import Callable, Dict, List
+from typing import Callable, Dict, List, Any
 
 from prompt_toolkit import PromptSession, print_formatted_text
 from prompt_toolkit.completion import WordCompleter
@@ -256,21 +256,348 @@ class SpoonAICLI:
         name = input_list[0]
         self._load_agent(name)
 
-    def  _load_agent(self, name: str):
-        if name == "react":
-            self.agents[name] = SpoonReactAI()
-            self.current_agent = self.agents[name]
-            # Add crypto tools to the agent
-            self._add_crypto_tools_to_agent(self.current_agent)
-            logger.info(f"Loaded agent: {self.current_agent.name}")
-        elif name == "spoon_react_mcp":
-            self.agents[name] = SpoonReactMCP()
-            self.current_agent = self.agents[name]
-            # Add crypto tools to the agent
-            self._add_crypto_tools_to_agent(self.current_agent)
-            logger.info(f"Loaded agent: {self.current_agent.name}")
+    def _get_available_agents(self) -> Dict[str, Dict[str, Any]]:
+        """Get available agents from configuration and built-in definitions"""
+        # Built-in agent definitions
+        builtin_agents = {
+            "react": {
+                "class": "SpoonReactAI",
+                "aliases": ["spoon_react"],
+                "description": "A smart AI agent for blockchain operations"
+            },
+            "spoon_react_mcp": {
+                "class": "SpoonReactMCP",
+                "aliases": [],
+                "description": "SpoonReact agent with MCP protocol support"
+            }
+        }
+
+        # Get agents from configuration file
+        config_agents = self.config_manager.get("agents", {})
+
+        # Merge built-in and config agents (config takes precedence)
+        available_agents = {**builtin_agents, **config_agents}
+
+        return available_agents
+
+    def _load_agent(self, name: str):
+        """Load agent by name using configuration-driven approach"""
+        available_agents = self._get_available_agents()
+
+        # Find agent by name or alias
+        agent_config = None
+        agent_key = None
+
+        # Direct name match
+        if name in available_agents:
+            agent_config = available_agents[name]
+            agent_key = name
         else:
+            # Search by alias
+            for key, config in available_agents.items():
+                if name in config.get("aliases", []):
+                    agent_config = config
+                    agent_key = key
+                    break
+
+        if not agent_config:
             logger.error(f"Agent {name} not found")
+            logger.info("Available agents:")
+            for key, config in available_agents.items():
+                aliases = config.get("aliases", [])
+                alias_str = f" (aliases: {', '.join(aliases)})" if aliases else ""
+                logger.info(f"  {key}{alias_str}: {config.get('description', 'No description')}")
+            return
+
+        # Load agent based on class name
+        agent_class = agent_config.get("class")
+        try:
+            # Create agent instance with configuration
+            agent_instance_config = agent_config.get("config", {})
+
+            if agent_class == "SpoonReactAI":
+                self.agents[name] = SpoonReactAI(**agent_instance_config)
+            elif agent_class == "SpoonReactMCP":
+                # For MCP agents, configure MCP servers and transports
+                mcp_config = self._prepare_mcp_config(agent_config)
+                logger.info(f"Creating MCP agent with config: {mcp_config}")
+
+                # Create MCP agent with proper transport configuration
+                if mcp_config.get("mcp_servers"):
+                    # Create primary transport for the first enabled MCP server
+                    mcp_transport = self._create_mcp_transport(mcp_config)
+                    self.agents[name] = SpoonReactMCP(mcp_transport=mcp_transport, **agent_instance_config)
+
+                    # Store MCP configuration for later use by the agent
+                    self.agents[name]._mcp_config = mcp_config
+                else:
+                    # No MCP servers configured, use default
+                    logger.warning(f"No MCP servers configured for agent {name}, using default transport")
+                    self.agents[name] = SpoonReactMCP(**agent_instance_config)
+            else:
+                logger.error(f"Unknown agent class: {agent_class}")
+                return
+
+            self.current_agent = self.agents[name]
+
+            # Configure tools for the agent
+            self._configure_agent_tools(self.current_agent, agent_config)
+
+            # Add crypto tools to the agent (default behavior)
+            self._add_crypto_tools_to_agent(self.current_agent)
+
+            logger.info(f"Loaded agent: {self.current_agent.name}")
+
+        except Exception as e:
+            logger.error(f"Failed to load agent {name}: {e}")
+            logger.debug(f"Agent loading error details: {e}", exc_info=True)
+
+    def _prepare_mcp_config(self, agent_config: Dict[str, Any]) -> Dict[str, Any]:
+        """Prepare MCP configuration for MCP-enabled agents"""
+        mcp_config = {}
+
+        # Get MCP servers configuration
+        mcp_servers = agent_config.get("mcp_servers", [])
+        if mcp_servers:
+            servers_config = self.config_manager.get("mcp_servers", {})
+            mcp_config["mcp_servers"] = {}
+
+            for server_name in mcp_servers:
+                if server_name in servers_config:
+                    server_config = servers_config[server_name]
+                    if not server_config.get("disabled", False):
+                        mcp_config["mcp_servers"][server_name] = server_config
+                        logger.info(f"Configured MCP server: {server_name}")
+                    else:
+                        logger.warning(f"MCP server {server_name} is disabled")
+                else:
+                    logger.warning(f"MCP server {server_name} not found in configuration")
+
+        return mcp_config
+
+    def _create_mcp_transport(self, mcp_config: Dict[str, Any]):
+        """Create MCP transport based on server configuration with universal support"""
+        from fastmcp.client.transports import (
+            NpxStdioTransport, PythonStdioTransport, SSETransport,
+            WSTransport, FastMCPStdioTransport, UvxStdioTransport
+        )
+
+        mcp_servers = mcp_config.get("mcp_servers", {})
+
+        # Support multiple MCP servers - use the first configured one for now
+        # In the future, we can support multiple simultaneous connections
+        for server_name, server_config in mcp_servers.items():
+            if server_config.get("disabled", False):
+                logger.info(f"Skipping disabled MCP server: {server_name}")
+                continue
+
+            transport_type = server_config.get("transport", "auto")
+            logger.info(f"Creating MCP transport for {server_name} (type: {transport_type})")
+
+            try:
+                transport = self._create_transport_by_type(server_name, server_config, transport_type)
+                if transport:
+                    logger.info(f"Successfully created {transport_type} transport for {server_name}")
+                    return transport
+            except Exception as e:
+                logger.error(f"Failed to create transport for {server_name}: {e}")
+                continue
+
+        # Fallback to default transport
+        logger.info("Using fallback SSE transport")
+        return SSETransport("http://127.0.0.1:8765/sse")
+
+    def _create_transport_by_type(self, server_name: str, server_config: Dict[str, Any], transport_type: str):
+        """Create specific transport type based on configuration"""
+        from fastmcp.client.transports import (
+            NpxStdioTransport, PythonStdioTransport, SSETransport,
+            WSTransport, FastMCPStdioTransport, UvxStdioTransport
+        )
+
+        # Auto-detect transport type if not specified
+        if transport_type == "auto":
+            transport_type = self._detect_transport_type(server_config)
+
+        env_vars = server_config.get("env", {})
+
+        if transport_type == "npx" or (transport_type == "stdio" and server_config.get("command") == "npx"):
+            return self._create_npx_transport(server_config, env_vars)
+
+        elif transport_type == "python" or (transport_type == "stdio" and server_config.get("command") == "python"):
+            return self._create_python_transport(server_config, env_vars)
+
+        elif transport_type == "uvx" or (transport_type == "stdio" and server_config.get("command") == "uvx"):
+            return self._create_uvx_transport(server_config, env_vars)
+
+        elif transport_type == "sse":
+            return self._create_sse_transport(server_config)
+
+        elif transport_type == "websocket" or transport_type == "ws":
+            return self._create_websocket_transport(server_config)
+
+        elif transport_type == "fastmcp":
+            return self._create_fastmcp_transport(server_config, env_vars)
+
+        else:
+            logger.warning(f"Unsupported transport type: {transport_type}")
+            return None
+
+    def _detect_transport_type(self, server_config: Dict[str, Any]) -> str:
+        """Auto-detect transport type based on server configuration"""
+        command = server_config.get("command", "")
+        url = server_config.get("url", "")
+
+        if command == "npx":
+            return "npx"
+        elif command == "python":
+            return "python"
+        elif command == "uvx":
+            return "uvx"
+        elif url.startswith("http") and "/sse" in url:
+            return "sse"
+        elif url.startswith("ws"):
+            return "websocket"
+        elif command:
+            return "stdio"  # Generic stdio for other commands
+        else:
+            return "sse"  # Default fallback
+
+    def _create_npx_transport(self, server_config: Dict[str, Any], env_vars: Dict[str, str]):
+        """Create NPX stdio transport"""
+        from fastmcp.client.transports import NpxStdioTransport
+
+        args = server_config.get("args", [])
+        if not args:
+            raise ValueError("NPX transport requires args with package name")
+
+        # Extract package name (usually the last argument)
+        package_name = args[-1]
+        package_args = args[:-1] if len(args) > 1 else []
+
+        logger.info(f"Creating NPX transport: package={package_name}, args={package_args}")
+
+        return NpxStdioTransport(
+            package=package_name,
+            args=package_args,
+            env_vars=env_vars,
+            project_directory=server_config.get("cwd"),
+            use_package_lock=server_config.get("use_package_lock", True)
+        )
+
+    def _create_python_transport(self, server_config: Dict[str, Any], env_vars: Dict[str, str]):
+        """Create Python stdio transport"""
+        from fastmcp.client.transports import PythonStdioTransport
+
+        script_path = server_config.get("script_path") or server_config.get("args", [None])[0]
+        if not script_path:
+            raise ValueError("Python transport requires script_path or first arg as script path")
+
+        args = server_config.get("args", [])[1:] if len(server_config.get("args", [])) > 1 else []
+
+        logger.info(f"Creating Python transport: script={script_path}, args={args}")
+
+        return PythonStdioTransport(
+            script_path=script_path,
+            args=args,
+            env=env_vars,
+            cwd=server_config.get("cwd"),
+            python_cmd=server_config.get("python_cmd", "python")
+        )
+
+    def _create_uvx_transport(self, server_config: Dict[str, Any], env_vars: Dict[str, str]):
+        """Create UVX stdio transport"""
+        from fastmcp.client.transports import UvxStdioTransport
+
+        args = server_config.get("args", [])
+        if not args:
+            raise ValueError("UVX transport requires args with package name")
+
+        package_name = args[-1]
+        package_args = args[:-1] if len(args) > 1 else []
+
+        logger.info(f"Creating UVX transport: package={package_name}, args={package_args}")
+
+        return UvxStdioTransport(
+            package=package_name,
+            args=package_args,
+            env_vars=env_vars
+        )
+
+    def _create_sse_transport(self, server_config: Dict[str, Any]):
+        """Create SSE transport"""
+        from fastmcp.client.transports import SSETransport
+
+        url = server_config.get("url")
+        if not url:
+            host = server_config.get("host", "127.0.0.1")
+            port = server_config.get("port", 8765)
+            path = server_config.get("path", "/sse")
+            url = f"http://{host}:{port}{path}"
+
+        logger.info(f"Creating SSE transport: {url}")
+
+        return SSETransport(url)
+
+    def _create_websocket_transport(self, server_config: Dict[str, Any]):
+        """Create WebSocket transport"""
+        from fastmcp.client.transports import WSTransport
+
+        url = server_config.get("url")
+        if not url:
+            host = server_config.get("host", "127.0.0.1")
+            port = server_config.get("port", 8765)
+            path = server_config.get("path", "/ws")
+            url = f"ws://{host}:{port}{path}"
+
+        logger.info(f"Creating WebSocket transport: {url}")
+
+        return WSTransport(url)
+
+    def _create_fastmcp_transport(self, server_config: Dict[str, Any], env_vars: Dict[str, str]):
+        """Create FastMCP stdio transport"""
+        from fastmcp.client.transports import FastMCPStdioTransport
+
+        command = server_config.get("command")
+        args = server_config.get("args", [])
+
+        if not command:
+            raise ValueError("FastMCP transport requires command")
+
+        logger.info(f"Creating FastMCP transport: {command} {' '.join(args)}")
+
+        return FastMCPStdioTransport(
+            command=command,
+            args=args,
+            env=env_vars,
+            cwd=server_config.get("cwd")
+        )
+
+    def _configure_agent_tools(self, agent, agent_config: Dict[str, Any]):
+        """Configure tools for the agent based on configuration"""
+        tools = agent_config.get("tools", [])
+        if not tools:
+            return
+
+        tool_sets_config = self.config_manager.get("tool_sets", {})
+
+        for tool_name in tools:
+            if tool_name in tool_sets_config:
+                tool_config = tool_sets_config[tool_name]
+                tool_type = tool_config.get("type")
+
+                if tool_type == "builtin":
+                    if tool_config.get("enabled", True):
+                        logger.info(f"Enabled built-in tool set: {tool_name}")
+                        # Built-in tools like crypto_tools are handled separately
+                elif tool_type == "mcp_server":
+                    server_name = tool_config.get("server")
+                    if server_name:
+                        logger.info(f"Configured MCP tool set: {tool_name} from server: {server_name}")
+                        # MCP tools will be loaded when the MCP server connects
+                else:
+                    logger.warning(f"Unknown tool type: {tool_type} for tool: {tool_name}")
+            else:
+                logger.warning(f"Tool set {tool_name} not found in configuration")
 
     def _add_crypto_tools_to_agent(self, agent):
         """Add crypto tools to the agent's tool manager."""
@@ -302,13 +629,33 @@ class SpoonAICLI:
             logger.debug(f"Crypto tools integration error details: {e}", exc_info=True)
 
     def _handle_list_agents(self, input_list: List[str]):
+        """List all available agents from configuration and built-in definitions"""
+        available_agents = self._get_available_agents()
+
         logger.info("Available agents:")
-        for agent in self.agents.values():
-            logger.info(f"  {agent.name}: {agent.description}")
+        for name, config in available_agents.items():
+            aliases = config.get("aliases", [])
+            alias_str = f" (aliases: {', '.join(aliases)})" if aliases else ""
+            description = config.get("description", "No description")
+            logger.info(f"  {name}{alias_str}: {description}")
+
+        # Also show currently loaded agents (avoid duplicates)
+        if self.agents:
+            logger.info("\nCurrently loaded agents:")
+            loaded_agents = {}
+            for agent_key, agent in self.agents.items():
+                # Use agent name as key to avoid duplicates
+                if agent.name not in loaded_agents:
+                    loaded_agents[agent.name] = agent
+
+            for agent in loaded_agents.values():
+                logger.info(f"  {agent.name}: {agent.description}")
 
     def _load_default_agent(self):
-        # self._load_agent("spoon_react_mcp")
-        self._load_agent("react")
+        """Load the default agent from configuration"""
+        default_agent = self.config_manager.get("default_agent", "react")
+        logger.info(f"Loading default agent: {default_agent}")
+        self._load_agent(default_agent)
 
     def _set_prompt_toolkit(self):
         self.style = Style.from_dict({
@@ -951,10 +1298,7 @@ class SpoonAICLI:
         logger.info("  config api_key anthropic sk-ant-xxxx")
         logger.info("  config default_agent my_agent")
 
-    def _handle_list_agents(self, input_list: List[str]):
-        logger.info("Available agents:")
-        for agent in self.agents.values():
-            logger.info(f"  {agent.name}: {agent.description}")
+
 
     def _handle_reload_config(self, input_list: List[str]):
         """Reload configuration"""

@@ -20,12 +20,19 @@ class ConfigManager:
             if self.config_file.exists():
                 with open(self.config_file, 'r') as f:
                     return json.load(f)
+            else:
+                # Return default configuration if file doesn't exist
+                return {
+                    "api_keys": {},
+                    "base_url": "",
+                    "default_agent": "react"
+                }
         except Exception as e:
             print(f"Error loading config: {e}")
             return {
                 "api_keys": {},
                 "base_url": "",
-                "default_agent": "default"
+                "default_agent": "react"
             }
 
     def _is_placeholder_value(self, value: str) -> bool:
