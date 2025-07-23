@@ -43,10 +43,17 @@ def to_dict(message: Message) -> dict:
     return messages
 
 class ChatBot:
-    # def __init__(self, model_name: str = "gpt-4.5-preview", llm_config: dict = None, llm_provider: str = "openai", api_key: str = None):
-    def __init__(self, model_name: str = None, llm_config: dict = None, llm_provider: str = None, api_key: str = None, base_url: str = None):
+    def __init__(self, model_name: str = None, llm_config: dict = None, llm_provider: str = None, api_key: str = None, base_url: str = None, enable_prompt_cache: bool = True):
         # Initialize configuration manager
         config_manager = ConfigManager()
+        
+        # Configure prompt caching
+        self.enable_prompt_cache = enable_prompt_cache
+        self.cache_metrics = {
+            "cache_creation_input_tokens": 0,
+            "cache_read_input_tokens": 0,
+            "total_input_tokens": 0
+        }
 
         # Use parameters provided by user first, then fall back to config, then environment
         self.model_name = model_name or config_manager.get_model_name()
@@ -140,6 +147,22 @@ class ChatBot:
         else:
             raise ValueError(f"Invalid LLM provider: {llm_provider}")
 
+    def _log_cache_metrics(self, usage_data) -> None:
+        """Log cache metrics from Anthropic API response usage data"""
+        if self.llm_provider == "anthropic" and self.enable_prompt_cache and usage_data:
+            if hasattr(usage_data, 'cache_creation_input_tokens') and usage_data.cache_creation_input_tokens:
+                self.cache_metrics["cache_creation_input_tokens"] += usage_data.cache_creation_input_tokens
+                logger.info(f"Cache creation tokens: {usage_data.cache_creation_input_tokens}")
+            if hasattr(usage_data, 'cache_read_input_tokens') and usage_data.cache_read_input_tokens:
+                self.cache_metrics["cache_read_input_tokens"] += usage_data.cache_read_input_tokens
+                logger.info(f"Cache read tokens: {usage_data.cache_read_input_tokens}")
+            if hasattr(usage_data, 'input_tokens') and usage_data.input_tokens:
+                self.cache_metrics["total_input_tokens"] += usage_data.input_tokens
+
+    def get_cache_metrics(self) -> dict:
+        """Get current cache performance metrics"""
+        return self.cache_metrics.copy()
+
     async def ask(self, messages: List[Union[dict, Message]], system_msg: Optional[str] = None, output_queue: Optional[asyncio.Queue] = None) -> str:
         formatted_messages = [] if system_msg is None else [{"role": "system", "content": system_msg}]
         for message in messages:
@@ -154,13 +177,29 @@ class ChatBot:
             response = await self.llm.chat.completions.create(messages=formatted_messages, model=self.model_name, max_tokens=4096, temperature=0.3, stream=False)
             return response.choices[0].message.content
         elif self.api_logic == "anthropic":
+            # Format system message with cache control for Anthropic models if it's long enough
+            system_content = system_msg
+            # Use ~4000 chars to ensure we hit 1024 tokens (rough approximation: 1 token ≈ 4 chars)
+            if system_msg and self.llm_provider == "anthropic" and self.enable_prompt_cache and len(system_msg) >= 4000:
+                system_content = [
+                    {
+                        "type": "text",
+                        "text": system_msg,
+                        "cache_control": {"type": "ephemeral"}
+                    }
+                ]
+                logger.info(f"Applied cache_control to system message ({len(system_msg)} chars)")
+            
             response = await self.llm.messages.create(
                 model=self.model_name,
                 max_tokens=4096,
                 temperature=0.3,
-                system=system_msg,
+                system=system_content,
                 messages=[m for m in formatted_messages if m.get("role") != "system"]
             )
+            # Log cache metrics for non-streaming response
+            if hasattr(response, 'usage'):
+                self._log_cache_metrics(response.usage)
             return response.content[0].text
 
     # @retry(stop=stop_after_attempt(3), wait=wait_random_exponential(min=1, max=60))
@@ -228,11 +267,33 @@ class ChatBot:
                 )
             elif self.api_logic == "anthropic":
                 def to_anthropic_tools(tools: List[dict]) -> List[dict]:
-                    return [{"name": tool["function"]["name"], "description": tool["function"]["description"], "input_schema": tool["function"]["parameters"]} for tool in tools]
+                    anthropic_tools = []
+                    for tool in tools:
+                        anthropic_tool = {
+                            "name": tool["function"]["name"], 
+                            "description": tool["function"]["description"], 
+                            "input_schema": tool["function"]["parameters"]
+                        }
+                        # Add cache control for Anthropic models if tools are substantial
+                        if self.llm_provider == "anthropic" and self.enable_prompt_cache and len(tools) > 1:
+                            anthropic_tool["cache_control"] = {"type": "ephemeral"}
+                        anthropic_tools.append(anthropic_tool)
+                    return anthropic_tools
 
                 # Convert message format to Anthropic format
                 anthropic_messages = []
+                
+                # Format system message with cache control for Anthropic models if it's long enough
                 system_content = system_msg or ""
+                # Use ~4000 chars to ensure we hit 1024 tokens (rough approximation: 1 token ≈ 4 chars)
+                if system_msg and self.llm_provider == "anthropic" and self.enable_prompt_cache and len(system_msg) >= 4000:
+                    system_content = [
+                        {
+                            "type": "text",
+                            "text": system_msg,
+                            "cache_control": {"type": "ephemeral"}
+                        }
+                    ]
 
                 for message in formatted_messages:
                     role = message.get("role")
@@ -300,6 +361,9 @@ class ChatBot:
                 ) as stream:
                     async for chunk in stream:
                         if chunk.type == "message_start":
+                            # Log cache metrics from streaming message_start event
+                            if hasattr(chunk, 'message') and hasattr(chunk.message, 'usage'):
+                                self._log_cache_metrics(chunk.message.usage)
                             continue
                         elif chunk.type == "message_delta":
                             # Extract finish_reason from message delta
