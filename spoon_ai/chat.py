@@ -5,12 +5,12 @@ import json
 
 from spoon_ai.schema import Message, LLMResponse, ToolCall
 from spoon_ai.utils.config_manager import ConfigManager
+from spoon_ai.llm.factory import LLMFactory
 
-from openai import AsyncOpenAI
-from anthropic import AsyncAnthropic
-from httpx import AsyncClient
+# Import providers to register them
+import spoon_ai.llm.providers
+
 from pydantic import BaseModel, Field
-from tenacity import retry, stop_after_attempt, wait_random_exponential
 import asyncio
 
 logger = getLogger(__name__)
@@ -43,393 +43,221 @@ def to_dict(message: Message) -> dict:
     return messages
 
 class ChatBot:
-    def __init__(self, model_name: str = None, llm_config: dict = None, llm_provider: str = None, api_key: str = None, base_url: str = None, enable_prompt_cache: bool = True):
-        # Initialize configuration manager
-        config_manager = ConfigManager()
+    """Simplified ChatBot class using LLMFactory for provider management"""
+    
+    def __init__(self, model_name: str = None, llm_config: dict = None, llm_provider: str = None, 
+                 api_key: str = None, base_url: str = None, enable_prompt_cache: bool = True):
+        """Initialize ChatBot with factory-based provider selection
         
-        # Configure prompt caching
-        self.enable_prompt_cache = enable_prompt_cache
-        self.cache_metrics = {
+        Args:
+            model_name: Model name override
+            llm_config: Legacy parameter (ignored, kept for compatibility)
+            llm_provider: Provider name (openai, anthropic, deepseek, gemini)
+            api_key: API key override
+            base_url: Base URL override
+            enable_prompt_cache: Enable prompt caching (handled by providers)
+        """
+        # Initialize configuration manager
+        self.config_manager = ConfigManager()
+        
+        # Initialize memory system
+        self.memory = Memory()
+        
+        # Determine provider using existing ConfigManager logic
+        self.llm_provider = llm_provider or self.config_manager.get_llm_provider()
+        
+        # If still no provider, use the same fallback logic as before
+        if not self.llm_provider:
+            self.llm_provider = self._determine_provider_fallback()
+        
+        # Create LLM instance using factory
+        try:
+            self.llm = LLMFactory.create(self.llm_provider)
+        except Exception as e:
+            logger.error(f"Failed to create LLM provider '{self.llm_provider}': {str(e)}")
+            raise ValueError(f"Failed to initialize LLM provider '{self.llm_provider}': {str(e)}")
+        
+        # Store configuration for backward compatibility
+        self.model_name = model_name or self.llm.config.model
+        self.api_key = api_key  # Stored but not used (providers handle this)
+        self.base_url = base_url  # Stored but not used (providers handle this)
+        self.enable_prompt_cache = enable_prompt_cache  # Stored but handled by providers
+        self.llm_config = llm_config  # Legacy parameter
+        
+        # Store initial cache metrics for backward compatibility
+        self._local_cache_metrics = {
             "cache_creation_input_tokens": 0,
             "cache_read_input_tokens": 0,
             "total_input_tokens": 0
         }
-
-        # Use parameters provided by user first, then fall back to config, then environment
-        self.model_name = model_name or config_manager.get_model_name()
-        self.llm_provider = llm_provider or config_manager.get_llm_provider()
-        self.base_url = base_url or config_manager.get_base_url() or os.getenv("BASE_URL")
-        self.api_key = api_key
-        self.llm_config = llm_config
-        self.output_index = 0
-
-        # If llm_provider is still not specified, determine it from config first, then environment variables
-        if self.llm_provider is None:
-            # Get configured providers from config.json (ignore environment variables)
-            config_data = config_manager._load_config()
-            configured_providers = []
-
-            # Only consider providers that are explicitly configured in config.json
-            api_keys = config_data.get("api_keys", {})
-
-            if "anthropic" in api_keys and not config_manager._is_placeholder_value(api_keys["anthropic"]):
-                configured_providers.append("anthropic")
-            if "openai" in api_keys and not config_manager._is_placeholder_value(api_keys["openai"]):
-                configured_providers.append("openai")
-            if "deepseek" in api_keys and not config_manager._is_placeholder_value(api_keys["deepseek"]):
-                configured_providers.append("deepseek")
-
-            # If config.json has explicit providers, only use those (ignore environment)
-            if configured_providers:
-                if "anthropic" in configured_providers:
-                    logger.info("Using Anthropic API from config")
-                    self.model_name = self.model_name or "claude-sonnet-4-20250514"
-                    self.llm_provider = "anthropic"
-                elif "openai" in configured_providers:
-                    logger.info("Using OpenAI API from config")
-                    self.model_name = self.model_name or "gpt-4.1"
-                    self.llm_provider = "openai"
-                elif "deepseek" in configured_providers:
-                    logger.info("Using DeepSeek API from config")
-                    self.model_name = self.model_name or "deepseek-chat"
-                    self.llm_provider = "openai"  # DeepSeek uses OpenAI-compatible API
-            else:
-                # Fallback to environment variables only if no config providers
-                if os.getenv("ANTHROPIC_API_KEY"):
-                    logger.info("Using Anthropic API from environment")
-                    self.model_name = self.model_name or "claude-sonnet-4-20250514"
-                    self.llm_provider = "anthropic"
-                elif os.getenv("OPENAI_API_KEY"):
-                    logger.info("Using OpenAI API from environment")
-                    self.model_name = self.model_name or "gpt-4.1"
-                    self.llm_provider = "openai"
-                else:
-                    raise ValueError("No API key found in config or environment. Please configure API keys in config.json or set OPENAI_API_KEY/ANTHROPIC_API_KEY environment variables")
-
-        # Get API key from config if not provided
-        # When using a custom base_url (like OpenRouter), use the openai API key
-        # since these services typically use OpenAI-compatible APIs
-        if not self.api_key:
-            if self.base_url:
-                # For custom base URLs (like OpenRouter), use openai API key
-                self.api_key = config_manager.get_api_key("openai")
-            else:
-                # For native APIs, use the provider-specific API key
-                self.api_key = config_manager.get_api_key(self.llm_provider)
-
-        # Set default model names if still not specified
-        if not self.model_name:
-            if self.llm_provider == "openai":
-                self.model_name = "gpt-4.1"
-            elif self.llm_provider == "anthropic":
-                self.model_name = "claude-sonnet-4-20250514"
-
-        logger.info(f"Initializing ChatBot with provider: {self.llm_provider}, model: {self.model_name}, base_url: {self.base_url}")
-
-        # Determine API logic to use based on base_url and provider
-        # If base_url is specified (like OpenRouter), use OpenAI-compatible API regardless of model name
-        # Only use native Anthropic API when using official Anthropic endpoint
-        if self.base_url or self.llm_provider == "openai":
-            # Use OpenAI-compatible API (works for OpenAI, OpenRouter, and other compatible providers)
-            self.api_logic = "openai"
-            self.llm = AsyncOpenAI(
-                api_key=self.api_key or os.getenv("OPENAI_API_KEY"),
-                base_url=self.base_url
-            )
-        elif self.llm_provider == "anthropic" and not self.base_url:
-            # Use native Anthropic API only when no custom base_url is specified
-            self.api_logic = "anthropic"
-            http_client = AsyncClient(follow_redirects=True)
-            self.llm = AsyncAnthropic(
-                api_key=self.api_key or os.getenv("ANTHROPIC_API_KEY"),
-                http_client=http_client
-            )
+        
+        logger.info(f"Initialized ChatBot with provider: {self.llm_provider}, model: {self.model_name}")
+    
+    @property
+    def cache_metrics(self) -> dict:
+        """Get current cache performance metrics (dynamic property)"""
+        if hasattr(self.llm, 'cache_metrics'):
+            return self.llm.cache_metrics
+        return self._local_cache_metrics
+    
+    def _determine_provider_fallback(self) -> str:
+        """Fallback provider determination logic (matches original behavior)"""
+        # Get configured providers from config.json
+        config_data = self.config_manager._load_config()
+        configured_providers = []
+        api_keys = config_data.get("api_keys", {})
+        
+        if "anthropic" in api_keys and not self.config_manager._is_placeholder_value(api_keys["anthropic"]):
+            configured_providers.append("anthropic")
+        if "openai" in api_keys and not self.config_manager._is_placeholder_value(api_keys["openai"]):
+            configured_providers.append("openai")
+        if "deepseek" in api_keys and not self.config_manager._is_placeholder_value(api_keys["deepseek"]):
+            configured_providers.append("deepseek")
+        if "gemini" in api_keys and not self.config_manager._is_placeholder_value(api_keys["gemini"]):
+            configured_providers.append("gemini")
+        
+        # If config.json has explicit providers, use those
+        if configured_providers:
+            if "anthropic" in configured_providers:
+                logger.info("Using Anthropic API from config")
+                return "anthropic"
+            elif "openai" in configured_providers:
+                logger.info("Using OpenAI API from config")
+                return "openai"
+            elif "deepseek" in configured_providers:
+                logger.info("Using DeepSeek API from config")
+                return "deepseek"
+            elif "gemini" in configured_providers:
+                logger.info("Using Gemini API from config")
+                return "gemini"
         else:
-            raise ValueError(f"Invalid LLM provider: {llm_provider}")
-
+            # Fallback to environment variables
+            if os.getenv("ANTHROPIC_API_KEY"):
+                logger.info("Using Anthropic API from environment")
+                return "anthropic"
+            elif os.getenv("OPENAI_API_KEY"):
+                logger.info("Using OpenAI API from environment")
+                return "openai"
+            elif os.getenv("DEEPSEEK_API_KEY"):
+                logger.info("Using DeepSeek API from environment")
+                return "deepseek"
+            elif os.getenv("GEMINI_API_KEY") or os.getenv("GOOGLE_API_KEY"):
+                logger.info("Using Gemini API from environment")
+                return "gemini"
+            else:
+                raise ValueError("No API key found in config or environment. Please configure API keys in config.json or set API key environment variables")
+    
     def _log_cache_metrics(self, usage_data) -> None:
-        """Log cache metrics from Anthropic API response usage data"""
-        if self.llm_provider == "anthropic" and self.enable_prompt_cache and usage_data:
-            if hasattr(usage_data, 'cache_creation_input_tokens') and usage_data.cache_creation_input_tokens:
-                self.cache_metrics["cache_creation_input_tokens"] += usage_data.cache_creation_input_tokens
-                logger.info(f"Cache creation tokens: {usage_data.cache_creation_input_tokens}")
-            if hasattr(usage_data, 'cache_read_input_tokens') and usage_data.cache_read_input_tokens:
-                self.cache_metrics["cache_read_input_tokens"] += usage_data.cache_read_input_tokens
-                logger.info(f"Cache read tokens: {usage_data.cache_read_input_tokens}")
-            if hasattr(usage_data, 'input_tokens') and usage_data.input_tokens:
-                self.cache_metrics["total_input_tokens"] += usage_data.input_tokens
-
+        """Log cache metrics - delegated to provider if available"""
+        if hasattr(self.llm, '_log_cache_metrics'):
+            self.llm._log_cache_metrics(usage_data)
+    
     def get_cache_metrics(self) -> dict:
         """Get current cache performance metrics"""
+        if hasattr(self.llm, 'get_cache_metrics'):
+            return self.llm.get_cache_metrics()
+        elif hasattr(self.llm, 'cache_metrics'):
+            return self.llm.cache_metrics.copy()
         return self.cache_metrics.copy()
 
-    async def ask(self, messages: List[Union[dict, Message]], system_msg: Optional[str] = None, output_queue: Optional[asyncio.Queue] = None) -> str:
-        formatted_messages = [] if system_msg is None else [{"role": "system", "content": system_msg}]
+    async def ask(self, messages: List[Union[dict, Message]], system_msg: Optional[str] = None, 
+                  output_queue: Optional[asyncio.Queue] = None) -> str:
+        """Simple chat request using factory provider
+        
+        Args:
+            messages: List of messages
+            system_msg: System message
+            output_queue: Output queue for streaming (if supported)
+            
+        Returns:
+            str: Response content
+        """
+        # Convert to Message objects
+        formatted_messages = []
         for message in messages:
             if isinstance(message, dict):
-                formatted_messages.append(message)
+                formatted_messages.append(Message(**message))
             elif isinstance(message, Message):
-                formatted_messages.append(to_dict(message))
+                formatted_messages.append(message)
             else:
                 raise ValueError(f"Invalid message type: {type(message)}")
+        
+        # Create system messages if provided
+        system_msgs = [Message(role="system", content=system_msg)] if system_msg else None
+        
+        # Use provider's chat method
+        response = await self.llm.chat(messages=formatted_messages, system_msgs=system_msgs)
+        
+        # Update memory
+        if system_msgs:
+            for msg in system_msgs:
+                self.memory.add_message(msg)
+        for msg in formatted_messages:
+            self.memory.add_message(msg)
+        self.memory.add_message(Message(role="assistant", content=response.content))
+        
+        return response.content or response.text or ""
 
-        if self.api_logic == "openai":
-            response = await self.llm.chat.completions.create(messages=formatted_messages, model=self.model_name, max_tokens=4096, temperature=0.3, stream=False)
-            return response.choices[0].message.content
-        elif self.api_logic == "anthropic":
-            # Format system message with cache control for Anthropic models if it's long enough
-            system_content = system_msg
-            # Use ~4000 chars to ensure we hit 1024 tokens (rough approximation: 1 token ≈ 4 chars)
-            if system_msg and self.llm_provider == "anthropic" and self.enable_prompt_cache and len(system_msg) >= 4000:
-                system_content = [
-                    {
-                        "type": "text",
-                        "text": system_msg,
-                        "cache_control": {"type": "ephemeral"}
-                    }
-                ]
-                logger.info(f"Applied cache_control to system message ({len(system_msg)} chars)")
+    async def ask_tool(self, messages: List[Union[dict, Message]], system_msg: Optional[str] = None, 
+                      tools: Optional[List[dict]] = None, tool_choice: Optional[str] = None, 
+                      output_queue: Optional[asyncio.Queue] = None, **kwargs) -> LLMResponse:
+        """Tool-enabled chat request using factory provider
+        
+        Args:
+            messages: List of messages
+            system_msg: System message
+            tools: Available tools
+            tool_choice: Tool choice mode (auto, none, required)
+            output_queue: Output queue for streaming (if supported)
+            **kwargs: Additional parameters
             
-            response = await self.llm.messages.create(
-                model=self.model_name,
-                max_tokens=4096,
-                temperature=0.3,
-                system=system_content,
-                messages=[m for m in formatted_messages if m.get("role") != "system"]
-            )
-            # Log cache metrics for non-streaming response
-            if hasattr(response, 'usage'):
-                self._log_cache_metrics(response.usage)
-            return response.content[0].text
-
-    # @retry(stop=stop_after_attempt(3), wait=wait_random_exponential(min=1, max=60))
-    async def ask_tool(self,messages: List[Union[dict, Message]], system_msg: Optional[str] = None, tools: Optional[List[dict]] = None, tool_choice: Optional[str] = None, output_queue: Optional[asyncio.Queue] = None, **kwargs):
+        Returns:
+            LLMResponse: Structured response with content, tool_calls, etc.
+        """
         if tool_choice not in ["auto", "none", "required"]:
             tool_choice = "auto"
-
-        formatted_messages = [] if system_msg is None else [{"role": "system", "content": system_msg}]
+        
+        # Convert to Message objects
+        formatted_messages = []
         for message in messages:
             if isinstance(message, dict):
-                formatted_messages.append(message)
+                formatted_messages.append(Message(**message))
             elif isinstance(message, Message):
-                formatted_messages.append(to_dict(message))
+                formatted_messages.append(message)
             else:
                 raise ValueError(f"Invalid message type: {type(message)}")
-
+        
+        # Create system messages if provided
+        system_msgs = [Message(role="system", content=system_msg)] if system_msg else None
+        
         try:
-            if self.api_logic == "openai":
-                response = await self.llm.chat.completions.create(
-                    messages=formatted_messages,
-                    model=self.model_name,
-                    max_tokens=4096,
-                    temperature=0.3,
-                    stream=False,
-                    tools=tools,
-                    tool_choice=tool_choice,
-                    **kwargs
-                )
-
-                # Extract message and finish_reason from OpenAI response
-                message = response.choices[0].message
-                finish_reason = response.choices[0].finish_reason
-
-                # Convert OpenAI tool calls to our ToolCall format
-                tool_calls = []
-                if message.tool_calls:
-                    from spoon_ai.schema import Function
-                    for tool_call in message.tool_calls:
-                        tool_calls.append(ToolCall(
-                            id=tool_call.id,
-                            type=tool_call.type,
-                            function=Function(
-                                name=tool_call.function.name,
-                                arguments=tool_call.function.arguments
-                            )
-                        ))
-
-                # Map OpenAI finish reasons to standardized values
-                standardized_finish_reason = finish_reason
-                if finish_reason == "stop":
-                    standardized_finish_reason = "stop"
-                elif finish_reason == "length":
-                    standardized_finish_reason = "length"
-                elif finish_reason == "tool_calls":
-                    standardized_finish_reason = "tool_calls"
-                elif finish_reason == "content_filter":
-                    standardized_finish_reason = "content_filter"
-
-                # Return consistent LLMResponse object
-                return LLMResponse(
-                    content=message.content or "",
-                    tool_calls=tool_calls,
-                    finish_reason=standardized_finish_reason,
-                    native_finish_reason=finish_reason
-                )
-            elif self.api_logic == "anthropic":
-                def to_anthropic_tools(tools: List[dict]) -> List[dict]:
-                    anthropic_tools = []
-                    for tool in tools:
-                        anthropic_tool = {
-                            "name": tool["function"]["name"], 
-                            "description": tool["function"]["description"], 
-                            "input_schema": tool["function"]["parameters"]
-                        }
-                        # Add cache control for Anthropic models if tools are substantial
-                        if self.llm_provider == "anthropic" and self.enable_prompt_cache and len(tools) > 1:
-                            anthropic_tool["cache_control"] = {"type": "ephemeral"}
-                        anthropic_tools.append(anthropic_tool)
-                    return anthropic_tools
-
-                # Convert message format to Anthropic format
-                anthropic_messages = []
-                
-                # Format system message with cache control for Anthropic models if it's long enough
-                system_content = system_msg or ""
-                # Use ~4000 chars to ensure we hit 1024 tokens (rough approximation: 1 token ≈ 4 chars)
-                if system_msg and self.llm_provider == "anthropic" and self.enable_prompt_cache and len(system_msg) >= 4000:
-                    system_content = [
-                        {
-                            "type": "text",
-                            "text": system_msg,
-                            "cache_control": {"type": "ephemeral"}
-                        }
-                    ]
-
-                for message in formatted_messages:
-                    role = message.get("role")
-
-                    # Anthropic only supports user and assistant roles
-                    if role == "system":
-                        # System messages are handled above, skip here
-                        continue
-                    elif role == "tool":
-                        # Tool messages are converted to user messages, content contains tool_result
-                        anthropic_messages.append({
-                            "role": "user",
-                            "content": [{
-                                "type": "tool_result",
-                                "tool_use_id": message.get("tool_call_id"),
-                                "content": message.get("content")
-                            }]
-                        })
-                    elif role == "assistant":
-                        content = None
-                        if message.get("tool_calls"):
-                            content = []
-                            for tool_call in message.get("tool_calls", []):
-                                tool_fn = tool_call.get("function", {})
-                                try:
-                                    arguments = json.loads(tool_fn.get("arguments", "{}"))
-                                except:
-                                    arguments = {}
-
-                                content.append({
-                                    "type": "tool_use",
-                                    "id": tool_call.get("id"),
-                                    "name": tool_fn.get("name"),
-                                    "input": arguments
-                                })
-                        else:
-                            content = message.get("content")
-
-                        anthropic_messages.append({
-                            "role": "assistant",
-                            "content": content
-                        })
-                    elif role == "user":
-                        anthropic_messages.append({
-                            "role": "user",
-                            "content": message.get("content")
-                        })
-
-                content = ""
-                buffer = ""
-                buffer_type = ""
-                current_tool = None
-                tool_calls = []
-                finish_reason = None
-                native_finish_reason = None
-
-                async with self.llm.messages.stream(
-                    model=self.model_name,
-                    max_tokens=4096,
-                    temperature=0.3,
-                    system=system_content,
-                    messages=anthropic_messages,
-                    tools=to_anthropic_tools(tools),
-                    **kwargs
-                ) as stream:
-                    async for chunk in stream:
-                        if chunk.type == "message_start":
-                            # Log cache metrics from streaming message_start event
-                            if hasattr(chunk, 'message') and hasattr(chunk.message, 'usage'):
-                                self._log_cache_metrics(chunk.message.usage)
-                            continue
-                        elif chunk.type == "message_delta":
-                            # Extract finish_reason from message delta
-                            if hasattr(chunk, 'delta') and hasattr(chunk.delta, 'stop_reason'):
-                                finish_reason = chunk.delta.stop_reason
-                                native_finish_reason = chunk.delta.stop_reason
-                            continue
-                        elif chunk.type == "message_stop":
-                            # Extract finish_reason from message stop
-                            if hasattr(chunk, 'message') and hasattr(chunk.message, 'stop_reason'):
-                                finish_reason = chunk.message.stop_reason
-                                native_finish_reason = chunk.message.stop_reason
-                            continue
-                        elif chunk.type in ["text", "input_json"]:
-                            continue
-                        elif chunk.type == "content_block_start":
-                            buffer_type = chunk.content_block.type
-                            if output_queue:
-                                    output_queue.put_nowait({"type": "start", "content_block": chunk.content_block.model_dump(), "index": self.output_index})
-                            if buffer_type == "tool_use":
-                                current_tool = {
-                                    "id": chunk.content_block.id,
-                                    "function": {
-                                        "name": chunk.content_block.name,
-                                        "arguments": {}
-                                    }
-                                }
-
-                                continue
-                        elif chunk.type == "content_block_delta" and chunk.delta.type == "text_delta":
-                            buffer += chunk.delta.text
-                            if output_queue:
-                                output_queue.put_nowait({"type": "text_delta", "delta": chunk.delta.text, "index": self.output_index})
-                            continue
-                        elif chunk.type == "content_block_delta" and chunk.delta.type == "input_json_delta":
-                            buffer += chunk.delta.partial_json
-                            if output_queue:
-                                output_queue.put_nowait({"type": "input_json_delta", "delta": chunk.delta.partial_json, "index": self.output_index})
-
-                        elif chunk.type == "content_block_stop":
-                            content += buffer
-                            if buffer_type == "tool_use":
-                                current_tool["function"]["arguments"] = buffer
-                                current_tool = ToolCall(**current_tool)
-                                tool_calls.append(current_tool)
-                            buffer = ""
-                            buffer_type = ""
-                            current_tool = None
-                            if output_queue:
-                                output_queue.put_nowait({"type": "stop", "content_block": chunk.content_block.model_dump(), "index": self.output_index})
-                            self.output_index += 1
-
-                # Map Anthropic stop reasons to standard finish reasons
-                if finish_reason == "end_turn":
-                    finish_reason = "stop"
-                elif finish_reason == "max_tokens":
-                    finish_reason = "length"
-                elif finish_reason == "tool_use":
-                    finish_reason = "tool_calls"
-
-                return LLMResponse(
-                    content=content,
-                    tool_calls=tool_calls,
-                    finish_reason=finish_reason,
-                    native_finish_reason=native_finish_reason
-                )
+            # Use provider's chat_with_tools method
+            response = await self.llm.chat_with_tools(
+                messages=formatted_messages,
+                system_msgs=system_msgs,
+                tools=tools,
+                tool_choice=tool_choice,
+                output_queue=output_queue,
+                **kwargs
+            )
+            
+            # Update memory
+            if system_msgs:
+                for msg in system_msgs:
+                    self.memory.add_message(msg)
+            for msg in formatted_messages:
+                self.memory.add_message(msg)
+            
+            # Add assistant response to memory
+            assistant_message = Message(
+                role="assistant", 
+                content=response.content,
+                tool_calls=response.tool_calls
+            )
+            self.memory.add_message(assistant_message)
+            
+            return response
+            
         except Exception as e:
             logger.error(f"Error during tool call: {e}")
             raise e

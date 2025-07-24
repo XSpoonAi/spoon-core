@@ -6,51 +6,64 @@ from typing import Any, Dict, List, Literal, Optional, Union
 
 from google import genai
 from google.genai import types
-from pydantic import Field
 import logging
 
-from spoon_ai.schema import Message
-from spoon_ai.llm.base import LLMBase, LLMConfig, LLMResponse
+from spoon_ai.schema import Message, LLMConfig, LLMResponse
+from spoon_ai.llm.base import LLMBase
 from spoon_ai.llm.factory import LLMFactory
-from logging import getLogger
-logger = getLogger(__name__)
+from spoon_ai.utils.config_manager import ConfigManager
 
 logger = logging.getLogger(__name__)
 
 class GeminiConfig(LLMConfig):
     """Gemini Configuration"""
     
-    model: str = "gemini-pro"
+    model: str = "gemini-2.5-pro"
     api_key: str = ""
 
 
 @LLMFactory.register("gemini")
 class GeminiProvider(LLMBase):
-    """Gemini Provider Implementation"""
+    """Gemini Provider Implementation with ConfigManager integration"""
     
-    def __init__(self, config_path: str = "config/config.toml", config_name: str = "chitchat"):
+    def __init__(self, config_path: str = "config.json", config_name: str = "llm"):
         """Initialize Gemini Provider
         
         Args:
             config_path: Configuration file path
             config_name: Configuration name
         """
-        super().__init__(config_path, config_name)
+        # Use ConfigManager for all configuration (no TOML)
+        self.config_manager = ConfigManager()
+        
+        # Load configuration using ConfigManager instead of TOML
+        self.config = self._load_config_from_json()
+        
+        # Get API key with config.json -> environment fallback
+        api_key = self.config_manager.get_api_key("gemini") or self.config_manager.get_api_key("google") or os.getenv("GEMINI_API_KEY") or os.getenv("GOOGLE_API_KEY")
+        if not api_key:
+            raise ValueError("Gemini API key not found in config.json or GEMINI_API_KEY/GOOGLE_API_KEY environment variables")
+        
         # Initialize Gemini API client
-        self.client = genai.Client(api_key=self.config.api_key)
+        self.client = genai.Client(api_key=api_key)
+    
+    def _load_config_from_json(self) -> GeminiConfig:
+        """Load configuration from config.json via ConfigManager"""
+        # Get model from config.json or use default
+        model_name = self.config_manager.get("model_name") or "gemini-2.5-pro"
+        
+        return GeminiConfig(
+            model=model_name,
+            api_key="",  # API key handled separately
+            max_tokens=4096,
+            temperature=0.3
+        )
     
     def _load_config(self, config_path: str, config_name: str) -> GeminiConfig:
-        """Load configuration
-        
-        Args:
-            config_path: Configuration file path
-            config_name: Configuration name
-            
-        Returns:
-            GeminiConfig: Gemini configuration
-        """
-        config = super()._load_config(config_path, config_name)
-        return GeminiConfig(**config.model_dump())
+        """Load Gemini-specific configuration (for compatibility only)"""
+        # This method is for compatibility with LLMBase interface
+        # We use _load_config_from_json() instead in the constructor
+        return self._load_config_from_json()
     
     async def chat(
         self,
@@ -70,10 +83,6 @@ class GeminiProvider(LLMBase):
         Returns:
             LLMResponse: LLM response
         """
-
-        
-        for msg in messages:
-            role = msg.role if hasattr(msg, 'role') else 'unknown'
         
         # Get the last user message
         user_message = ""
@@ -139,54 +148,30 @@ class GeminiProvider(LLMBase):
                 generate_config.response_schema = schema
                 generate_config.response_mime_type = 'application/json'  # Set MIME type to JSON
             
-            # Send request
+            # Send request - use non-streaming for basic chat
             logger.debug(f"Gemini request model: {self.config.model}")
 
-            content = ""
-            buffer = ""
-            is_content = False
-            stream = self.client.models.generate_content_stream(
+            response = self.client.models.generate_content(
                 model=self.config.model,
                 contents=contents,
                 config=generate_config
             )
-
-            for part_response in stream:
-                chunk = part_response.candidates[0].content.parts[0].text
-                buffer += chunk
-                if is_content:
-                    try:
-                        json.loads(buffer)
-                        content = json.loads(buffer)["response"]
-                        # Compare buffer and content already put in queue, don't include any JSON boundary symbols in final output
-                        await self.output_queue.put(chunk.strip("}").strip().strip('"'))
-                    except json.JSONDecodeError as e:
-
-                        await self.output_queue.put(chunk)
-                        continue
-                    except Exception as e:
-                        
-                        logger.error(f"Gemini API request parsing failed: {str(e)}")
-                        logger.error(f"Current buffer: {buffer}")
-                        buffer = ""
-                        is_content = False
-                elif '"response":' in buffer:
-                    # Truncate from here, save the following content to content
-                    try:
-                        parts = buffer.split('"response":', 1)
-                        if len(parts) > 1:
-                            chunk = parts[1].strip()
-                            is_content = True
-                            await self.output_queue.put(chunk.strip("}").strip().strip('"'))
-                            
-                    except Exception as e:
-                        logger.error(f"Gemini API request parsing failed: {str(e)}")
-                        logger.error(f"Current buffer: {buffer}")
-                        buffer = ""
-                        is_content = False
-            await self.output_queue.put(None)
-            self.task_done.set()
-            return LLMResponse(content=content, text=buffer)
+            
+            # Parse response content
+            content = ""
+            if hasattr(response, "candidates") and response.candidates:
+                candidate = response.candidates[0]
+                if hasattr(candidate, "content") and candidate.content:
+                    # Iterate through all parts
+                    for part in candidate.content.parts:
+                        # Check if there is text content
+                        if hasattr(part, "text") and part.text:
+                            if content:
+                                content += "\n" + part.text
+                            else:
+                                content = part.text
+            
+            return LLMResponse(content=content, text=content)
         except Exception as e:
             error_msg = f"Gemini API request failed: {str(e)}"
             logger.error(error_msg)
