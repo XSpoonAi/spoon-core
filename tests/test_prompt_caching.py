@@ -68,12 +68,20 @@ async def _run_caching_test(chatbot, architecture_name):
     # Test with a long system message (over 4000 characters to ensure 1024+ tokens for caching)
     long_system_msg = """You are an expert AI assistant with deep knowledge across multiple domains including science, technology, history, literature, and philosophy. Your responses should be accurate, well-reasoned, and helpful. You should provide detailed explanations when appropriate and cite relevant information. Always strive to be informative while maintaining clarity and accessibility in your communication. When dealing with complex topics, break them down into digestible parts and use examples where helpful. Your goal is to assist users in understanding complex concepts and solving problems effectively while maintaining accuracy and depth in your responses. You have access to vast knowledge spanning mathematics, physics, chemistry, biology, computer science, engineering, economics, psychology, sociology, political science, linguistics, anthropology, archaeology, geography, environmental science, and many other fields. When answering questions, you should draw upon this knowledge to provide comprehensive and nuanced responses that consider multiple perspectives and potential implications. You should also be aware of the limitations of your knowledge and acknowledge when information may be uncertain or when you should recommend consulting additional sources.""" * 5
     
+<<<<<<< HEAD
     print(f"[{architecture_name}] System message length: {len(long_system_msg)} characters")
     print(f"[{architecture_name}] Caching enabled: {getattr(chatbot, 'enable_prompt_cache', 'N/A')}")
     print(f"[{architecture_name}] Provider: {getattr(chatbot, 'llm_provider', 'N/A')}")
     print(f"[{architecture_name}] API Logic: {getattr(chatbot, 'api_logic', 'N/A')}")
     print(f"[{architecture_name}] Base URL: {getattr(chatbot, 'base_url', 'N/A')}")
     print(f"[{architecture_name}] Uses LLM Manager: {getattr(chatbot, 'use_llm_manager', False)}")
+=======
+    print(f"System message length: {len(long_system_msg)} characters")
+    print(f"Caching enabled: {chatbot.enable_prompt_cache}")
+    print(f"Provider: {chatbot.llm_provider}")
+    print(f"Model: {chatbot.model_name}")
+    print(f"Base URL: {chatbot.base_url}")
+>>>>>>> 777212d (Refactor: Integrate ChatBot with LLMFactory for modular provider architecture)
     
     # Test with ask() method first (system message caching)
     print(f"\n[{architecture_name}] === First request with ask() (system cache creation) ===")
