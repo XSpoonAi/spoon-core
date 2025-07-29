@@ -3,7 +3,8 @@ from typing import Dict, Optional, Type
 
 import toml
 
-from spoon_ai.llm.base import LLMBase, LLMConfig
+from spoon_ai.llm.base import LLMBase
+from spoon_ai.schema import LLMConfig
 from logging import getLogger
 logger = getLogger(__name__)
 

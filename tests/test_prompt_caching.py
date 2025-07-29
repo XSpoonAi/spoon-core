@@ -42,7 +42,7 @@ async def test_prompt_caching():
     print(f"System message length: {len(long_system_msg)} characters")
     print(f"Caching enabled: {chatbot.enable_prompt_cache}")
     print(f"Provider: {chatbot.llm_provider}")
-    print(f"API Logic: {chatbot.api_logic}")
+    print(f"Model: {chatbot.model_name}")
     print(f"Base URL: {chatbot.base_url}")
     
     # Test with ask() method first (system message caching)

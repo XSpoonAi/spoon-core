@@ -8,30 +8,9 @@ from pydantic import BaseModel, Field
 
 from logging import getLogger
 
-from spoon_ai.schema import Message
+from spoon_ai.schema import Message, LLMConfig, LLMResponse
 logger = getLogger(__name__)
 
-
-
-class LLMConfig(BaseModel):
-    """Base class for LLM configuration"""
-    
-    model: str = ""
-    api_key: str = ""
-    base_url: Optional[str] = None
-    api_type: Optional[str] = None
-    api_version: Optional[str] = None
-    max_tokens: int = 4096
-    temperature: float = 0.3
-
-
-class LLMResponse(BaseModel):
-    """Base class for LLM response"""
-    
-    content: str
-    text: str = ""  # Original text response
-    tool_calls: List[Any] = Field(default_factory=list)
-    image_paths: List[Dict[str, str]] = Field(default_factory=list)
 
 
 class LLMBase(ABC):

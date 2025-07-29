@@ -72,6 +72,8 @@ dependencies = [ # Complete dependencies from requirements.txt for out-of-the-bo
     "botocore==1.35.99",
     "fastmcp==2.2.5",
     "googleapis-common-protos",
+    "toml>=0.10.2",
+    "pytest>=8.4.1",
 ]
 
 [project.urls]

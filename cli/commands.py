@@ -259,7 +259,11 @@ class SpoonAICLI:
         ))
 
     def add_command(self, command: SpoonCommand):
+        # Store primary command
         self.commands[command.name] = command
+        # Store all aliases pointing to the same command
+        for alias in command.aliases:
+            self.commands[alias] = command
 
     def _help(self, input_list: List[str]):
         if len(input_list) <= 1:
@@ -792,8 +796,14 @@ class SpoonAICLI:
             'warning': 'ansiyellow',
         })
 
+        # Collect all command names and aliases
+        all_names = set()
+        for cmd in self.commands.values():
+            all_names.add(cmd.name)
+            all_names.update(cmd.aliases)
+
         self.completer = WordCompleter(
-            list(self.commands.keys()),
+            list(all_names),
             ignore_case=True,
         )
         history_file = self.config_dir / "history.txt"
