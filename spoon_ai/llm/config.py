@@ -288,6 +288,14 @@ class ConfigurationManager:
                 'model': 'gpt-4.1',
                 'base_url': 'https://api.openai.com/v1'
             },
+            'openrouter': {
+                'model': 'openai/gpt-4.1',
+                'base_url': 'https://openrouter.ai/api/v1'
+            },
+            'deepseek': {
+                'model': 'deepseek-chat',
+                'base_url': 'https://api.deepseek.com/v1'
+            },
             'anthropic': {
                 'model': 'claude-sonnet-4-20250514',
                 'base_url': 'https://api.anthropic.com'
@@ -326,11 +334,20 @@ class ConfigurationManager:
             str: Default provider name
         """
         # 1. Check explicit configuration file setting
-        if self._config_cache and 'llm' in self._config_cache:
-            provider = self._config_cache['llm'].get('provider')
-            if provider:
-                logger.info(f"Using provider from config file: {provider}")
-                return provider
+        if self._config_cache:
+            # Check llm_settings.default_provider first (new format)
+            if 'llm_settings' in self._config_cache:
+                provider = self._config_cache['llm_settings'].get('default_provider')
+                if provider:
+                    logger.info(f"Using provider from config file llm_settings: {provider}")
+                    return provider
+            
+            # Check legacy llm.provider format
+            if 'llm' in self._config_cache:
+                provider = self._config_cache['llm'].get('provider')
+                if provider:
+                    logger.info(f"Using provider from config file llm: {provider}")
+                    return provider
         
         # 2. Check environment variable for explicit preference
         env_provider = os.getenv('DEFAULT_LLM_PROVIDER')
@@ -339,8 +356,8 @@ class ConfigurationManager:
             return env_provider
         
         # 3. Intelligent selection based on available API keys and quality
-        # Priority order: anthropic (best quality) -> openai -> gemini
-        provider_priority = ['anthropic', 'openai', 'gemini']
+        # Priority order: anthropic (best quality) -> openai -> openrouter -> deepseek -> gemini
+        provider_priority = ['anthropic', 'openai', 'openrouter', 'deepseek', 'gemini']
         available_providers = []
         
         for provider in provider_priority:
@@ -401,7 +418,7 @@ class ConfigurationManager:
                 providers.update(self._config_cache['api_keys'].keys())
         
         # From environment variables
-        for provider in ['openai', 'anthropic', 'gemini']:
+        for provider in ['openai', 'openrouter', 'deepseek', 'anthropic', 'gemini']:
             if os.getenv(f'{provider.upper()}_API_KEY'):
                 providers.add(provider)
         
@@ -414,7 +431,7 @@ class ConfigurationManager:
             List[str]: List of available provider names in priority order
         """
         # Define priority order based on quality and capabilities
-        priority_order = ['anthropic', 'openai', 'gemini']
+        priority_order = ['anthropic', 'openai', 'openrouter', 'deepseek', 'gemini']
         available_providers = []
         
         for provider in priority_order:
@@ -435,7 +452,7 @@ class ConfigurationManager:
         """
         provider_info = {}
         
-        for provider in ['anthropic', 'openai', 'gemini']:
+        for provider in ['anthropic', 'openai', 'openrouter', 'deepseek', 'gemini']:
             try:
                 config = self._get_provider_config_dict(provider)
                 has_api_key = bool(config.get('api_key'))

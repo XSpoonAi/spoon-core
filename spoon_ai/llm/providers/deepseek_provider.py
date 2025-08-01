@@ -1,5 +1,6 @@
 """
-OpenAI Provider implementation for the unified LLM interface.
+DeepSeek Provider implementation for the unified LLM interface.
+DeepSeek provides access to their models through an OpenAI-compatible API.
 """
 
 from typing import Dict, Any
@@ -12,25 +13,25 @@ from .openai_compatible_provider import OpenAICompatibleProvider
 logger = getLogger(__name__)
 
 
-@register_provider("openai", [
+@register_provider("deepseek", [
     ProviderCapability.CHAT,
     ProviderCapability.COMPLETION,
     ProviderCapability.TOOLS,
     ProviderCapability.STREAMING
 ])
-class OpenAIProvider(OpenAICompatibleProvider):
-    """OpenAI provider implementation."""
+class DeepSeekProvider(OpenAICompatibleProvider):
+    """DeepSeek provider implementation using OpenAI-compatible API."""
     
     def __init__(self):
         super().__init__()
-        self.provider_name = "openai"
-        self.default_base_url = "https://api.openai.com/v1"
-        self.default_model = "gpt-4.1"
+        self.provider_name = "deepseek"
+        self.default_base_url = "https://api.deepseek.com/v1"
+        self.default_model = "deepseek-reasoner"
     
     def get_metadata(self) -> ProviderMetadata:
-        """Get OpenAI provider metadata."""
+        """Get DeepSeek provider metadata."""
         return ProviderMetadata(
-            name="openai",
+            name="deepseek",
             version="1.0.0",
             capabilities=[
                 ProviderCapability.CHAT,
@@ -38,10 +39,10 @@ class OpenAIProvider(OpenAICompatibleProvider):
                 ProviderCapability.TOOLS,
                 ProviderCapability.STREAMING
             ],
-            max_tokens=128000,  # GPT-4 context limit
+            max_tokens=64000,  # DeepSeek context limit
             supports_system_messages=True,
             rate_limits={
-                "requests_per_minute": 3500,
-                "tokens_per_minute": 90000
+                "requests_per_minute": 60,   # DeepSeek rate limits
+                "tokens_per_minute": 1000000  # DeepSeek token limits
             }
         )

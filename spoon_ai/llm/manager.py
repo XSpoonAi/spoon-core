@@ -179,7 +179,13 @@ class LLMManager:
         """Initialize providers from configuration."""
         try:
             # Import providers to trigger registration
-            from .providers import OpenAIProvider, AnthropicProvider, GeminiProvider
+            from .providers import (
+                OpenAIProvider, 
+                OpenRouterProvider, 
+                DeepSeekProvider,
+                AnthropicProvider, 
+                GeminiProvider
+            )
             
             # Get configured providers
             configured_providers = self.config_manager.list_configured_providers()

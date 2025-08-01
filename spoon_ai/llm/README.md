@@ -11,18 +11,39 @@ This package provides a unified, extensible interface for working with different
 - **Error Handling**: Standardized error hierarchy with detailed context
 - **Fallback Support**: Automatic provider fallback and load balancing (via LLMManager)
 
+## Supported Providers
+
+The infrastructure supports the following LLM providers:
+
+### OpenAI-Compatible Providers
+- **OpenAI**: Direct access to OpenAI's GPT models
+- **OpenRouter**: Access to multiple models through OpenRouter's unified API
+- **DeepSeek**: Access to DeepSeek's models through their OpenAI-compatible API
+
+### Other Providers
+- **Anthropic**: Claude models with advanced reasoning capabilities
+- **Google Gemini**: Google's multimodal AI models
+
+All OpenAI-compatible providers share the same base implementation and support:
+- Chat completions
+- Streaming responses
+- Tool/function calling
+- System messages
+- Configurable parameters (temperature, max_tokens, etc.)
+
 ## Quick Start
 
 ### 1. Basic Provider Usage
 
 ```python
 from spoon_ai.llm import get_global_registry
+from spoon_ai.schema import Message
 
 # Get a provider (assumes it's already registered and configured)
 registry = get_global_registry()
 provider = registry.get_provider("openai", {
     "api_key": "your-api-key",
-    "model": "gpt-4.1"
+    "model": "gpt-4"
 })
 
 # Initialize and use
@@ -33,7 +54,59 @@ response = await provider.chat([
 print(response.content)
 ```
 
-### 2. Creating a Custom Provider
+### 2. Using OpenRouter
+
+```python
+# OpenRouter provides access to multiple models through one API
+provider = registry.get_provider("openrouter", {
+    "api_key": "your-openrouter-api-key",
+    "model": "openai/gpt-4",  # or "anthropic/claude-3", etc.
+    "http_referer": "https://your-app.com",
+    "x_title": "Your App Name"
+})
+```
+
+### 3. Using DeepSeek
+
+```python
+# DeepSeek's own models
+provider = registry.get_provider("deepseek", {
+    "api_key": "your-deepseek-api-key",
+    "model": "deepseek-chat"
+})
+```
+
+### 4. Creating a Custom OpenAI-Compatible Provider
+
+```python
+from spoon_ai.llm.providers.openai_compatible_provider import OpenAICompatibleProvider
+from spoon_ai.llm import register_provider, ProviderCapability
+
+@register_provider("custom_openai", [ProviderCapability.CHAT, ProviderCapability.COMPLETION])
+class CustomOpenAIProvider(OpenAICompatibleProvider):
+    def __init__(self):
+        super().__init__()
+        self.provider_name = "custom_openai"
+        self.default_base_url = "https://api.custom-provider.com/v1"
+        self.default_model = "custom-model"
+    
+    def get_additional_headers(self, config):
+        # Add any custom headers your provider needs
+        return {
+            "Custom-Header": config.get("custom_value", "default")
+        }
+    
+    def get_metadata(self):
+        return ProviderMetadata(
+            name="custom_openai",
+            version="1.0.0",
+            capabilities=[ProviderCapability.CHAT, ProviderCapability.COMPLETION],
+            max_tokens=8192,
+            supports_system_messages=True
+        )
+```
+
+### 5. Creating a Fully Custom Provider
 
 ```python
 from spoon_ai.llm import LLMProviderInterface, register_provider, ProviderCapability
@@ -57,7 +130,7 @@ class CustomProvider(LLMProviderInterface):
     # Implement other required methods...
 ```
 
-### 3. Configuration Management
+### 6. Configuration Management
 
 ```python
 from spoon_ai.llm import ConfigurationManager
@@ -73,7 +146,7 @@ print(f"Max tokens: {provider_config.max_tokens}")
 default = config_manager.get_default_provider()
 ```
 
-### 4. Monitoring and Debugging
+### 7. Monitoring and Debugging
 
 ```python
 from spoon_ai.llm import get_debug_logger, get_metrics_collector
@@ -128,7 +201,18 @@ Configuration can be loaded from:
      "providers": {
        "openai": {
          "api_key": "your-key",
-         "model": "gpt-4.1",
+         "model": "gpt-4",
+         "max_tokens": 4096
+       },
+       "openrouter": {
+         "api_key": "your-openrouter-key",
+         "model": "openai/gpt-3.5-turbo",
+         "http_referer": "https://your-app.com",
+         "x_title": "Your App Name"
+       },
+       "deepseek": {
+         "api_key": "your-deepseek-key",
+         "model": "deepseek-chat",
          "max_tokens": 4096
        }
      }
@@ -137,16 +221,44 @@ Configuration can be loaded from:
 
 2. **Environment variables**:
    ```bash
+   # OpenAI
    OPENAI_API_KEY=your-key
-   OPENAI_MODEL=gpt-4.1
+   OPENAI_MODEL=gpt-4
    OPENAI_MAX_TOKENS=4096
+   
+   # OpenRouter
+   OPENROUTER_API_KEY=your-openrouter-key
+   OPENROUTER_MODEL=openai/gpt-3.5-turbo
+   OPENROUTER_HTTP_REFERER=https://your-app.com
+   OPENROUTER_X_TITLE=Your App Name
+   
+   # DeepSeek
+   DEEPSEEK_API_KEY=your-deepseek-key
+   DEEPSEEK_MODEL=deepseek-chat
+   DEEPSEEK_MAX_TOKENS=4096
    ```
 
 3. **Direct configuration**:
    ```python
-   config = {
+   # OpenAI
+   openai_config = {
        "api_key": "your-key",
-       "model": "gpt-4.1",
+       "model": "gpt-4",
+       "max_tokens": 4096
+   }
+   
+   # OpenRouter
+   openrouter_config = {
+       "api_key": "your-openrouter-key",
+       "model": "openai/gpt-3.5-turbo",
+       "http_referer": "https://your-app.com",
+       "x_title": "Your App Name"
+   }
+   
+   # DeepSeek
+   deepseek_config = {
+       "api_key": "your-deepseek-key",
+       "model": "deepseek-chat",
        "max_tokens": 4096
    }
    ```
