@@ -1,0 +1,70 @@
+# Agent configuration file
+# Supports dynamic loading and management of agents through configuration files
+
+# Plugin directory configuration (optional)
+plugin_directories:
+  - "./plugins"
+  - "./custom_agents"
+
+# Agent configuration list
+agents:
+  # Tavily search agent - using SSE transport
+  - name: "tavily"
+    class: "examples.mcp.tavily_search_agent.TavilySearchAgent"
+    mcp_transport: "SSETransport"
+    endpoint: "http://localhost:8765/sse"
+    api_key: "TAVILY_API_KEY"
+    description: "Intelligent web search agent based on Tavily API"
+    max_steps: 5
+
+  # GitHub agent - using SSE transport
+  - name: "github"
+    class: "spoon_ai.agents.github_agent.GitHubAgent"
+    mcp_transport: "SSETransport"
+    endpoint: "http://localhost:8123/sse"
+    description: "GitHub integration agent supporting repository management and issue tracking"
+    max_steps: 10
+
+  # Standard conversation agent - no MCP transport
+  - name: "chat"
+    class: "spoon_ai.agents.enhanced_base.StandardAgent"
+    description: "Standard conversation agent providing basic conversation functionality"
+    system_prompt: "You are a helpful AI assistant that can answer various questions and provide assistance."
+    max_steps: 3
+
+  # ThirdWeb integration agent - using stdio transport
+  - name: "thirdweb"
+    class: "examples.mcp.SpoonThirdWebagent.SpoonThirdWebAgent"
+    transport_config:
+      type: "StdioTransport"
+      command: "npx"
+      args: ["-y", "thirdweb-mcp"]
+      env:
+        THIRDWEB_SECRET_KEY: "your-thirdweb-secret-key"
+    description: "ThirdWeb blockchain integration agent"
+    max_steps: 8
+
+  # Custom ReAct agent
+  - name: "react"
+    class: "spoon_ai.agents.spoon_react.SpoonReactAI"
+    description: "ReAct framework agent supporting reasoning and action loops"
+    system_prompt: "You are a ReAct agent capable of reasoning and taking actions to solve problems."
+    next_step_prompt: "Based on the current situation, consider what action to take next."
+    max_steps: 10
+
+# Global configuration (optional)
+global_config:
+  # Default LLM configuration
+  default_llm:
+    llm_provider: "openai"
+    model_name: "anthropic/claude-sonnet-4"
+    base_url: "https://openrouter.ai/api/v1"
+  
+  # Default agent settings
+  default_agent_settings:
+    max_steps: 5
+    
+  # Logging configuration
+  logging:
+    level: "INFO"
+    format: "%(asctime)s - %(name)s - %(levelname)s - %(message)s" 
