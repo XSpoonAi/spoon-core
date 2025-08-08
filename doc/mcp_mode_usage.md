@@ -1,292 +1,181 @@
-# Using Web3 Tools via MCP: Build, Connect, and Query with Custom Agents
+# MCP Mode Usage: Stdio & SSE Tool Integration in SpoonOS
 
-This guide introduces three integration modes for using Web3 tools with SpoonOS via the MCP protocol, along with code structure and example commands.
+This guide explains **how to configure and use MCP tools in SpoonOS**, focusing on the two main integration methods:
+**Stdio-based MCP tools** (recommended for most modern tools) and **SSE-based MCP tools** (for legacy/custom servers).
 
-## Mode 1: Built-in Agent Mode
+---
 
-In this mode, you encapsulate your custom tools into the MCP tool collection (such as creating a new mcp_thirdweb_collection, or directly changing the mcp_tools_collection.py file), and then call it through an Agent that inherits from SpoonReactAI and MCPClientMixin (such as SpoonThirdWebMCP). This mode is maintained by the platform Agent configuration and can be used directly by users.
+## 1. What is MCP?
 
-### Structural diagram
+**MCP (Model Context Protocol)** is a unified protocol for integrating external tools and services (like Tavily, Brave, GitHub, custom Web3 APIs) into SpoonOS agents.
+MCP tools can be provided by:
+- **Stdio tools**: Tools that communicate via standard input/output (Stdio), typically started as a subprocess by SpoonOS.
+- **SSE tools**: Tools running as local/remote SSE servers, communicating over HTTP.
 
-```markdown
-[User Prompt]
-↓
-[SpoonThirdWebMCP Agent] 🧠
-↓ calls
-[FastMCP over SSE]
-↓
-[GetBlocksFromThirdwebInsight / GetWalletTransactionsTool / etc.]
-↓
-[Thirdweb Insight API]
-```
+---
 
-### 📁 Examples Directory
+## 2. Recommended: Stdio MCP Tools
 
-The following directory contains runnable examples:
+### What are Stdio MCP Tools?
 
-```yaml
-examples/
-├── mcp/
-│   ├── SpoonThirdWebAgent.py
-│   └── mcp_thirdweb_collection.py
-```
+- **Stdio tools** are MCP tools that run as a subprocess and communicate with SpoonOS via stdin/stdout.
+- No need to run or configure any server manually.
+- Just declare the tool and its command in your agent's config, and SpoonOS will auto-start and manage the tool process.
 
-#### Step1. Install Dependencies
+### How to Use Stdio MCP Tools
 
-You have two ways to install the spoon-toolkits package:
+**Step 1: Add the tool to your agent config**
 
-###### Option A: Install from GitHub source (for development or latest changes):
-
-```bash
-git clone https://github.com/XSpoonAi/spoon-toolkit.git
-cd spoon-toolkit
-pip install -e .
-```
-
-###### Option B: From PyPI (recommended)
-
-```bash
-pip install spoon-toolkits
-
-```
-
-👉 Tip:
-
-Use Option 1 if you want to modify the toolkit source code or track the latest updates.
-
-#### Step2. Start the MCP Tool Server
-
-Sample: examples/mcp_thirdweb_collection.py
-
-```python
-from fastmcp import FastMCP
-import asyncio
-# from typing import Any, Dict, List, Optional
-
-# Import base tool classes and tool manager
-from spoon_ai.tools.base import BaseTool, ToolResult
-from spoon_ai.tools.tool_manager import ToolManager
-
-# Import all available tools
-from spoon_toolkits import (
-    GetContractEventsFromThirdwebInsight,
-    GetMultichainTransfersFromThirdwebInsight,
-    GetTransactionsTool,
-    GetContractTransactionsTool,
-    GetContractTransactionsBySignatureTool,
-    GetBlocksFromThirdwebInsight,
-    GetWalletTransactionsFromThirdwebInsight
-)
-
-mcp = FastMCP("SpoonAI MCP Tools")
-
-class MCPToolsCollection:
-    """Collection class that wraps existing tools as MCP tools"""
-
-    def __init__(self):
-        """Initialize MCP tools collection
-
-        Args:
-            name: Name of the MCP server
-        """
-        self.mcp = mcp
-        self._setup_tools()
-
-    def _setup_tools(self):
-        """Set up all available tools as MCP tools"""
-        # Create all tool instances
-        tools = [
-            GetContractEventsFromThirdwebInsight(),
-            GetMultichainTransfersFromThirdwebInsight(),
-            GetTransactionsTool(),
-            GetContractTransactionsTool(),
-            GetContractTransactionsBySignatureTool(),
-            GetBlocksFromThirdwebInsight(),
-            GetWalletTransactionsFromThirdwebInsight()
-        ]
-
-        # Create tool manager
-        self.tool_manager = ToolManager(tools)
-
-        # Create MCP wrapper for each tool
-        for tool in tools:
-            self.mcp.add_tool(tool.execute, name=tool.name, description=tool.description)
-
-    async def run(self, **kwargs):
-        """Start the MCP server
-
-        Args:
-            **kwargs: Parameters passed to FastMCP.run()
-        """
-        await self.mcp.run_async(transport="sse", port=8765, **kwargs)
-
-# Create default instance that can be imported directly
-mcp_tools = MCPToolsCollection()
-
-if __name__ == "__main__":
-    # Start MCP server when this script is run directly
-    asyncio.run(mcp_tools.run())
-```
-
-Before calling the agent, make sure the MCP service is running:
-
-```bash
-python mcp_thirdweb_collection.py
-```
-
-#### Step 3
-
-###### 3.1 Define Agent and connect to MCP
-
-```python
-from spoon_ai.agents.spoon_react import SpoonReactAI
-from spoon_ai.agents.mcp_client_mixin import MCPClientMixin
-from fastmcp.client.transports import SSETransport
-from spoon_ai.tools.tool_manager import ToolManager
-
-from pydantic import Field
-from spoon_ai.chat import ChatBot
-import os
-import asyncio
-
-
-class SpoonThirdWebAgent(SpoonReactAI, MCPClientMixin):
-    name: str = "SpoonThirdWebAgent"
-    description: str = (
-        "An AI assistant specialized in querying EVM blockchain data using the Thirdweb Insight API. "
-        "Supports retrieving smart contract events (e.g. Transfer), function call transactions, wallet activity, "
-        "recent cross-chain token transfers (especially USDT), block metadata, and contract-specific transaction logs. "
-        "Use this agent when the user asks about on-chain behavior, such as token transfers, contract usage, wallet history, or recent block/transaction activity."
-    )
-    system_prompt: str = """
-        You are ThirdwebInsightAgent, a blockchain data analyst assistant powered by Thirdweb Insight API.
-        You can fetch EVM contract events, transactions, token transfers, blocks, and wallet activity across multiple chains.
-
-        Use the appropriate tool when the user asks about:
-        - contract logs or Transfer events → use `get_contract_events_from_thirdweb_insight`
-        - USDT transfers across chains → use `get_multichain_transfers_from_thirdweb_insight`
-        - recent cross-chain transactions → use `get_transactions`
-        - a specific contract's transaction history → use `get_contract_transactions`
-        - contract function call history (e.g., swap, approve) → use `get_contract_transactions_by_signature`
-        - recent block info by chain → use `get_blocks_from_thirdweb_insight`
-        - wallet activity across chains → use `get_wallet_transactions_from_thirdweb_insight`
-
-        Always extract necessary parameters like:
-        - `contract_address` (if user mentions a token, e.g. USDT, WETH, use its address)
-        - `chain_id` (Ethereum = 1, Polygon = 137, etc.)
-        - `event_signature` (e.g., 'Transfer(address,address,uint256)')
-        - `limit` (default to 10 if unspecified)
-        - `client_id` can be pulled from environment variable or injected context
-
-        If something is unclear, ask for clarification. Otherwise, call the appropriate tool.
-    """
-
-    avaliable_tools: ToolManager = Field(default_factory=lambda: ToolManager([]))
-    def __init__(self, **kwargs):
-        super().__init__(**kwargs)
-        MCPClientMixin.__init__(self, mcp_transport=kwargs.get('mcp_transport', SSETransport("http://127.0.0.1:8765/sse")))
-```
-
-###### 3.2 User operation mode
-
-Get client_id from https://thirdweb.com/login
-
-```python
-async def main():
-    # Ensure necessary API keys are set
-    # Create an InfoAssistantAgent
-    info_agent = SpoonThirdWebAgent(llm=ChatBot(llm_provider="openai",model_name="anthropic/claude-sonnet-4", base_url="https://openrouter.ai/api/v1" ))
-
-    # Query standard ERC20 transfer events (Transfer)
-    info_agent.clear()
-    result = await info_agent.run("Get the last 10 Transfer events from the USDT contract on Ethereum using client ID xxxx.")
-    print(result)
-
-if __name__ == "__main__":
-    asyncio.run(main())
-```
-
-Run the agent with:
-
-```bash
-python SpoonThirdWebAgent.py
-```
-
-Expected Result:
-
-```bash
-[
+```json
 {
-"block_number": "19202222",
-"from": "0x...",
-"to": "0x...",
-"amount": "1000 USDT"
-},
-...
-]
+  "agents": {
+    "my_agent": {
+      "class": "SpoonReactMCP",
+      "tools": [
+        {
+          "name": "tavily_search",
+          "type": "mcp",
+          "mcp_server": {
+            "command": "npx",
+            "args": ["-y", "tavily-mcp"],
+            "transport": "stdio"
+          }
+        },
+        {
+          "name": "github_tools",
+          "type": "mcp",
+          "mcp_server": {
+            "command": "npx",
+            "args": ["-y", "@modelcontextprotocol/server-github"],
+            "transport": "stdio"
+          }
+        }
+      ]
+    }
+  }
+}
 ```
 
-## Mode 2: Community Agent Mode
+- `"transport": "stdio"` tells SpoonOS to use Stdio for communication.
+- SpoonOS will auto-start the process and manage its lifecycle.
 
-In this mode, you can reuse agents published by others in the community, without writing your own tool code. These agents are registered via GitHub using the MCP protocol, and called via mcp-proxy.
+**Step 2: Use the agent as normal**
+SpoonOS will handle all Stdio tool connections automatically.
 
-This is useful when:
+---
 
-You want to quickly try a public Agent from GitHub
+## 3. Advanced: SSE MCP Tools (Custom/Legacy)
 
-You don't want to define Tool, ToolManager, or custom logic
+### What are SSE Tools?
 
-You want to orchestrate many agents from different repos
+- **SSE tools** are MCP tools you run yourself, typically for custom or in-development integrations.
+- You must start the SSE server and specify its endpoint in your config.
 
-Register the tool to the MCP service
+### How to Use SSE Tools
 
-### Step-by-Step: Community Agent Mode
-
-Use Community Agent Mode to connect with agents hosted on GitHub via the MCP protocol — without writing custom tool or agent code.
-
-##### 1. Install mcp-proxy via UV
+**Step 1: Start your SSE MCP server**
+(Example: running a custom FastMCP server)
 
 ```bash
-uv tool install mcp-proxy
+python my_mcp_server.py
+# or
+npx -y @modelcontextprotocol/server-github
 ```
 
-This will install the proxy server that bridges your CLI or client agent to remote GitHub agents.
+**Step 2: Add the tool to your agent config**
 
-##### 2. Start the Community Agent via MCP Proxy,Example using @modelcontextprotocol/server-github
-
-```bash
-mcp.proxy --sse-port 8123 -- npx -y @modelcontextprotocol/server-github
+```json
+{
+  "agents": {
+    "my_agent": {
+      "class": "SpoonReactMCP",
+      "tools": [
+        {
+          "name": "my_custom_tool",
+          "type": "mcp",
+          "mcp_server": {
+            "endpoint": "http://127.0.0.1:8765/sse",
+            "transport": "sse"
+          }
+        }
+      ]
+    }
+  }
+}
 ```
 
-This command will:
+- `"transport": "sse"` is used for SSE tools.
+- `"endpoint"` specifies the SSE server URL.
+- You are responsible for starting and managing the SSE server process.
 
-Start an SSE server on http://localhost:8123/sse
+**Step 3: Use the agent as normal**
+SpoonOS will connect to your SSE server and expose the tool to the agent.
 
-Load an agent from the @modelcontextprotocol/server-github package
+---
 
-Allow your local agent to communicate with this GitHub-based agent over MCP
+## 4. Configuration Summary Table
 
-##### 3. Connect Your Local Python Agent to the Proxy
+| Tool Type   | Config `"type"` | Transport   | How to Use/Connect                | Example Use Case                |
+|-------------|-----------------|-------------|-----------------------------------|---------------------------------|
+| Stdio MCP   | `"mcp"`         | `"stdio"`   | Auto-managed subprocess           | Tavily, GitHub, Brave, etc.     |
+| SSE MCP     | `"mcp"`         | `"sse"`     | Start your own SSE server         | Custom Web3, in-house tools     |
+| Built-in    | `"builtin"`     | N/A         | Provided by SpoonOS               | Crypto tools, price data, etc.  |
 
-```python
-from spoon_ai.agents.spoon_react import SpoonReactAI
-from spoon_ai.agents.mcp_client_mixin import MCPClientMixin
-from fastmcp.client.transports import SSETransport
-from spoon_ai.tools.tool_manager import ToolManager
-from pydantic import Field
-class SpoonReactMCP(SpoonReactAI, MCPClientMixin):
-    description: str = ()
-    system_prompt: str = """ """
-    name: str = "spoon_react_mcp"
-    description: str = "A smart ai agent in neo blockchain with mcp"
-    avaliable_tools: ToolManager = Field(default_factory=lambda: ToolManager([]))
-    def __init__(self, **kwargs):
-        super().__init__(**kwargs)
-        MCPClientMixin.__init__(self, mcp_transport=kwargs.get('mcp_transport', SSETransport("http://127.0.0.1:8123/sse")))
+---
+
+## 5. Example: Mixed Agent Config
+
+```json
+{
+  "agents": {
+    "web3_agent": {
+      "class": "SpoonReactMCP",
+      "tools": [
+        {
+          "name": "tavily_search",
+          "type": "mcp",
+          "mcp_server": {
+            "command": "npx",
+            "args": ["-y", "tavily-mcp"],
+            "transport": "stdio"
+          }
+        },
+        {
+          "name": "my_custom_tool",
+          "type": "mcp",
+          "mcp_server": {
+            "endpoint": "http://127.0.0.1:8765/sse",
+            "transport": "sse"
+          }
+        },
+        { "name": "crypto_tools", "type": "builtin" }
+      ]
+    }
+  }
+}
 ```
 
-## ✅ Next Steps
+---
 
-To further enhance your Web3 agent:
+## 6. Best Practices
 
-- 🤖 [Build custom agents](./agent.md)
+- **Prefer Stdio MCP tools** for most use cases—no server management, always up to date, auto-restart.
+- Use `"sse"` tools only for custom or in-development integrations.
+- You can mix Stdio, SSE, and built-in tools in a single agent.
+- All tool configuration is managed in `config.json`—no need to modify code for tool integration.
+
+---
+
+## 7. Troubleshooting
+
+- If a Stdio tool is not available, check the command and args in your config.
+- For SSE tools, ensure the server is running and the endpoint is correct.
+- Use the CLI or logs to see which tools are loaded for each agent.
+
+---
+
+## Next Steps
+
+- [Agent Development Guide](./agent.md)
+- [Configuration Guide](./configuration.md)
+- [MCP Protocol Documentation](https://modelcontextprotocol.io/)

@@ -1,82 +1,99 @@
-# 🤖 Agent Development Guide (agent.md)
+# 🤖 Agent Development Guide
 
-This guide walks you through how to define, configure, and run intelligent agents within the SpoonOS Core Developer Framework (SCDF). In SCDF, agents are autonomous reasoning entities capable of perceiving, reasoning, and acting via tool calls.
+This guide explains how to **develop, extend, and understand agents in SpoonOS Core Developer Framework (SCDF)**.
+**For configuration file details, see [`configuration.md`](./configuration.md).**
 
-SpoonOS adopts the ReAct (Reasoning + Acting) architecture, enabling the development of composable, modular, and intelligent AI agents tailored for Web3 and beyond.
+---
 
-## 🧠 Agent Architecture Overview
+## 1. Agent Architecture & Lifecycle
 
-Every agent in SCDF extends from the BaseAgent class and follows the ReAct (Reasoning + Action) loop. Common types include:
+SpoonOS agents are autonomous reasoning entities that follow the **ReAct (Reasoning + Acting) loop** and can be extended for custom logic and tool integration.
 
-- **ToolCallAgent**: Automatically selects and calls tools based on the task.
+### Core Agent Types
+
+- **BaseAgent**: Abstract base for all agents. Defines the main lifecycle and state management.
+- **ReActAgent**: Implements the ReAct loop (`think` → `act` → feedback).
+- **ToolCallAgent**: Adds tool selection and calling logic.
 - **SpoonReactAI**: Standard agent with built-in crypto tools (no MCP support).
-- **SpoonReactMCP**: MCP-enabled agent that can connect to external services.
-- **CustomAgent**: Your own implementation with custom tools, logic, or control.
+- **SpoonReactMCP**: Inherits from SpoonReactAI, adds MCP protocol support for external tools (including studio tools, MCP tools, and built-in tools).
+- **CustomAgent**: User-extendable agent for custom logic and tools.
 
-### Agent Types Comparison
+### Agent Lifecycle (Code Logic)
 
-| Agent Type | MCP Support | Use Case | Configuration |
-|------------|-------------|----------|---------------|
-| `SpoonReactAI` | ❌ | Standard blockchain operations | Built-in tools only |
-| `SpoonReactMCP` | ✅ | External service integration | Requires MCP server config |
+1. **Initialization**: Agent is created, tools are registered (from config or code).
+2. **Observation**: Receives user input or environment context.
+3. **Reasoning**: `think()` method plans the next step.
+4. **Action**: `act()` method executes a tool or action.
+5. **Feedback**: Tool results are processed for further reasoning.
+6. **Loop**: Steps 3-5 repeat until goal is reached or `max_steps` is hit.
+7. **Finish**: Agent returns the final result.
 
-### Built-in Agents
+**Key code locations:**
+- [`react.py`](../spoon_ai/agents/react.py): `ReActAgent` base logic, `think`/`act`/`step`.
+- [`toolcall.py`](../spoon_ai/agents/toolcall.py): Tool selection, tool call, and memory.
+- [`spoon_react.py`](../spoon_ai/agents/spoon_react.py): `SpoonReactAI` implementation.
+- [`spoon_react_mcp.py`](../spoon_ai/agents/spoon_react_mcp.py): `SpoonReactMCP` with MCP integration.
+- [`custom_agent.py`](../spoon_ai/agents/custom_agent.py): User-extendable agent.
 
-The following agents are built into the system:
+---
 
-| Agent Name | Aliases | Type | Description |
-|------------|---------|------|-------------|
-| `react` | `spoon_react` | SpoonReactAI | Standard blockchain agent |
-| `spoon_react_mcp` | - | SpoonReactMCP | MCP-enabled blockchain agent |
+## 2. Tool Integration: Built-in, MCP, and Studio Tools
 
-**Note**: Additional agents can be configured in `config.json` (see configuration examples below).
+Agents in SpoonOS can use **three types of tools**:
+- **Built-in tools**: Provided by the core system (e.g., crypto_tools).
+- **MCP tools**: Tools provided by MCP servers (e.g., Tavily, Brave, GitHub, etc).
+- **Studio tools**: Tools registered and managed via the Spoon Studio platform (no need to configure SSE or custom transport).
 
-## 🔄 ReAct Agent Loop
+**All tool types can be configured directly in the agent's `tools` array in config.**
+You do **not** need to manually configure SSE or transport for studio/MCP tools—just declare them in config and the system will handle the connection.
 
-SpoonOS implements a ReAct-style agent with iterative reasoning + action capability. The lifecycle includes:
+**Example agent config (see `configuration.md` for full details):**
+```json
+{
+  "agents": {
+    "my_agent": {
+      "class": "SpoonReactMCP",
+      "description": "Agent with built-in, MCP, and studio tools",
+      "tools": [
+        { "name": "crypto_tools", "type": "builtin" },
+        { "name": "tavily_search", "type": "mcp" },
+        { "name": "studio_tool_example", "type": "studio" }
+      ]
+    }
+  }
+}
+```
+- **Built-in tools**: `"type": "builtin"`
+- **MCP tools**: `"type": "mcp"` (system will auto-connect to the correct MCP server)
+- **Studio tools**: `"type": "studio"` (auto-managed by Spoon Studio, no manual transport config needed)
 
-1. **Observation**: Understanding user intent and environment.
-2. **Reasoning**: Analyzing and planning the next step.
-3. **Acting**: Executing the chosen tool.
-4. **Feedback**: Using tool results to guide further action.
+---
 
-This loop continues until either the goal is achieved or max_steps is reached.
+## 3. Extending Agents (Code-Level)
 
-## 🛠️ Step-by-Step: Build Your Own Agent
-
-### 1. Define a Custom Tool
-
-Creating custom tools is one of SpoonAI's most powerful features. Each tool should inherit from the `BaseTool` class:
+### a. Create a Custom Tool
 
 ```python
 from spoon_ai.tools.base import BaseTool
 
 class MyCustomTool(BaseTool):
     name: str = "my_custom_tool"
-    description: str = "This is a custom tool for performing specific tasks"
+    description: str = "Custom tool for specific tasks"
     parameters: dict = {
         "type": "object",
         "properties": {
-            "param1": {
-                "type": "string",
-                "description": "Description of the first parameter"
-            },
-            "param2": {
-                "type": "integer",
-                "description": "Description of the second parameter"
-            }
+            "param1": {"type": "string", "description": "First parameter"},
+            "param2": {"type": "integer", "description": "Second parameter"}
         },
         "required": ["param1"]
     }
 
     async def execute(self, param1: str, param2: int = 0) -> str:
-        """Implement the tool's specific logic"""
-        # Implement your tool logic here
-        result = f"Processing parameters: {param1}, {param2}"
-        return result
+        # Tool logic here
+        return f"Processing: {param1}, {param2}"
 ```
 
-### 2. Create Your Agent Class
+### b. Create a Custom Agent
 
 ```python
 from spoon_ai.agents import ToolCallAgent
@@ -85,316 +102,84 @@ from pydantic import Field
 
 class MyCustomAgent(ToolCallAgent):
     name: str = "my_custom_agent"
-    description: str = "This is my custom Agent"
-
-    system_prompt: str = """You are an AI assistant specialized in performing specific tasks.
-    You can use the provided tools to complete tasks."""
-
-    next_step_prompt: str = "What should be the next step?"
-
+    description: str = "My custom Agent"
     max_steps: int = 5
-
-    # Define available tools
     avaliable_tools: ToolManager = Field(default_factory=lambda: ToolManager([
         MyCustomTool(),
-        # Add other tools...
+        # Add more tools...
     ]))
 ```
 
-## ⚙️ Agent Configuration via config.json
+### c. Add/Remove Tools Dynamically
 
-Instead of creating agents programmatically, you can configure them in `spoon-core/config.json` for use with the CLI.
-
-### Basic Agent Configuration
-
-```json
-{
-  "default_agent": "my_agent",
-  "agents": {
-    "my_agent": {
-      "class": "SpoonReactAI",
-      "aliases": ["my", "custom"],
-      "description": "My custom agent",
-      "config": {
-        "max_steps": 10,
-        "tool_choice": "auto"
-      },
-      "tools": ["crypto_tools"]
-    }
-  }
-}
+```python
+agent = MyCustomAgent()
+agent.add_tool(MyCustomTool())
+agent.remove_tool("my_custom_tool")
 ```
 
-### MCP-Enabled Agent Configuration Example
+---
 
-Here's how to configure a custom agent with external service integration:
-
-```json
-{
-  "agents": {
-    "my_search_agent": {
-      "class": "SpoonReactMCP",
-      "aliases": ["search", "web"],
-      "description": "Custom agent with web search capabilities",
-      "config": {
-        "max_steps": 20,
-        "tool_choice": "auto"
-      },
-      "mcp_servers": ["tavily-mcp"],
-      "tools": ["web_search", "crypto_tools"]
-    }
-  },
-  "mcp_servers": {
-    "tavily-mcp": {
-      "transport": "npx",
-      "command": "npx",
-      "args": ["-y", "tavily-mcp"],
-      "env": {
-        "TAVILY_API_KEY": "your-api-key"
-      },
-      "disabled": false
-    }
-  },
-  "tool_sets": {
-    "web_search": {
-      "type": "mcp_server",
-      "server": "tavily-mcp",
-      "enabled": true
-    },
-    "crypto_tools": {
-      "type": "builtin",
-      "enabled": true
-    }
-  }
-}
-```
-
-### Configuration Parameters
-
-| Parameter | Type | Description | Example |
-|-----------|------|-------------|---------|
-| `class` | string | Agent type: "SpoonReactAI" or "SpoonReactMCP" | `"SpoonReactMCP"` |
-| `aliases` | array | Alternative names for loading the agent | `["search", "web"]` |
-| `description` | string | Human-readable description | `"Web search agent"` |
-| `config.max_steps` | integer | Maximum reasoning steps (default: 10) | `20` |
-| `config.tool_choice` | string | Tool selection mode: "auto", "required", "none" | `"auto"` |
-| `mcp_servers` | array | MCP servers to connect to (MCP agents only) | `["tavily-mcp"]` |
-| `tools` | array | Tool sets to enable | `["web_search", "crypto_tools"]` |
-
-### MCP Server Configuration
-
-| Transport | Use Case | Required Fields | Example |
-|-----------|----------|-----------------|---------|
-| `npx` | Node.js packages | `command`, `args` | Tavily search |
-| `python` | Python scripts | `script_path` | Custom servers |
-| `sse` | HTTP streaming | `url` | Real-time data |
-| `websocket` | Real-time | `url` | Live connections |
-
-### Using Configured Agents
-
-Once configured, custom agents will appear in the CLI:
-
-```bash
-# List available agents (includes built-in + configured)
-> list-agents
-
-# Load built-in agent
-> load-agent react
-
-# Load custom configured agent by name
-> load-agent my_search_agent
-
-# Load custom agent by alias
-> load-agent search
-
-# Start conversation
-> action chat
-```
-
-## 🧪 Run the Agent
-
-### Basic Agent Usage
+## 4. Agent Execution Example
 
 ```python
 import asyncio
 from spoon_ai.chat import ChatBot
 
 async def main():
-    # Create an InfoAssistantAgent instance
-    info_agent = MyCustomAgent(llm=ChatBot(llm_provider="openai",model_name="anthropic/claude-sonnet-4", base_url="https://openrouter.ai/api/v1"))
-
-    # Reset the Agent state
-    info_agent.clear()
-
-    response = await info_agent.run("What is the weather like in hongkong today xxxxx?")
-    print(f"Answer: {response}\n")
+    agent = MyCustomAgent(llm=ChatBot(llm_provider="openai", model_name="gpt-4.1"))
+    agent.clear()  # Reset state
+    response = await agent.run("What is the weather in Hong Kong?")
+    print(f"Answer: {response}")
 
 if __name__ == "__main__":
     asyncio.run(main())
 ```
 
-### Using Different LLM Providers
+---
 
-SpoonOS supports multiple LLM providers through the unified architecture. Here are examples of using different providers:
+## 5. Advanced: Multi-Provider & Fallback
 
-#### OpenAI Provider
-```python
-from spoon_ai.chat import ChatBot
-from spoon_ai.agents import SpoonReactAI
-
-# Using OpenAI GPT-4
-openai_agent = SpoonReactAI(
-    llm=ChatBot(
-        llm_provider="openai",
-        model_name="gpt-4.1",
-        api_key="sk-your-openai-key"  # Optional if set in config
-    )
-)
-
-response = await openai_agent.run("Analyze the current crypto market")
-```
-
-#### Anthropic Provider
-```python
-# Using Anthropic Claude
-anthropic_agent = SpoonReactAI(
-    llm=ChatBot(
-        llm_provider="anthropic",
-        model_name="claude-sonnet-4-20250514",
-        api_key="sk-ant-your-key"  # Optional if set in config
-    )
-)
-
-response = await anthropic_agent.run("Help me understand DeFi protocols")
-```
-
-#### Gemini Provider
-```python
-# Using Google Gemini
-gemini_agent = SpoonReactAI(
-    llm=ChatBot(
-        llm_provider="gemini",
-        model_name="gemini-2.5-pro",
-        api_key="your-gemini-key"  # Optional if set in config
-    )
-)
-
-response = await gemini_agent.run("Explain blockchain consensus mechanisms")
-```
-
-#### Using LLM Manager for Advanced Features
+You can use the LLM Manager for advanced provider fallback and multi-provider logic.
 
 ```python
 from spoon_ai.llm import LLMManager, ConfigurationManager
-from spoon_ai.agents import ToolCallAgent
 
-class AdvancedAgent(ToolCallAgent):
-    def __init__(self, **kwargs):
-        # Initialize with LLM Manager for advanced features
-        config_manager = ConfigurationManager()
-        llm_manager = LLMManager(config_manager)
-        
-        # Set up fallback chain
-        llm_manager.set_fallback_chain(["openai", "anthropic", "gemini"])
-        
-        super().__init__(llm=llm_manager, **kwargs)
+config_manager = ConfigurationManager()
+llm_manager = LLMManager(config_manager)
+llm_manager.set_fallback_chain(["openai", "anthropic", "gemini"])
 
-# Usage
-advanced_agent = AdvancedAgent()
-response = await advanced_agent.run("Complex analysis task")
-# Will automatically use fallback if primary provider fails
+agent = MyCustomAgent(llm=llm_manager)
 ```
 
-#### Provider-Specific Configuration
+---
 
-```python
-# Custom configuration per provider
-openai_config = {
-    "llm_provider": "openai",
-    "model_name": "gpt-4.1-turbo",
-    "temperature": 0.1,  # More deterministic
-    "max_tokens": 8192
-}
+## 6. Debugging & Best Practices
 
-anthropic_config = {
-    "llm_provider": "anthropic", 
-    "model_name": "claude-3-opus-20240229",
-    "temperature": 0.7,  # More creative
-    "max_tokens": 4096
-}
+- Use `max_steps` to control loop length.
+- Add logging in `execute()` for custom tools.
+- Use `agent.clear()` to reset state between runs.
+- Handle exceptions in tools to test agent fallback.
+- Use `list_tools()` to see all registered tools.
 
-# Create specialized agents
-analytical_agent = SpoonReactAI(llm=ChatBot(**openai_config))
-creative_agent = SpoonReactAI(llm=ChatBot(**anthropic_config))
-```
+---
 
-#### Multi-Provider Agent
+## 7. Built-in & Example Agents
 
-```python
-class MultiProviderAgent(ToolCallAgent):
-    def __init__(self):
-        # Initialize with default provider
-        super().__init__(llm=ChatBot(llm_provider="openai"))
-        
-        # Create additional providers for specific tasks
-        self.creative_llm = ChatBot(
-            llm_provider="anthropic",
-            model_name="claude-3-opus-20240229",
-            temperature=0.8
-        )
-        
-        self.analytical_llm = ChatBot(
-            llm_provider="openai",
-            model_name="gpt-4.1",
-            temperature=0.1
-        )
-    
-    async def run_creative_task(self, prompt):
-        # Switch to creative provider for this task
-        original_llm = self.llm
-        self.llm = self.creative_llm
-        try:
-            response = await self.run(prompt)
-            return response
-        finally:
-            self.llm = original_llm
-    
-    async def run_analytical_task(self, prompt):
-        # Switch to analytical provider
-        original_llm = self.llm
-        self.llm = self.analytical_llm
-        try:
-            response = await self.run(prompt)
-            return response
-        finally:
-            self.llm = original_llm
+- **Built-in**: `react`, `spoon_react`, `spoon_react_mcp` (see codebase for details).
+- **Examples**: See [`examples/agent/`](../examples/agent/) for runnable demos.
 
-# Usage
-multi_agent = MultiProviderAgent()
-creative_response = await multi_agent.run_creative_task("Write a creative story about DeFi")
-analytical_response = await multi_agent.run_analytical_task("Analyze gas optimization strategies")
-```
+---
 
-## 🛠️ Agent Debugging Tips
+## 8. Configuration
 
-- Use max_steps to control reasoning loop length.
-- Add print() or logging in execute() for custom tools.
-- Raise exceptions on tool misuse to test agent fallback.
-- Use agent.clear() to reset memory/state between runs.
+**All agent configuration (JSON, environment variables, CLI) is documented in [`configuration.md`](./configuration.md).**
+This includes: agent registration, tool config (including MCP and studio tools), LLM provider config, MCP server config, and schema reference.
 
-#### 📁 Examples Directory
+---
 
-The following directory contains runnable examples:
+## Next Steps
 
-```yaml
-examples/
-├── agents/
-│   └── my_agent_demo.py
-```
-
-## ✅ Next Steps
-
-Now that you understand agents:
-
-- 🧪 [Try running agents via CLI](./cli.md)
-- 🌐 [Integrate Web3 tools with MCP](./mcp_mode_usage.md)
+- [Configuration Guide](./configuration.md)
+- [MCP Mode Usage](./mcp_mode_usage.md)
+- [Graph Agent](./graph_agent.md)
