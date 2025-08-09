@@ -46,27 +46,47 @@ class ToolCallAgent(ReActAgent):
     async def _get_cached_mcp_tools(self) -> List[MCPTool]:
         """Get MCP tools with caching to avoid repeated server calls."""
         current_time = time.time()
-
-        # Check if cache is valid
-        if (self.mcp_tools_cache is not None and
-            self.mcp_tools_cache_timestamp is not None and
-            current_time - self.mcp_tools_cache_timestamp < self.mcp_tools_cache_ttl):
-            logger.info(f"♻️ {self.name} using cached MCP tools ({len(self.mcp_tools_cache)} tools)")
-            return self.mcp_tools_cache
-
-        # Cache miss or expired - fetch fresh tools
-        if hasattr(self, "list_mcp_tools"):
-            logger.info(f"🔄 {self.name} fetching MCP tools from server...")
-            mcp_tools = await self.list_mcp_tools()
-
-            # Update cache
-            self.mcp_tools_cache = mcp_tools
-            self.mcp_tools_cache_timestamp = current_time
-
-            logger.info(f"📋 {self.name} received {len(mcp_tools)} MCP tools (cached)")
-            return mcp_tools
-
+        
+        # Thread-safe cache check
+        async with asyncio.Lock() if not hasattr(self, '_cache_lock') else asyncio.Lock():
+            if not hasattr(self, '_cache_lock'):
+                self._cache_lock = asyncio.Lock()
+                
+        async with self._cache_lock:
+            # Check if cache is valid and not expired
+            if (self.mcp_tools_cache is not None and
+                self.mcp_tools_cache_timestamp is not None and
+                current_time - self.mcp_tools_cache_timestamp < self.mcp_tools_cache_ttl):
+                logger.info(f"♻️ {self.name} using cached MCP tools ({len(self.mcp_tools_cache)} tools)")
+                return self.mcp_tools_cache.copy() # Return copy to prevent external modification
+            
+            # Cache expired or invalid - clean up and fetch fresh
+            self._invalidate_mcp_cache()
+            
+            
+            if hasattr(self, "list_mcp_tools"):
+                try:
+                    logger.info(f"🔄 {self.name} fetching MCP tools from server...")
+                    mcp_tools = await self.list_mcp_tools()
+                    
+                    # Validate and limit cache size (prevent memory bloat)
+                    if isinstance(mcp_tools, list) and len(mcp_tools) <= 100:
+                        self.mcp_tools_cache = mcp_tools
+                        self.mcp_tools_cache_timestamp = current_time
+                        logger.info(f"📋 {self.name} cached {len(mcp_tools)} MCP tools")
+                        return mcp_tools.copy()
+                    else:
+                        logger.warning(f"⚠️ {self.name} received {len(mcp_tools) if isinstance(mcp_tools, list) else 'invalid'} tools - not caching")
+                        return mcp_tools if isinstance(mcp_tools, list) else []
+                    
+                except Exception as e:
+                    logger.error(f"❌ {self.name} failed to fetch MCP tools: {e}")
+                    # Return empty list on error rather than crashing
+                    return []              
+        
         return []
+    
+    
 
     async def think(self) -> bool:
         if self.next_step_prompt:
@@ -299,12 +319,24 @@ class ToolCallAgent(ReActAgent):
             # Accept either "stop" (OpenAI) or "end_turn" (Anthropic) as valid termination signals
             return native_finish_reason in ["stop", "end_turn"]
         return False
+    
+    def _invalidate_mcp_cache(self):
+        """Properly invalidate and clean up MCP tools cache."""
+        self.mcp_tools_cache = None
+        self.mcp_tools_cache_timestamp = None
+        logger.debug(f"🧹 {self.name} invalidated MCP tools cache")
 
     def clear(self):
         self.memory.clear()
         self.tool_calls = []
         self.state = AgentState.IDLE
         self.current_step = 0
-        # Clear MCP tools cache when agent is reset
-        self.mcp_tools_cache = None
-        self.mcp_tools_cache_timestamp = None
+        
+        #cache cleanup
+        self._invalidate_mcp_cache()
+        
+        # Clean up lock if it exists
+        if hasattr(self, '_cache_lock'):
+            delattr(self, '_cache_lock')
+            
+        logger.debug(f"🧹 {self.name} fully cleared state and cache")    
