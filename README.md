@@ -529,7 +529,7 @@ if __name__ == "__main__":
 async with SpoonReactAI(name="my_agent") as agent:
     result = await agent.run("Hello world")
     # Agent automatically cleaned up here
-    
+
 Register your own tools, override run(), or extend with MCP integrations. See docs/agent.md or docs/mcp_mode_usage.md
 
 📖 [Full guide](/doc/agent.md)
@@ -563,6 +563,10 @@ chatbot = ChatBot(
     enable_prompt_cache=True
 )
 ```
+# New: Async Context Management
+async with SpoonReactAI(name="my_agent") as agent:
+    result = await agent.run("Hello world")
+    # Agent automatically cleaned up here
 
 
 ## 🗂️ Project Structure

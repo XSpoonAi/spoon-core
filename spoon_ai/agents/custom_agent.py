@@ -298,3 +298,28 @@ When you need to use tools, please use the provided tool API. Don't pretend to c
             logger.error(f"Error checking tools after clear: {e}")
         
         logger.debug(f"CustomAgent '{self.name}' fully cleared and validated")
+
+    async def save_state(self):
+        """Save agent state for context manager cleanup"""
+        try:
+            # Save chat history
+            self.save_chat_history()
+            
+            # Save tool configuration if needed
+            tool_config = {
+                'tool_count': len(self.list_tools()),
+                'tool_names': self.list_tools(),
+                'last_updated': datetime.datetime.now().isoformat()
+            }
+            
+            config_dir = Path('agent_states')
+            config_dir.mkdir(exist_ok=True)
+            
+            with open(config_dir / f'{self.name}_tools.json', 'w') as f:
+                json.dump(tool_config, f, indent=2)
+            
+            logger.debug(f"Saved state for CustomAgent '{self.name}'")
+            
+        except Exception as e:
+            logger.error(f"Error saving state for CustomAgent '{self.name}': {e}")
+            raise
