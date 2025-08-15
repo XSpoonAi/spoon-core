@@ -781,7 +781,10 @@ class UniswapV3Client:
             
             # Wait for the approval transaction to be mined
             logger.info("Waiting for approval transaction to be mined...")
-            self.web3.eth.wait_for_transaction_receipt(tx_hash)
+            timeout = getattr(self, 'tx_timeout', 120)  # configurable, default 120s
+            receipt = self.web3.eth.wait_for_transaction_receipt(tx_hash, timeout=timeout)
+            if receipt.status != 1:
+                raise RuntimeError(f"Approval transaction failed. Receipt status: {receipt.status}")
         
         # Build swap transaction
         if supports_fee:
@@ -816,6 +819,12 @@ class UniswapV3Client:
         tx_hash = self.web3.eth.send_raw_transaction(signed_tx.rawTransaction)
         
         logger.info(f"Swap tokens for ETH transaction sent: {tx_hash.hex()}")
+        # Wait for swap transaction receipt with timeout
+        timeout = getattr(self, 'tx_timeout', 120)  # configurable, default 120s
+        receipt = self.web3.eth.wait_for_transaction_receipt(tx_hash, timeout=timeout)
+        if receipt.status != 1:
+            raise RuntimeError(f"Swap transaction failed. Receipt status: {receipt.status}")
+        logger.info(f"Swap tokens for ETH transaction successful: {tx_hash.hex()}")
         return tx_hash.hex()
     
     def swap_exact_eth_for_tokens(
