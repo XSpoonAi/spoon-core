@@ -4,8 +4,13 @@ LLM Manager - Central orchestrator for managing providers, fallback, and load ba
 
 import asyncio
 import random
-from typing import List, Dict, Any, Optional, AsyncGenerator
+from typing import List, Dict, Any, Optional, AsyncGenerator, Set
 from logging import getLogger
+
+from contextlib import asynccontextmanager
+import threading
+from dataclasses import dataclass, field
+from datetime import datetime, timedelta
 
 from spoon_ai.schema import Message
 from .interface import LLMProviderInterface, LLMResponse, ProviderCapability
@@ -17,6 +22,49 @@ from .errors import ProviderError, ConfigurationError, ProviderUnavailableError
 
 logger = getLogger(__name__)
 
+
+@dataclass
+class ProviderState:
+    """Track provider initialization and health state."""
+    is_initializing: bool = False
+    is_initialized: bool = False
+    initialization_lock: asyncio.Lock = field(default_factory=asyncio.Lock)
+    last_error: Optional[Exception] = None
+    last_error_time: Optional[datetime] = None
+    initialization_attempts: int = 0
+    max_attempts: int = 3
+    backoff_until: Optional[datetime] = None
+
+    def can_retry_initialization(self) -> bool:
+        """Check if provider initialization can be retried."""
+        if self.initialization_attempts >= self.max_attempts:
+            return False
+        
+        if self.backoff_until and datetime.now() < self.backoff_until:
+            return False
+            
+        return True
+
+    def record_initialization_failure(self, error: Exception) -> None:
+        """Record initialization failure with exponential backoff."""
+        self.initialization_attempts += 1
+        self.last_error = error
+        self.last_error_time = datetime.now()
+        self.is_initialized = False
+        self.is_initializing = False
+        
+        # Exponential backoff: 2^attempts seconds
+        backoff_seconds = min(2 ** self.initialization_attempts, 300)  # Max 5 minutes
+        self.backoff_until = datetime.now() + timedelta(seconds=backoff_seconds)
+
+    def record_initialization_success(self) -> None:
+        """Record successful initialization."""
+        self.is_initialized = True
+        self.is_initializing = False
+        self.initialization_attempts = 0
+        self.last_error = None
+        self.last_error_time = None
+        self.backoff_until = None
 
 class FallbackStrategy:
     """Handles fallback logic between providers."""
@@ -141,6 +189,319 @@ class LoadBalancer:
 
 
 class LLMManager:
+    """Central orchestrator for LLM providers with fallback and load balancing."""
+
+    def __init__(self,
+                 config_manager: Optional[ConfigurationManager] = None,
+                 debug_logger: Optional[DebugLogger] = None,
+                 metrics_collector: Optional[MetricsCollector] = None,
+                 response_normalizer: Optional[ResponseNormalizer] = None,
+                 registry: Optional[LLMProviderRegistry] = None):
+        """Initialize LLM Manager with enhanced provider state tracking."""
+        self.config_manager = config_manager or ConfigurationManager()
+        self.debug_logger = debug_logger or get_debug_logger()
+        self.metrics_collector = metrics_collector or get_metrics_collector()
+        self.response_normalizer = response_normalizer or get_response_normalizer()
+        self.registry = registry or get_global_registry()
+
+        self.fallback_strategy = FallbackStrategy(self.debug_logger)
+        self.load_balancer = LoadBalancer()
+
+        # Enhanced provider state management
+        self.provider_states: Dict[str, ProviderState] = {}
+        self.provider_cleanup_tasks: Set[asyncio.Task] = set()
+        self._manager_lock = asyncio.Lock()
+        self._shutdown_event = asyncio.Event()
+        
+        # Existing configuration
+        self.fallback_chain: List[str] = []
+        self.default_provider: Optional[str] = None
+        self.load_balancing_enabled: bool = False
+        self.load_balancing_strategy: str = "round_robin"
+
+        # Initialize providers from configuration
+        self._initialize_providers()
+
+        # Register cleanup on shutdown
+        self._register_cleanup()
+
+    def _register_cleanup(self) -> None:
+        """Register cleanup callback for graceful shutdown."""
+        import atexit
+        import signal
+        
+        def cleanup_sync():
+            """Synchronous cleanup wrapper."""
+            try:
+                # Try to get the current event loop
+                loop = asyncio.get_event_loop()
+                if loop.is_running():
+                    # If loop is running, schedule cleanup
+                    asyncio.create_task(self.cleanup())
+                else:
+                    # If no loop, run cleanup synchronously
+                    loop.run_until_complete(self.cleanup())
+            except RuntimeError:
+                # No event loop available, skip async cleanup
+                logger.warning("No event loop available for async cleanup")
+        
+        atexit.register(cleanup_sync)
+
+    def _get_provider_state(self, provider_name: str) -> ProviderState:
+        """Get or create provider state."""
+        if provider_name not in self.provider_states:
+            self.provider_states[provider_name] = ProviderState()
+        return self.provider_states[provider_name]
+
+    async def _ensure_provider_initialized(self, provider_name: str) -> bool:
+        """Ensure provider is properly initialized with thread safety.
+        
+        Returns:
+            bool: True if provider is initialized, False if initialization failed
+        """
+        state = self._get_provider_state(provider_name)
+        
+        # Fast path: already initialized
+        if state.is_initialized:
+            return True
+        
+        # Check if initialization is possible
+        if not state.can_retry_initialization():
+            logger.error(f"Provider {provider_name} initialization blocked: "
+                        f"attempts={state.initialization_attempts}, "
+                        f"backoff_until={state.backoff_until}")
+            return False
+
+        # Acquire initialization lock
+        async with state.initialization_lock:
+            # Double-check after acquiring lock (another thread might have initialized)
+            if state.is_initialized:
+                return True
+            
+            # Check if already initializing in another coroutine
+            if state.is_initializing:
+                logger.info(f"Provider {provider_name} is already being initialized, waiting...")
+                # Wait for initialization to complete (with timeout)
+                try:
+                    await asyncio.wait_for(
+                        self._wait_for_initialization(state), 
+                        timeout=30.0
+                    )
+                    return state.is_initialized
+                except asyncio.TimeoutError:
+                    logger.error(f"Provider {provider_name} initialization timeout")
+                    return False
+
+            # Mark as initializing
+            state.is_initializing = True
+            
+            try:
+                # Get provider configuration
+                config = self.config_manager.load_provider_config(provider_name)
+                provider_instance = self.registry.get_provider(provider_name, config.model_dump())
+
+                logger.info(f"Initializing provider: {provider_name}")
+                
+                # Initialize the provider
+                await provider_instance.initialize(config.model_dump())
+                
+                # Mark as successfully initialized
+                state.record_initialization_success()
+                
+                logger.info(f"Successfully initialized provider: {provider_name}")
+                return True
+
+            except Exception as e:
+                # Record the failure
+                state.record_initialization_failure(e)
+                
+                logger.error(f"Failed to initialize provider {provider_name} "
+                           f"(attempt {state.initialization_attempts}): {e}")
+                
+                # If this was the last attempt, mark provider as unhealthy
+                if not state.can_retry_initialization():
+                    self.load_balancer.update_provider_health(provider_name, False)
+                
+                return False
+
+    async def _wait_for_initialization(self, state: ProviderState) -> None:
+        """Wait for provider initialization to complete."""
+        while state.is_initializing and not state.is_initialized:
+            await asyncio.sleep(0.1)
+
+    async def _execute_provider_operation(self, provider_name: str, method: str, *args, **kwargs) -> LLMResponse:
+        """Execute an operation on a specific provider with enhanced initialization management."""
+        # Ensure provider is initialized
+        if not await self._ensure_provider_initialized(provider_name):
+            state = self._get_provider_state(provider_name)
+            error_msg = f"Provider {provider_name} is not available"
+            if state.last_error:
+                error_msg += f": {state.last_error}"
+            raise ProviderUnavailableError(provider_name, error_msg)
+
+        # Get provider instance
+        try:
+            config = self.config_manager.load_provider_config(provider_name)
+            provider_instance = self.registry.get_provider(provider_name, config.model_dump())
+        except Exception as e:
+            logger.error(f"Failed to get provider instance {provider_name}: {e}")
+            raise ProviderError(provider_name, f"Failed to get provider instance: {str(e)}", original_error=e)
+
+        # Log request
+        request_id = self.debug_logger.log_request(provider_name, method, kwargs)
+        start_time = asyncio.get_event_loop().time()
+
+        try:
+            # Execute the operation
+            operation = getattr(provider_instance, method)
+            if not callable(operation):
+                raise ProviderError(provider_name, f"Method {method} not available on provider")
+                
+            response = await operation(*args, **kwargs)
+
+            # Calculate duration and add metadata
+            duration = asyncio.get_event_loop().time() - start_time
+            response.duration = duration
+            response.request_id = request_id
+
+            # Log successful response
+            self.debug_logger.log_response(request_id, response, duration)
+
+            # Record metrics
+            tokens = response.usage.get('total_tokens', 0) if response.usage else 0
+            self.metrics_collector.record_request(
+                provider_name, method, duration, True, tokens, response.model
+            )
+
+            # Mark provider as healthy
+            self.load_balancer.update_provider_health(provider_name, True)
+
+            return response
+
+        except Exception as e:
+            # Calculate duration
+            duration = asyncio.get_event_loop().time() - start_time
+
+            # Log error
+            self.debug_logger.log_error(request_id, e, {"provider": provider_name, "method": method})
+
+            # Record metrics
+            self.metrics_collector.record_request(
+                provider_name, method, duration, False, error=str(e)
+            )
+
+            # Update provider health
+            self.load_balancer.update_provider_health(provider_name, False)
+
+            # If this is a critical error, mark provider for reinitialization
+            if self._is_critical_error(e):
+                logger.warning(f"Critical error detected for {provider_name}, marking for reinitialization")
+                state = self._get_provider_state(provider_name)
+                state.is_initialized = False
+
+            raise
+
+    def _is_critical_error(self, error: Exception) -> bool:
+        """Determine if an error requires provider reinitialization."""
+        critical_error_patterns = [
+            "connection",
+            "authentication",
+            "unauthorized", 
+            "invalid_api_key",
+            "token",
+            "timeout"
+        ]
+        
+        error_str = str(error).lower()
+        return any(pattern in error_str for pattern in critical_error_patterns)
+
+    async def cleanup(self) -> None:
+        """Enhanced cleanup with proper resource management."""
+        if self._shutdown_event.is_set():
+            return  # Already cleaning up
+            
+        logger.info("Starting LLM Manager cleanup...")
+        self._shutdown_event.set()
+
+        async with self._manager_lock:
+            # Cancel all cleanup tasks
+            for task in self.provider_cleanup_tasks:
+                if not task.done():
+                    task.cancel()
+                    try:
+                        await task
+                    except asyncio.CancelledError:
+                        pass
+
+            self.provider_cleanup_tasks.clear()
+
+            # Cleanup all providers
+            cleanup_errors = []
+            for provider_name in self.registry.list_providers():
+                try:
+                    provider_instance = self.registry.get_provider(provider_name)
+                    if hasattr(provider_instance, 'cleanup'):
+                        await provider_instance.cleanup()
+                    logger.debug(f"Cleaned up provider: {provider_name}")
+                except Exception as e:
+                    cleanup_errors.append(f"{provider_name}: {e}")
+                    logger.warning(f"Cleanup failed for {provider_name}: {e}")
+
+            # Clear provider states
+            self.provider_states.clear()
+
+            if cleanup_errors:
+                logger.warning(f"Some providers failed to cleanup: {cleanup_errors}")
+            else:
+                logger.info("LLM Manager cleanup completed successfully")
+
+    def get_provider_status(self) -> Dict[str, Dict[str, Any]]:
+        """Get detailed status of all providers."""
+        status = {}
+        
+        for provider_name in self.registry.list_providers():
+            state = self._get_provider_state(provider_name)
+            status[provider_name] = {
+                "is_initialized": state.is_initialized,
+                "is_initializing": state.is_initializing,
+                "initialization_attempts": state.initialization_attempts,
+                "can_retry": state.can_retry_initialization(),
+                "last_error": str(state.last_error) if state.last_error else None,
+                "last_error_time": state.last_error_time.isoformat() if state.last_error_time else None,
+                "backoff_until": state.backoff_until.isoformat() if state.backoff_until else None,
+                "health_status": self.load_balancer.provider_health.get(provider_name, True)
+            }
+        
+        return status
+
+    async def reset_provider(self, provider_name: str) -> bool:
+        """Reset a provider's state and force reinitialization.
+        
+        Args:
+            provider_name: Name of provider to reset
+            
+        Returns:
+            bool: True if reset successful
+        """
+        if provider_name not in self.provider_states:
+            logger.warning(f"Provider {provider_name} not found in states")
+            return False
+            
+        async with self._manager_lock:
+            # Reset state
+            state = self.provider_states[provider_name]
+            async with state.initialization_lock:
+                state.is_initialized = False
+                state.is_initializing = False
+                state.initialization_attempts = 0
+                state.last_error = None
+                state.last_error_time = None
+                state.backoff_until = None
+                
+                logger.info(f"Reset provider state: {provider_name}")
+                
+                # Try to reinitialize
+                return await self._ensure_provider_initialized(provider_name)
     """Central orchestrator for LLM providers with fallback and load balancing."""
 
     def __init__(self,
