@@ -23,6 +23,7 @@ Here's how to navigate it:
 
 - [🧩 Agent Framework](#agent-framework): Learn how to create your own agents, register custom tools, and extend SpoonOS with minimal setup.
 
+
 - [📊 Enhanced Graph System](#enhanced-graph-system): Discover the powerful graph-based workflow orchestration system for complex AI agent workflows.
 
 - [🔌 API Integration](#api-integration): Plug in external APIs to enhance your agent workflows.
@@ -524,6 +525,10 @@ async def main():
 if __name__ == "__main__":
     asyncio.run(main())
 ```
+# New: Async Context Management
+async with SpoonReactAI(name="my_agent") as agent:
+    result = await agent.run("Hello world")
+    # Agent automatically cleaned up here
 
 Register your own tools, override run(), or extend with MCP integrations. See docs/agent.md or docs/mcp_mode_usage.md
 
@@ -558,6 +563,11 @@ chatbot = ChatBot(
     enable_prompt_cache=True
 )
 ```
+# New: Async Context Management
+async with SpoonReactAI(name="my_agent") as agent:
+    result = await agent.run("Hello world")
+    # Agent automatically cleaned up here
+
 
 ## 🗂️ Project Structure
 
