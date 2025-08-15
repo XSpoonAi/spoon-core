@@ -44,13 +44,18 @@ class ToolManager:
     async def execute(self, * ,name: str, tool_input: Dict[str, Any] =None) -> ToolResult:
         tool = self.tool_map[name]
         if not tool:
-            return ToolFailure(f"Tool {name} not found")
+            return ToolFailure(f"Tool '{name}' not found. Available tools: {list(self.tool_map.keys())}")
+        
+        # Ensure tool_input is not None
+        if tool_input is None:
+            tool_input = {}
 
         try:
             result = await tool(**tool_input)
             return result
         except Exception as e:
-            return ToolFailure(str(e))
+            # Provide better error context
+            return ToolFailure(f"Tool '{name}' execution failed: {str(e)}")
 
     def get_tool(self, name: str) -> BaseTool:
         tool = self.tool_map.get(name)
