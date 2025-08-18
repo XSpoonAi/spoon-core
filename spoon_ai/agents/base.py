@@ -273,3 +273,85 @@ class BaseAgent(BaseModel, ABC):
                 logger.info(f"Resetting agent {self.name} state from {self.state} to IDLE")
                 self.state = AgentState.IDLE
                 self.current_step = 0
+
+    async def __aenter__(self):
+        """Async context manager entry"""
+        logger.debug(f"Initializing agent '{self.name}' async context")
+        
+        # Initialize async resources 
+        if hasattr(self, 'initialize') and callable(getattr(self, 'initialize')):
+            try:
+                await self.initialize()
+                logger.info(f"Agent '{self.name}' initialized successfully")
+            except Exception as e:
+                logger.error(f"Failed to initialize agent '{self.name}': {e}")
+                raise RuntimeError(f"Agent initialization failed: {e}") from e
+        
+        return self
+
+    async def __aexit__(self, exc_type, exc_val, exc_tb):
+        """Async context manager exit with comprehensive cleanup"""
+        cleanup_errors = []
+        
+        try:
+            logger.debug(f"Cleaning up agent '{self.name}' (exception: {exc_type is not None})")
+            
+            # 1. Disconnect from external services
+            if hasattr(self, 'disconnect') and callable(getattr(self, 'disconnect')):
+                try:
+                    await self.disconnect()
+                    logger.debug("Agent disconnected from external services")
+                except Exception as e:
+                    cleanup_errors.append(f"Disconnect error: {e}")
+            
+            # 2. Save state/history if needed
+            if hasattr(self, 'save_state') and callable(getattr(self, 'save_state')):
+                try:
+                    await self.save_state()
+                    logger.debug("Agent state saved")
+                except Exception as e:
+                    cleanup_errors.append(f"State save error: {e}")
+            
+            # 3. Optimize memory before exit
+            if hasattr(self, 'optimize_memory') and callable(getattr(self, 'optimize_memory')):
+                try:
+                    self.optimize_memory()
+                    logger.debug("Memory optimized")
+                except Exception as e:
+                    cleanup_errors.append(f"Memory optimization error: {e}")
+            
+            # 4. Reset agent state
+            try:
+                self.state = AgentState.IDLE
+                self.current_step = 0
+                if hasattr(self, 'task_done'):
+                    self.task_done.set()  # Signal completion
+                logger.debug("Agent state reset")
+            except Exception as e:
+                cleanup_errors.append(f"State reset error: {e}")
+            
+            # 5. Clear sensitive data
+            sensitive_attrs = ['_temp_data', '_cache', '_session_data']
+            for attr in sensitive_attrs:
+                if hasattr(self, attr):
+                    try:
+                        delattr(self, attr)
+                    except Exception as e:
+                        cleanup_errors.append(f"Attribute cleanup error ({attr}): {e}")
+            
+            # Log cleanup results
+            if cleanup_errors:
+                logger.warning(f"Agent '{self.name}' cleanup completed with {len(cleanup_errors)} errors: {'; '.join(cleanup_errors)}")
+            else:
+                logger.info(f"Agent '{self.name}' cleaned up successfully")
+            
+        except Exception as critical_error:
+            logger.error(f"Critical error during agent '{self.name}' cleanup: {critical_error}")
+            cleanup_errors.append(f"Critical cleanup error: {critical_error}")
+        
+        # Don't suppress original exceptions - only raise cleanup errors if no original exception
+        if cleanup_errors and exc_type is None:
+            raise RuntimeError(f"Cleanup failed: {'; '.join(cleanup_errors)}")
+        
+        # Return False to not suppress the original exception if there was one
+        return False
