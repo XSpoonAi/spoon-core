@@ -1,101 +1,123 @@
-# SpoonOS Graph System - Complete Usage Guide
+# Graph System Documentation
+
+## Overview
+
+The Graph System is a powerful workflow orchestration framework that enables you to create complex, multi-step AI workflows using a graph-based approach. It provides advanced state management, dynamic routing, parallel execution, monitoring, and robust error handling with enterprise-grade features.
 
 ## Table of Contents
-1. [Graph Creation and Basic Usage](#graph-creation-and-basic-usage)
-2. [State Management](#state-management)
+1. [Quick Start](#quick-start)
+2. [Core Concepts](#core-concepts)
 3. [Node Development](#node-development)
-4. [Edge Configuration and Flow Control](#edge-configuration-and-flow-control)
-5. [Advanced Execution Patterns](#advanced-execution-patterns)
-6. [LLM Integration](#llm-integration)
-7. [Error Handling and Recovery](#error-handling-and-recovery)
-8. [Streaming and Monitoring](#streaming-and-monitoring)
-9. [Complex Workflows](#complex-workflows)
+4. [Dynamic Routing](#dynamic-routing)
+5. [Parallel Execution](#parallel-execution)
+6. [Monitoring & Metrics](#monitoring--metrics)
+7. [Memory Management](#memory-management)
+8. [Error Handling](#error-handling)
+9. [Advanced Features](#advanced-features)
+10. [Best Practices](#best-practices)
+11. [Complete Examples](#complete-examples)
 
-## Graph Creation and Basic Usage
+## Quick Start
 
-### Creating a StateGraph
-
-The `StateGraph` class is the foundation for building workflow graphs:
-
-```python
-from spoon_ai.graph import StateGraph
-from typing import TypedDict, Dict, Any
-
-class MyState(TypedDict):
-    counter: int
-    messages: list
-    completed: bool
-
-# Create graph with state schema
-graph = StateGraph(MyState)
-```
-
-### Basic Node Operations
-
-Nodes are functions that process state and return updates:
+### Basic Graph Example
 
 ```python
-def increment_counter(state: MyState) -> Dict[str, Any]:
-    """Simple node that increments a counter"""
-    return {"counter": state["counter"] + 1}
+from spoon_ai.graph import StateGraph, NodeContext, NodeResult
+from datetime import datetime
 
-def add_message(state: MyState) -> Dict[str, Any]:
-    """Node that adds a message to the state"""
-    return {"messages": state["messages"] + ["New message"]}
+# Define your state schema
+class WorkflowState:
+    input_text: str = ""
+    processed_text: str = ""
+    final_result: str = ""
+    confidence: float = 0.0
+    timestamp: str = ""
+
+# Create the graph
+graph = StateGraph(WorkflowState)
+
+# Enable monitoring and cleanup
+graph.enable_monitoring(["execution_time", "success_rate", "node_performance"])
+graph.set_default_state_cleanup()
+
+# Define node functions
+async def process_input(state, context: NodeContext):
+    """Process the input text"""
+    processed = state["input_text"].upper()
+
+    return NodeResult(
+        updates={
+            "processed_text": processed,
+            "timestamp": datetime.now().isoformat()
+        },
+        confidence=0.9,
+        metadata={"processing_method": "uppercase"}
+    )
+
+async def generate_result(state, context: NodeContext):
+    """Generate the final result"""
+    result = f"Result: {state['processed_text']} (processed at {state['timestamp']})"
+
+    return NodeResult(
+        updates={"final_result": result},
+        confidence=0.95
+    )
 
 # Add nodes to graph
-graph.add_node("increment", increment_counter)
-graph.add_node("message", add_message)
+graph.add_node("process", process_input)
+graph.add_node("generate", generate_result)
+
+# Add edges
+graph.add_edge("process", "generate")
+graph.set_entry_point("process")
+
+# Compile and execute
+compiled = graph.compile()
+result = await compiled.invoke({"input_text": "hello world"})
+
+print(f"Final result: {result['final_result']}")
+print(f"Confidence: {result.get('confidence', 0):.1%}")
+
+# Get execution metrics
+metrics = compiled.get_execution_metrics()
+print(f"Total executions: {metrics['total_executions']}")
+print(f"Success rate: {metrics['success_rate']:.1%}")
 ```
 
-### Connecting Nodes with Edges
+## Core Concepts
 
-Define the flow between nodes using edges:
+### StateGraph Architecture
 
-```python
-# Simple edge - always flows from A to B
-graph.add_edge("increment", "message")
-
-# Set entry point
-graph.set_entry_point("increment")
-
-# Set finish point
-graph.add_edge("message", "END")
-```
-
-### Basic Graph Execution
+The `StateGraph` is the main building block for creating workflows:
 
 ```python
-async def main():
-    # Compile the graph
-    compiled = graph.compile()
-    
-    # Execute with initial state
-    initial_state = {
-        "counter": 0,
-        "messages": [],
-        "completed": False
-    }
-    
-    result = await compiled.invoke(initial_state)
-    print(result)  # {"counter": 1, "messages": ["New message"], "completed": False}
-```
+from spoon_ai.graph import StateGraph, NodeContext, NodeResult, RouterResult
+from spoon_ai.graph.checkpointer import InMemoryCheckpointer
 
-## State Management
+# Define state schema
+class MyState:
+    input_data: str = ""
+    processed_data: str = ""
+    results: list = []
+    confidence: float = 0.0
+    metadata: dict = {}
 
-### TypedDict State Schema
+# Create graph with advanced configuration
+graph = StateGraph(MyState)
 
-Define your state structure using TypedDict for type safety:
+# Configure checkpointing with memory management
+checkpointer = InMemoryCheckpointer(
+    max_checkpoints_per_thread=10,
+    max_threads=100,
+    ttl_seconds=3600  # 1 hour TTL
+)
+graph.set_checkpointer(checkpointer)
 
-```python
-from typing import TypedDict, List, Dict, Any, Annotated
-from spoon_ai.graph import add_messages
+# Enable monitoring
+graph.enable_monitoring(["execution_time", "success_rate", "memory_usage"])
 
-class ChatState(TypedDict):
-    messages: Annotated[List[Dict], add_messages]  # Messages append
-    user_id: str  # Simple field replacement
-    session_data: Dict[str, Any]  # Dictionary merging
-    step_count: int  # Numeric replacement
+# Set automatic state cleanup
+graph.set_default_state_cleanup()
 ```
 
 ### State Reducers
@@ -110,10 +132,10 @@ class WorkflowState(TypedDict):
     # List operations
     messages: Annotated[List[Dict], add_messages]  # Append new messages
     execution_log: Annotated[List[str], append_history]  # Add to history
-    
+
     # Dictionary operations
     analysis_results: Annotated[Dict[str, Any], merge_dicts]  # Deep merge
-    
+
     # Simple replacement (default behavior)
     current_step: str
     status: str
@@ -149,10 +171,10 @@ def process_data(state: MyState) -> Dict[str, Any]:
     """Standard node function"""
     # Process state data
     input_data = state.get("input_data", [])
-    
+
     # Perform computation
     processed = [item.upper() for item in input_data]
-    
+
     # Return state updates
     return {
         "processed_data": processed,
@@ -169,10 +191,10 @@ async def fetch_external_data(state: MyState) -> Dict[str, Any]:
     """Async node for external API calls"""
     # Simulate API call
     await asyncio.sleep(1)
-    
+
     # Fetch data
     api_data = {"source": "external", "data": [1, 2, 3]}
-    
+
     return {"external_data": api_data}
 ```
 
@@ -227,13 +249,13 @@ graph.add_conditional_edges(
 def intelligent_router(state: ChatState) -> str:
     """Multi-condition routing"""
     messages = state["messages"]
-    
+
     # Check for specific conditions
     if not messages:
         return "greeting"
-    
+
     last_message = messages[-1]["content"].lower()
-    
+
     if "help" in last_message:
         return "help"
     elif "data" in last_message:
@@ -313,15 +335,15 @@ graph.add_conditional_edges(
 async def llm_chat_node(state: ChatState) -> Dict[str, Any]:
     """Node that uses LLM for response generation"""
     from spoon_ai.llm.manager import LLMManager
-    
+
     llm_manager = LLMManager()
-    
+
     # Prepare messages for LLM
     messages = state["messages"]
-    
+
     # Get LLM response
     response = await llm_manager.chat(messages)
-    
+
     # Add response to state
     return {
         "messages": [{"role": "assistant", "content": response["content"]}]
@@ -337,23 +359,23 @@ from spoon_ai.graph import RouterResult, router_decorator
 async def llm_router(state: ChatState, context) -> RouterResult:
     """LLM decides next action"""
     from spoon_ai.llm.manager import LLMManager
-    
+
     llm_manager = LLMManager()
-    
+
     # Create decision prompt
     prompt = f"""
     Based on the conversation, what should we do next?
-    
+
     Messages: {state['messages']}
-    
+
     Options:
     - continue_chat: Keep talking
     - data_analysis: Analyze data
     - end_conversation: End chat
     """
-    
+
     response = await llm_manager.chat([{"role": "user", "content": prompt}])
-    
+
     # Parse decision
     content = response["content"].lower()
     if "data_analysis" in content:
@@ -386,7 +408,7 @@ def recovery_node(state: MyState) -> Dict[str, Any]:
     """Handle errors and attempt recovery"""
     if state.get("error"):
         error_type = state["error"].get("type")
-        
+
         if error_type == "timeout":
             return {
                 "status": "retrying",
@@ -396,7 +418,7 @@ def recovery_node(state: MyState) -> Dict[str, Any]:
             return {"status": "validation_failed"}
         else:
             return {"status": "unknown_error"}
-    
+
     return {"status": "no_error"}
 ```
 
@@ -406,7 +428,7 @@ def recovery_node(state: MyState) -> Dict[str, Any]:
 def error_router(state: MyState) -> str:
     """Route based on error status"""
     status = state.get("status", "normal")
-    
+
     if status == "retrying" and state.get("retry_count", 0) < 3:
         return "retry"
     elif status in ["validation_failed", "unknown_error"]:
@@ -423,15 +445,15 @@ def error_router(state: MyState) -> str:
 async def monitor_execution():
     """Monitor graph execution in real-time"""
     compiled = graph.compile()
-    
+
     # Stream state changes
     async for state in compiled.stream(initial_state, stream_mode="values"):
         print(f"Current state: {state}")
-    
+
     # Stream node updates
     async for update in compiled.stream(initial_state, stream_mode="updates"):
         print(f"Node update: {update}")
-    
+
     # Stream debug information
     async for debug in compiled.stream(initial_state, stream_mode="debug"):
         print(f"Debug: {debug}")
@@ -473,31 +495,31 @@ class AnalysisWorkflow:
     def __init__(self):
         self.graph = StateGraph(AnalysisState)
         self._build_workflow()
-    
+
     def _build_workflow(self):
         """Build the complete analysis workflow"""
         # Data collection phase
         self.graph.add_node("collect_data", self.collect_data)
         self.graph.add_node("validate_data", self.validate_data)
-        
+
         # Parallel analysis phase
-        self.graph.add_node("technical_analysis", self.technical_analysis, 
+        self.graph.add_node("technical_analysis", self.technical_analysis,
                            parallel_group="analysis")
         self.graph.add_node("sentiment_analysis", self.sentiment_analysis,
                            parallel_group="analysis")
-        
+
         # Decision phase
         self.graph.add_node("make_decision", self.make_decision)
-        
+
         # Connect workflow
         self.graph.add_edge("collect_data", "validate_data")
         self.graph.add_edge("validate_data", "technical_analysis")
         self.graph.add_edge("technical_analysis", "make_decision")
         self.graph.add_edge("sentiment_analysis", "make_decision")
         self.graph.add_edge("make_decision", "END")
-        
+
         self.graph.set_entry_point("collect_data")
-    
+
     async def run_analysis(self, initial_state):
         """Execute the complete workflow"""
         compiled = self.graph.compile()
@@ -522,14 +544,14 @@ class DocumentProcessingState(TypedDict):
 def process_document(state: DocumentProcessingState) -> Dict[str, Any]:
     """Process a single document"""
     docs = state["documents"]
-    
+
     if not docs:
         return {"current_step": "completed", "completed": True}
-    
+
     # Process first document
     doc = docs[0]
     processed = f"PROCESSED: {doc.upper()}"
-    
+
     return {
         "processed_docs": state["processed_docs"] + [processed],
         "documents": docs[1:],  # Remove processed document
@@ -550,7 +572,7 @@ async def main():
     graph = StateGraph(DocumentProcessingState)
     graph.add_node("process", process_document)
     graph.add_node("error_handling", lambda s: {"completed": True})
-    
+
     # Set up conditional flow
     graph.add_conditional_edges(
         "process",
@@ -561,12 +583,12 @@ async def main():
             "error_handling": "error_handling"
         }
     )
-    
+
     graph.set_entry_point("process")
-    
+
     # Execute
     compiled = graph.compile()
-    
+
     initial_state = {
         "documents": ["doc1", "doc2", "doc3"],
         "processed_docs": [],
@@ -574,29 +596,64 @@ async def main():
         "error_count": 0,
         "completed": False
     }
-    
+
     # Stream execution
-    async for state in compiled.stream(initial_state, stream_mode="values"):
+    async for state in compiled.stream(initial_state):
         print(f"Step: {state['current_step']}, "
               f"Remaining: {len(state['documents'])}, "
               f"Processed: {len(state['processed_docs'])}")
-    
+
     print("Workflow completed!")
 
 if __name__ == "__main__":
     asyncio.run(main())
 ```
 
-## Key Concepts Summary
+## Best Practices
 
-- **StateGraph**: Main class for building workflow graphs
-- **TypedDict**: Type-safe state definitions
-- **Nodes**: Functions that process and update state
-- **Edges**: Define flow between nodes
-- **Command Objects**: Fine-grained execution control
-- **Reducers**: Control how state updates are merged
-- **Parallel Execution**: Multiple nodes running simultaneously
-- **Streaming**: Real-time execution monitoring
-- **LLM Integration**: AI-powered decision making
+### 1. State Design
+- Use clear state schemas with TypedDict
+- Keep state minimal and focused
+- Use appropriate reducers for different data types
+
+### 2. Node Development
+- Make nodes pure functions when possible
+- Handle errors gracefully within nodes
+- Use NodeResult for rich return values
+- Leverage NodeContext for execution metadata
+
+### 3. Parallel Execution
+- Group related operations in parallel groups
+- Choose appropriate join strategies (all_complete, any_first, quorum)
+- Configure timeouts and error handling
+- Use custom join conditions when needed
+
+### 4. Memory Management
+- Enable automatic state cleanup with `set_default_state_cleanup()`
+- Configure checkpointer limits (max_threads, ttl_seconds)
+- Monitor memory usage in long-running workflows
+
+### 5. Error Handling
+- Use appropriate error strategies for parallel groups
+- Implement recovery patterns with RouterResult
+- Leverage checkpoint resume for fault tolerance
+
+### 6. Monitoring
+- Enable execution monitoring for production workflows
+- Track node performance metrics with `get_execution_metrics()`
+- Use streaming for real-time monitoring
+
+## Summary
+
+The Graph System provides a comprehensive framework for building complex AI workflows with:
+
+- **Advanced State Management**: Robust state handling with automatic merging and cleanup
+- **Parallel Execution**: Sophisticated parallel processing with multiple strategies
+- **Dynamic Routing**: RouterResult-based intelligent flow control
+- **Memory Management**: Automatic garbage collection and resource optimization
+- **Error Handling**: Comprehensive error collection and recovery mechanisms
+- **Monitoring**: Real-time execution metrics and performance tracking
+- **Checkpointing**: Reliable state persistence and resume capabilities
+- **Streaming**: Real-time execution monitoring and state streaming
 
 For complex real-world implementations, refer to the complete crypto analysis example at `spoon-core/examples/graph_crypto_analysis.py`.

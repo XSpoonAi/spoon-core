@@ -528,7 +528,179 @@ python -c "import json; print('Valid JSON' if json.load(open('config.json')) els
 
 ---
 
+---
+
+## 12. 🔌 MCP Tool Integration Guide
+
+SpoonOS supports two main types of MCP (Model Context Protocol) tools for integrating external services and APIs:
+
+### MCP Tool Types Overview
+
+| Tool Type   | Config `"type"` | Transport   | How to Use/Connect                | Example Use Case                |
+|-------------|-----------------|-------------|-----------------------------------|---------------------------------|
+| Stdio MCP   | `"mcp"`         | `"stdio"`   | Auto-managed subprocess           | Tavily, GitHub, Brave, etc.     |
+| SSE MCP     | `"mcp"`         | `"sse"`     | Start your own SSE server         | Custom Web3, in-house tools     |
+| Built-in    | `"builtin"`     | N/A         | Provided by SpoonOS               | Crypto tools, price data, etc.  |
+
+### Recommended: Stdio MCP Tools
+
+**Stdio tools** are MCP tools that run as a subprocess and communicate with SpoonOS via stdin/stdout. They are the recommended approach for most use cases because:
+
+- No need to run or configure any server manually
+- Auto-managed lifecycle by SpoonOS
+- Always up to date with latest tool versions
+- Automatic restart on failures
+
+#### Stdio Tool Configuration
+
+```json
+{
+  "name": "tavily_search",
+  "type": "mcp",
+  "mcp_server": {
+    "command": "npx",
+    "args": ["-y", "tavily-mcp"],
+    "transport": "stdio",
+    "env": {
+      "TAVILY_API_KEY": "your-tavily-api-key"
+    },
+    "timeout": 30,
+    "retry_attempts": 3
+  }
+}
+```
+
+#### Common Stdio MCP Tools
+
+```json
+{
+  "tools": [
+    {
+      "name": "tavily_search",
+      "type": "mcp",
+      "mcp_server": {
+        "command": "npx",
+        "args": ["-y", "tavily-mcp"],
+        "transport": "stdio"
+      }
+    },
+    {
+      "name": "github_tools",
+      "type": "mcp",
+      "mcp_server": {
+        "command": "npx",
+        "args": ["-y", "@modelcontextprotocol/server-github"],
+        "transport": "stdio"
+      }
+    },
+    {
+      "name": "brave_search",
+      "type": "mcp",
+      "mcp_server": {
+        "command": "npx",
+        "args": ["-y", "@modelcontextprotocol/server-brave-search"],
+        "transport": "stdio"
+      }
+    }
+  ]
+}
+```
+
+### Advanced: SSE MCP Tools
+
+**SSE tools** are MCP tools that run as separate servers and communicate via Server-Sent Events (SSE). Use these for:
+
+- Custom or in-development integrations
+- Tools that need to run independently
+- Legacy MCP servers
+
+#### SSE Tool Configuration
+
+```json
+{
+  "name": "my_custom_tool",
+  "type": "mcp",
+  "mcp_server": {
+    "endpoint": "http://127.0.0.1:8765/sse",
+    "transport": "sse",
+    "timeout": 30,
+    "retry_attempts": 3
+  }
+}
+```
+
+#### Starting SSE Servers
+
+You must manually start SSE servers before using them:
+
+```bash
+# Example: Custom FastMCP server
+python my_mcp_server.py
+
+# Example: GitHub MCP server as SSE
+npx -y @modelcontextprotocol/server-github --sse
+```
+
+### Mixed Tool Configuration Example
+
+You can combine Stdio, SSE, and built-in tools in a single agent:
+
+```json
+{
+  "agents": {
+    "web3_agent": {
+      "class": "SpoonReactMCP",
+      "tools": [
+        {
+          "name": "tavily_search",
+          "type": "mcp",
+          "mcp_server": {
+            "command": "npx",
+            "args": ["-y", "tavily-mcp"],
+            "transport": "stdio",
+            "env": {
+              "TAVILY_API_KEY": "your-tavily-api-key"
+            }
+          }
+        },
+        {
+          "name": "my_custom_tool",
+          "type": "mcp",
+          "mcp_server": {
+            "endpoint": "http://127.0.0.1:8765/sse",
+            "transport": "sse"
+          }
+        },
+        {
+          "name": "crypto_tools",
+          "type": "builtin"
+        }
+      ]
+    }
+  }
+}
+```
+
+### MCP Tool Best Practices
+
+1. **Prefer Stdio MCP tools** for most use cases—no server management, always up to date, auto-restart
+2. Use `"sse"` tools only for custom or in-development integrations
+3. You can mix Stdio, SSE, and built-in tools in a single agent
+4. All tool configuration is managed in `config.json`—no need to modify code for tool integration
+5. Use environment variables for API keys and sensitive configuration
+6. Set appropriate timeouts and retry attempts for reliability
+
+### MCP Tool Troubleshooting
+
+- **Stdio tool not available**: Check the command and args in your config
+- **SSE tool connection failed**: Ensure the server is running and the endpoint is correct
+- **Environment variables not loaded**: Verify env vars are set in tool config or system environment
+- **Tool timeout issues**: Increase timeout values in mcp_server config
+- **Permission errors**: Check file permissions for command executables
+
+---
+
 ## Next Steps
 
 - [Agent Development Guide](./agent.md)
-- [MCP Mode Usage](./mcp_mode_usage.md)
+- [MCP Protocol Documentation](https://modelcontextprotocol.io/)
