@@ -16,6 +16,7 @@ from prompt_toolkit.history import FileHistory
 from prompt_toolkit.styles import Style
 
 from spoon_ai.agents import SpoonReactAI, SpoonReactMCP
+from spoon_ai.agents.my_agents import CUSTOM_AGENTS
 from spoon_ai.retrieval.document_loader import DocumentLoader
 from spoon_ai.schema import Message, Role
 from spoon_ai.trade.aggregator import Aggregator
@@ -431,8 +432,13 @@ class SpoonAICLI:
             elif agent_class == "SpoonReactMCP":
                 # For MCP agents, the unified system handles MCP server lifecycle
                 agent_instance = SpoonReactMCP(**agent_instance_config)
+            elif agent_class in CUSTOM_AGENTS:
+                # Handle custom agents
+                custom_agent_class = CUSTOM_AGENTS[agent_class]
+                agent_instance = custom_agent_class(**agent_instance_config)
             else:
                 logger.error(f"Unknown agent class: {agent_class}")
+                logger.error(f"Available custom agents: {list(CUSTOM_AGENTS.keys())}")
                 return
 
             # Load tools using the unified system
