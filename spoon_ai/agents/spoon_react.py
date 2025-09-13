@@ -45,7 +45,7 @@ class SpoonReactAI(ToolCallAgent):
     max_steps: int = 10
     tool_choice: str = "auto"
 
-    avaliable_tools: ToolManager = Field(default_factory=lambda: ToolManager([]))
+    available_tools: ToolManager = Field(default_factory=lambda: ToolManager([]))
     llm: ChatBot = Field(default_factory=create_configured_chatbot)
 
     mcp_transport: Union[str, WSTransport, SSETransport, PythonStdioTransport, NpxStdioTransport, FastMCPTransport, FastMCPStdioTransport, UvxStdioTransport, StdioTransport] = Field(default="mcp_server")
@@ -71,3 +71,28 @@ class SpoonReactAI(ToolCallAgent):
             if __context and hasattr(__context, 'report_error'):
                 await __context.report_error(e)
             raise
+
+    
+    @property
+    def avaliable_tools(self):
+        """Backward compatibility property for misspelled field name."""
+        import warnings
+        warnings.warn(
+            "avaliable_tools is deprecated and will be removed in v2.0. "
+            "Use available_tools instead.",
+            DeprecationWarning,
+            stacklevel=2
+        )
+        return self.available_tools
+
+    @avaliable_tools.setter
+    def avaliable_tools(self, value):
+        """Backward compatibility setter for misspelled field name."""
+        import warnings
+        warnings.warn(
+            "avaliable_tools is deprecated and will be removed in v2.0. "
+            "Use available_tools instead.",
+            DeprecationWarning,
+            stacklevel=2
+        )
+        self.available_tools = value
