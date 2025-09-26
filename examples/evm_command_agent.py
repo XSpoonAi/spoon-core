@@ -12,6 +12,7 @@ sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), '../../.
 
 from spoon_ai.agents.spoon_react_mcp import SpoonReactMCP
 from spoon_ai.agents import EvmAgent
+
 from spoon_ai.tools.tool_manager import ToolManager
 from spoon_ai.chat import ChatBot
 
@@ -130,28 +131,24 @@ Parse user commands intelligently and execute the appropriate EVM operations.
         self.confirmation_required = True
         self.debug_mode = False
 
-        # Demo/Test addresses for examples (real addresses provided by user)
+        # Demo/Test addresses from environment variables
         self.demo_addresses = {
-            "primary_wallet": "0xb018A8428bB87b15401dEcb615895Db2361e81a4",
-            "secondary_wallet": "0xFa4aea1F101cbCae0d1e7CE005f2e3DaC25A4b4D",
+            "primary_wallet": os.getenv("PRIMARY_WALLET", None),
+            "secondary_wallet": os.getenv("SECONDARY_WALLET", None),
         }
 
-        # Test private key for secondary wallet (provided by user for testing)
-        self.demo_private_key = "0x8eaa2c814a045ce50c2dde8e4eb7b9b5201a63a6e95b91f74f98fad5a403a9f2"
+        # Demo private key from environment variable
+        self.private_key = os.getenv("PRIVATE_KEY")
 
-        # Available tools - use the EVM agent's available tools
-        self.available_tools = self.evm_agent.avaliable_tools
+        # Available tools - use the EVM agent as our primary tool
+        self.available_tools = ToolManager([self.evm_agent])
 
     async def connect(self):
         """Connect method required by SpoonReactMCP base class."""
-        logger.info("Connecting SpoonOS EVM Command Agent...")
         return True
 
     async def initialize(self):
         """Initialize the agent and EVM tools."""
-        logger.info("Initializing SpoonOS EVM Command Agent...")
-
-        # Initialize parent class
         await super().initialize()
 
         # Initialize EVM agent
@@ -382,72 +379,9 @@ Parse user commands intelligently and execute the appropriate EVM operations.
             }
         ]
 
-    def get_help_text(self) -> str:
-        """Generate comprehensive help text for the agent."""
-        help_text = """
-🤖 SpoonOS EVM Command Agent Help
-
-OVERVIEW:
-I can understand natural language commands and execute various blockchain operations
-across multiple EVM networks. I support both English and Chinese commands.
-
-SUPPORTED NETWORKS:
-"""
-        for key, config in self.supported_networks.items():
-            testnet_flag = " (TESTNET)" if config.is_testnet else ""
-            help_text += f"• {config.name}{testnet_flag} - Gas: {config.gas_level}\n"
-
-        help_text += """
-COMMAND EXAMPLES:
-
- Balance Queries:
-• "Check my ETH balance"
-• "查看我的USDC余额"
-• "What's my balance on Base?"
-• "Show USDT balance for 0x1234..."
-
- Transfers:
-• "Send 0.1 ETH to 0x..."
-• "转账50个USDC给朋友"
-• "Transfer 100 USDT to my wallet"
-
- Token Swaps:
-• "Swap 1 ETH for USDC"
-• "用100 USDC换ETH"
-• "Buy some tokens with ETH"
-• "Exchange 50 USDT for ETH"
-
- Cross-chain Bridges:
-• "Bridge 100 USDC to Base"
-• "跨链转移50个USDT到Polygon"
-• "Move ETH to Arbitrum"
-
- Price Quotes:
-• "Get quote for 1 ETH to USDC"
-• "获取价格报价"
-• "How much can I get for 100 USDC?"
-
-USAGE TIPS:
-• Specify amounts and addresses clearly
-• I'll ask for confirmation before executing transactions
-• Use network names like 'base', 'polygon', 'ethereum'
-• Check your private key environment variable is set
-• I support both English and Chinese commands
-
-SAFETY FEATURES:
-• Transaction confirmation prompts
-• Network validation
-• Address format checking
-• Balance verification before transfers
-• Detailed transaction feedback with explorer links
-
-Need help with a specific command? Just ask!
-        """
-        return help_text.strip()
 
 async def run_interactive_demo():
     """Run an interactive demonstration of the EVM Command Agent."""
-    print("🎬 Starting SpoonOS EVM Command Agent Interactive Demo...")
 
     # Initialize the agent
     agent = SpoonEVMCommandAgent(llm=ChatBot(llm_provider="openai"))
@@ -505,123 +439,74 @@ async def run_interactive_demo():
             },
         ]
 
-        print(f"\n🎭 Running Comprehensive EVM Toolkit Demo ({len(demo_commands)} operations)...")
-        print("🚀 Testing all EVM functions: Balance, Quote, Transfer, Swap, Bridge")
-
         for i, demo in enumerate(demo_commands, 1):
-            print(f"\n{'='*60}")
-            print(f"Demo {i}/{len(demo_commands)}: {demo['description']}")
-            print(f"Command: \"{demo['command']}\"")
-            print(f"Network: {demo['network']}")
-            print(f"{'='*60}")
+            print(f"\n[{i}/{len(demo_commands)}] {demo['description']}")
+            print(f"Command: \"{demo['command']}\" (Network: {demo['network']})")
+            print("-" * 50)
 
             try:
                 result = await agent.process_command(
                     command=demo['command'],
                     network=demo['network'],
-                    private_key=agent.demo_private_key,  # Use demo private key
+                    private_key=agent.private_key,  # Use demo private key
                     confirm=False,  # Skip confirmations in demo
                     debug=False  # Disable debug to reduce log noise
                 )
 
-                print(f"\n Execution Result:")
                 if result['success']:
-                    print(f"    ✅ Status: SUCCESS")
-                    print(f"     Execution Time: {result.get('execution_time_seconds', 0):.2f}s")
+                    print("✅ SUCCESS")
 
-                    # Show result details
-                    if 'result' in result:
-                        result_data = result['result']
-                        if isinstance(result_data, dict) and 'message' in result_data:
-                            print(f"    Result: {result_data['message']}")
-                        else:
-                            print(f"    Result: {result_data}")
+                    # Print detailed result information
+                    result_data = result.get('result', {})
+                    if isinstance(result_data, dict) and 'message' in result_data:
+                        message = result_data['message']
+                        print(f"Result: {message}")
+                    elif result_data:
+                        print(f"Result: {result_data}")
 
-                    # Show transaction info if available
+                    # Print transaction details if available
                     if result.get('transaction_hash'):
-                        print(f"    Transaction: {result['transaction_hash']}")
-                        print(f"    Explorer: {result.get('explorer_link', 'N/A')}")
+                        print(f"Transaction: {result['transaction_hash']}")
+
+                    # Print explorer link if available
+                    if result.get('explorer_link'):
+                        print(f"Explorer: {result['explorer_link']}")
+
+                    # Print execution time
+                    exec_time = result.get('execution_time_seconds')
+                    if exec_time:
+                        print(f"Execution time: {exec_time:.2f}s")
+
+                    # Print network info
+                    if result.get('network'):
+                        print(f"Network: {result['network']}")
 
                 else:
-                    print(f"    Status: FAILED")
-                    print(f"    Error: {result.get('error', 'Unknown error')}")
+                    print("❌ FAILED")
+                    error_msg = str(result.get('error', 'Unknown error'))
+                    print(f"Error: {error_msg[:200]}{'...' if len(error_msg) > 200 else ''}")
+
+                    # Print additional error context
+                    if result.get('network'):
+                        print(f"Network: {result['network']}")
+                    if result.get('execution_time_seconds'):
+                        print(f"Failed after: {result['execution_time_seconds']:.2f}s")
 
             except Exception as e:
-                print(f"     Demo failed: {e}")
+                print(f"❌ Exception: {str(e)[:100]}")
 
             # Small delay for readability
             await asyncio.sleep(2)
 
 
     except KeyboardInterrupt:
-        print("\nDemo interrupted by user")
+        print("\nDemo interrupted")
     except Exception as e:
         print(f"\nDemo failed: {e}")
-        import traceback
-        traceback.print_exc()
-
-async def run_interactive_session():
-    """Run an interactive session where users can input commands."""
-    agent = SpoonEVMCommandAgent(llm=ChatBot(llm_provider="openai"))
-
-    try:
-        await agent.initialize()
-
-        print(f"\nInteractive Mode Started")
-        print(" Try commands like:")
-        print('   • "Check my ETH balance"')
-        print('   • "help" - for detailed instructions')
-        print('   • "quit" - to exit')
-        print(f"{'='*50}")
-
-        while True:
-            try:
-                # Get user input
-                command = input(f"\n SpoonOS EVM > ").strip()
-
-                if not command:
-                    continue
-
-                # Process the command
-                print(f"\n Processing: \"{command}\"...")
-
-                result = await agent.process_command(
-                    command=command,
-                    network=agent.default_network,
-                    debug=False
-                )
-
-                # Display result
-                if result['success']:
-                    print(f"✅ Success!")
-                    if 'result' in result and isinstance(result['result'], dict):
-                        if 'message' in result['result']:
-                            print(f" {result['result']['message']}")
-
-                    if result.get('transaction_hash'):
-                        print(f" Transaction: {result['transaction_hash']}")
-                        if result.get('explorer_link'):
-                            print(f" View on explorer: {result['explorer_link']}")
-                else:
-                    print(f"❌ Failed: {result.get('error', 'Unknown error')}")
-
-            except KeyboardInterrupt:
-                print("\n Session ended by user")
-                break
-            except Exception as e:
-                print(f"❌ Error: {e}")
-
-    except Exception as e:
-        print(f"❌ Failed to start interactive session: {e}")
 
 async def main():
-    """Main entry point - run the demo by default."""
-    import sys
-
-    if len(sys.argv) > 1 and sys.argv[1] == "interactive":
-        await run_interactive_session()
-    else:
-        await run_interactive_demo()
+    """Main entry point - run the demo."""
+    await run_interactive_demo()
 
 if __name__ == "__main__":
     # Load environment variables if available

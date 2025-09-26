@@ -3,7 +3,7 @@
 __pycache__
 .vscode
 chat_logs/*
-config.json
+
 react_logs/*
 
 alembic.ini

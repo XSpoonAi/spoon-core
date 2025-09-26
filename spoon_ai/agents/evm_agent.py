@@ -20,10 +20,8 @@ def create_configured_chatbot():
     try:
         config_manager = ConfigurationManager()
         optimal_provider = config_manager.get_default_provider()
-        logger.info(f"Creating ChatBot with optimal provider: {optimal_provider}")
         return ChatBot(llm_provider=optimal_provider)
     except Exception as e:
-        logger.error(f"Failed to initialize ChatBot with LLM manager: {e}")
         # Fallback to default
         return ChatBot(llm_provider="openai")
 
@@ -81,7 +79,6 @@ When working with blockchain operations, be precise about amounts, addresses, an
         # Load EVM tools
         self._load_evm_tools()
 
-        logger.info(f"Initialized EVM Agent: {self.name} with {len(self.avaliable_tools.tool_map)} tools")
 
     def _load_evm_tools(self):
         """Load all available EVM tools into the agent."""
@@ -108,41 +105,29 @@ When working with blockchain operations, be precise about amounts, addresses, an
             # Update tool manager
             self.avaliable_tools = ToolManager(evm_tools)
 
-            logger.info(f"Loaded {len(evm_tools)} EVM tools: {[tool.name for tool in evm_tools]}")
-
         except ImportError as e:
             logger.error(f"Failed to import EVM tools: {e}")
-            logger.warning("EVM Agent will operate without EVM tools")
         except Exception as e:
             logger.error(f"Failed to load EVM tools: {e}")
             raise
 
     async def initialize(self, __context: Any = None):
         """Initialize async components."""
-        logger.info(f"Initializing EVM Agent '{self.name}'")
-
         try:
             # Test LLM connection
             connection_test = await self._test_llm_connection()
-            if connection_test["status"] == "success":
-                logger.info(" EVM Agent LLM connection successful")
-            else:
-                logger.warning(f" EVM Agent LLM connection failed: {connection_test.get('error', 'Unknown error')}")
+            if connection_test["status"] != "success":
+                logger.warning(f"LLM connection failed: {connection_test.get('error', 'Unknown error')}")
 
             # Validate tools
-            available_tools = list(self.avaliable_tools.tool_map.keys())
-            logger.info(f" EVM Agent available tools: {available_tools}")
-
-            if not available_tools:
-                logger.warning(" No tools loaded - agent functionality will be limited")
+            if not self.avaliable_tools.tool_map:
+                logger.warning("No EVM tools loaded - agent functionality will be limited")
 
         except Exception as e:
-            logger.error(f"Failed to initialize EVM Agent {self.name}: {str(e)}")
+            logger.error(f"Failed to initialize EVM Agent: {str(e)}")
             if __context and hasattr(__context, 'report_error'):
                 await __context.report_error(e)
             raise
-
-        logger.info(f" EVM Agent '{self.name}' initialized successfully")
 
     async def _test_llm_connection(self) -> Dict[str, Any]:
         """Test the LLM connection."""
@@ -209,7 +194,6 @@ Please analyze the command and use the appropriate EVM tools to execute it safel
             }
 
         except Exception as e:
-            logger.error(f"EVM command execution failed: {e}")
             return {
                 "success": False,
                 "error": str(e),
@@ -334,7 +318,7 @@ Please analyze the command and use the appropriate EVM tools to execute it safel
 
         # Check for duplicates
         if tool.name in self.avaliable_tools.tool_map:
-            logger.warning(f"Tool '{tool.name}' already exists, replacing it")
+            pass  # Replace silently
 
         # Add to tool manager
         self.avaliable_tools.tool_map[tool.name] = tool
@@ -343,57 +327,4 @@ Please analyze the command and use the appropriate EVM tools to execute it safel
         else:
             self.avaliable_tools.tools.append(tool)
 
-        logger.info(f"Added EVM tool: {tool.name}")
 
-    def get_tool_help(self) -> str:
-        """Generate help text for available EVM operations."""
-        help_text = """
- EVM Agent - Blockchain Operations Help
-
-SUPPORTED NETWORKS:
-"""
-        for network in self.get_supported_networks():
-            testnet_flag = " (TESTNET)" if network.get("is_testnet") else ""
-            help_text += f"• {network['name']}{testnet_flag} - Gas: {network['gas_level']}\n"
-
-        help_text += """
-AVAILABLE OPERATIONS:
-
- Balance Queries:
-• "Check my ETH balance"
-• "查看我的USDC余额"
-• "What's my balance on Base?"
-
- Transfers:
-• "Send 0.1 ETH to 0x..."
-• "转账50个USDC给朋友"
-• "Transfer 100 USDT to my wallet"
-
- Token Swaps:
-• "Swap 1 ETH for USDC"
-• "用100 USDC换ETH"
-• "Exchange tokens on Uniswap"
-
- Cross-chain Bridges:
-• "Bridge 100 USDC to Base"
-• "跨链转移50个USDT到Polygon"
-• "Move ETH to Arbitrum"
-
- Price Quotes:
-• "Get quote for 1 ETH to USDC"
-• "获取价格报价"
-• "How much can I get for 100 USDC?"
-
-USAGE TIPS:
-• Specify amounts and addresses clearly
-• I'll ask for confirmation before transactions
-• Supports both English and Chinese commands
-• Set EVM_PRIVATE_KEY environment variable for transactions
-
-SAFETY FEATURES:
-• Transaction confirmation prompts
-• Network and address validation
-• Balance verification before transfers
-• Detailed transaction feedback with explorer links
-        """
-        return help_text.strip()
