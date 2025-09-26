@@ -11,9 +11,9 @@ import json
 sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), '../../../spoon-toolkit')))
 
 from spoon_ai.agents.spoon_react_mcp import SpoonReactMCP
+from spoon_ai.agents import EvmAgent
 from spoon_ai.tools.tool_manager import ToolManager
 from spoon_ai.chat import ChatBot
-from spoon_toolkits.crypto.evm import EvmAgent
 
 logging.basicConfig(level=logging.WARNING)  # Reduce log noise
 logger = logging.getLogger(__name__)
@@ -126,7 +126,7 @@ Parse user commands intelligently and execute the appropriate EVM operations.
         }
 
         # Default configuration
-        self.default_network = "polygon"  
+        self.default_network = "polygon"
         self.confirmation_required = True
         self.debug_mode = False
 
@@ -139,8 +139,8 @@ Parse user commands intelligently and execute the appropriate EVM operations.
         # Test private key for secondary wallet (provided by user for testing)
         self.demo_private_key = "0x8eaa2c814a045ce50c2dde8e4eb7b9b5201a63a6e95b91f74f98fad5a403a9f2"
 
-        # Available tools - use the EVM agent as our primary tool
-        self.available_tools = ToolManager([self.evm_agent])
+        # Available tools - use the EVM agent's available tools
+        self.available_tools = self.evm_agent.avaliable_tools
 
     async def connect(self):
         """Connect method required by SpoonReactMCP base class."""
@@ -154,15 +154,12 @@ Parse user commands intelligently and execute the appropriate EVM operations.
         # Initialize parent class
         await super().initialize()
 
-        # Test EVM agent connectivity
+        # Initialize EVM agent
         try:
-            llm_test = await self.evm_agent.test_llm_connection()
-            if llm_test["status"] == "success":
-                logger.info(" EVM Agent LLM connection successful")
-            else:
-                logger.warning(f" EVM Agent LLM connection failed: {llm_test.get('error', 'Unknown error')}")
+            await self.evm_agent.initialize()
+            logger.info("✅ EVM Agent initialized successfully")
         except Exception as e:
-            logger.error(f" Failed to test EVM Agent connection: {e}")
+            logger.error(f" Failed to initialize EVM Agent: {e}")
 
         logger.info("SpoonOS EVM Command Agent initialized successfully")
 
@@ -213,32 +210,25 @@ Parse user commands intelligently and execute the appropriate EVM operations.
 
         # Get RPC URL and private key
         rpc_url = network_config.rpc_url
-        private_key = private_key or os.getenv("EVM_PRIVATE_KEY")
+        private_key = private_key or os.getenv("PRIVATE_KEY")
 
         try:
-            # First analyze the command to understand what we're doing
-            if debug:
-                logger.debug("Analyzing command with EVM agent...")
-                analysis = await self.evm_agent.analyze_instruction(command)
-                logger.debug(f"Command analysis: {json.dumps(analysis, indent=2, default=str)}")
-
             # Execute the command using EVM agent
-            result = await self.evm_agent.execute(
-                instruction=command,
-                rpc_url=rpc_url,
+            result = await self.evm_agent.process_evm_command(
+                command=command,
+                network=network,
                 private_key=private_key,
                 confirm=confirm,
-                debug=debug,
                 **kwargs
             )
 
             # Process the result
             execution_time = (datetime.now() - start_time).total_seconds()
 
-            if result.error:
+            if not result.get("success", False):
                 return {
                     "success": False,
-                    "error": result.error,
+                    "error": result.get("error", "Unknown error"),
                     "command": command,
                     "network": network_config.name,
                     "execution_time_seconds": execution_time,
@@ -248,12 +238,16 @@ Parse user commands intelligently and execute the appropriate EVM operations.
                 # Extract transaction hash if present
                 tx_hash = None
                 explorer_link = None
+                result_data = result.get("result", "")
 
-                if hasattr(result.output, 'get') and isinstance(result.output, dict):
-                    if 'transaction' in result.output and isinstance(result.output['transaction'], dict):
-                        tx_hash = result.output['transaction'].get('hash')
-                    elif 'raw_data' in result.output and isinstance(result.output['raw_data'], dict):
-                        tx_hash = result.output['raw_data'].get('hash')
+                # Try to extract transaction hash from result
+                if isinstance(result_data, str):
+                    import re
+                    # Look for transaction hash patterns in the response
+                    hash_pattern = r"0x[a-fA-F0-9]{64}"
+                    tx_match = re.search(hash_pattern, result_data)
+                    if tx_match:
+                        tx_hash = tx_match.group(0)
 
                 # Generate explorer link if we have a transaction hash
                 if tx_hash:
@@ -261,7 +255,7 @@ Parse user commands intelligently and execute the appropriate EVM operations.
 
                 return {
                     "success": True,
-                    "result": result.output,
+                    "result": {"message": result_data},
                     "command": command,
                     "network": network_config.name,
                     "transaction_hash": tx_hash,
