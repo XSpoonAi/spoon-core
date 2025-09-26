@@ -3,7 +3,8 @@
     "anthropic": "",
     "openrouter": "",
     "deepseek": "",
-    "gemini": ""
+    "gemini": "",
+    "openai":""
   },
   "providers": {
     "anthropic": {
@@ -26,6 +27,14 @@
         "HTTP-Referer": "https://github.com/spoon-ai/spoon-core",
         "X-Title": "SpoonAI Agent"
       }
+    },
+    "openai": {
+      "api_key": "",
+      "model": "gpt-4-0613",
+      "max_tokens": 4096,
+      "temperature": 0.1,
+      "timeout": 60,
+      "retry_attempts": 5
     },
     "gemini": {
       "api_key": "",
