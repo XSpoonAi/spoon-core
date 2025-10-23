@@ -268,7 +268,7 @@ class Turnkey:
         }
         return self._send_post_request(endpoint, data)
 
-    def list_activities(self, limit=None, before=None, after=None):
+    def list_activities(self, limit=None, before=None, after=None, filter_by_status=None, filter_by_type=None):
         """
         List activities within organization (paginated).
 
@@ -276,6 +276,8 @@ class Turnkey:
             limit (str|None): Number per page.
             before (str|None): Pagination cursor (before).
             after (str|None): Pagination cursor (after).
+            filter_by_status (list|None): Filter by activity status (e.g., ['ACTIVITY_STATUS_COMPLETED']).
+            filter_by_type (list|None): Filter by activity type (e.g., ['ACTIVITY_TYPE_SIGN_TRANSACTION_V2']).
 
         Returns:
             dict: Activity list.
@@ -287,6 +289,8 @@ class Turnkey:
         data = {
             "organizationId": self.org_id,
         }
+        
+        # Add pagination options
         if any([limit, before, after]):
             data["paginationOptions"] = {}
             if limit:
@@ -295,6 +299,13 @@ class Turnkey:
                 data["paginationOptions"]["before"] = before
             if after:
                 data["paginationOptions"]["after"] = after
+        
+        # Add filters
+        if filter_by_status:
+            data["filterByStatus"] = filter_by_status
+        if filter_by_type:
+            data["filterByType"] = filter_by_type
+            
         return self._send_post_request(endpoint, data)
 
     def get_policy_evaluations(self, activity_id):
@@ -595,7 +606,7 @@ class Turnkey:
             # Verify Turnkey CLI is installed
             subprocess.run(["turnkey", "help"], check=True, capture_output=True)
 
-            # 临时文件路径
+            # Temporary file paths
             import_bundle_file = "import_bundle.txt"
             encrypted_bundle_file = "encrypted_bundle.txt"
 
@@ -623,7 +634,7 @@ class Turnkey:
                 check=True
             )
 
-            # 读取 encrypted_bundle
+            # Read encrypted_bundle
             with open(encrypted_bundle_file, "r") as f:
                 encrypted_bundle = f.read().strip()
 
@@ -631,7 +642,7 @@ class Turnkey:
             if not encrypted_bundle:
                 raise RuntimeError("Generated encrypted_bundle is empty")
 
-            # 清理临时文件
+            # Clean up temporary files
             os.remove(import_bundle_file)
             os.remove(encrypted_bundle_file)
 

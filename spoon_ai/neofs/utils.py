@@ -70,21 +70,59 @@ def generate_simple_signature_params(private_key_wif: Optional[str] = None, payl
     }
 
 
-def sign_bearer_token(bearer_token: str, private_key_wif: str, *, wallet_connect: bool = False) -> tuple[str, str]:
-    """Produce REST gateway compatible bearer signature."""
-    account = Account.from_wif(private_key_wif)
-    public_key = account.public_key.to_array().hex()
+# utils.py (or wherever you place sign_bearer_token)
+import base64, binascii, os
+from neo3.core import cryptography  # Use neo3's sign
+from cryptography.hazmat.primitives import hashes
+
+# WalletConnect fixed prefix and postfix
+_WC_PREFIX = b"\x01\x00\x01\xf0"
+_WC_POSTFIX = b"\x00\x00"
+
+
+import base64, binascii
+
+def _wc_build_message(token_b64: str, salt: bytes) -> tuple[bytes, bytes]:
+    prefix  = b"\x01\x00\x01\xf0"
+    postfix = b"\x00\x00"
+    token_raw  = base64.standard_b64decode(token_b64)
+    normalized = base64.standard_b64encode(token_raw)  
+    hex_salt   = binascii.hexlify(salt)                
+
+    msg_len = len(hex_salt) + len(normalized)
+    if msg_len >= 256:
+        raise ValueError(f"WalletConnect message too long: {msg_len}")
+    msg = prefix + msg_len.to_bytes(1, "big") + hex_salt + normalized + postfix
+    return msg, hex_salt
+
+
+# utils.py
+import os, base64, binascii, hashlib
+from neo3.wallet.account import Account
+from neo3.core import cryptography
+
+def sign_bearer_token(bearer_token: str, private_key_wif: str, *, wallet_connect: bool = True) -> tuple[str, str]:
+    """
+    Returns (signature_hex, compressed_pubkey_hex)
+
+    - wallet_connect=True:
+        msg = WC format (with prefix/len/salt/postfix), hash=SHA-256
+        X-Bearer-Signature = <DER signature hex> + <16B salt hex>
+        X-Bearer-Signature-Key = <compressed public key hex>
+        URL needs to append ?walletConnect=true
+    """
+    acct = Account.from_wif(private_key_wif)
+    pubkey_hex = acct.public_key.to_array().hex()  # 33B compressed public key → hex
 
     if wallet_connect:
-        decoded = base64.standard_b64decode(bearer_token)
-        normalized_token = base64.standard_b64encode(decoded)
         salt = os.urandom(16)
-        salt_hex_bytes = binascii.hexlify(salt)
-        payload = _build_serialized_message((salt_hex_bytes, normalized_token))
-        signature = cryptography.sign(payload, account.private_key, hash_func=hashlib.sha256)
-        signature_hex = binascii.hexlify(signature).decode("utf-8")
-        return f"{signature_hex}{salt_hex_bytes.decode('utf-8')}", public_key
+        msg, hex_salt = _wc_build_message(bearer_token, salt)
+        der_sig = cryptography.sign(msg, acct.private_key, hash_func=hashlib.sha256)
+        sig_hex = binascii.hexlify(der_sig).decode() + hex_salt.decode()
+        return sig_hex, pubkey_hex
 
-    payload = base64.standard_b64decode(bearer_token)
-    signature = cryptography.sign(payload, account.private_key, hash_func=hashlib.sha512)
-    return f"04{signature.hex()}", public_key
+
+    token_raw = base64.standard_b64decode(bearer_token)
+    der_sig = cryptography.sign(token_raw, acct.private_key, hash_func=hashlib.sha512)
+    sig_hex = "04" + binascii.hexlify(der_sig).decode()
+    return sig_hex, pubkey_hex

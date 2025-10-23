@@ -179,41 +179,18 @@ class NeoFSClient:
         container_id: str,
         content: bytes,
         *,
-        bearer_token: Optional[str] = None,
-        attributes: Optional[dict] = None,
-        expiration_rfc3339: Optional[str] = None,
-        expiration_duration: Optional[str] = None,
-        expiration_timestamp: Optional[int] = None,
-        timeout: Optional[float] = 180,
-        use_simple_bearer: bool = True,  # New: Use simple Bearer Token method (official method)
+        bearer_token: str | None = None,
+        attributes: dict | None = None,
+        expiration_rfc3339: str | None = None,
+        expiration_duration: str | None = None,
+        expiration_timestamp: int | None = None,
+        timeout: float | None = 180,
+        wallet_connect: bool = True,        # Default to WalletConnect
+        simple_bearer: bool | None = None,  # Only used when wallet_connect=False
     ) -> UploadAddress:
-        """
-        Upload object to NeoFS.
-        
-        For PUBLIC containers, bearer_token is optional.
-        For PRIVATE containers, bearer_token is required.
-        
-        Args:
-            use_simple_bearer: If True, only pass Authorization header (like official tests).
-                               If False, use full signature headers.
-        """
-        headers = {
-            'Content-Type': 'application/octet-stream',
-        }
-        
-        # Add authentication headers if Bearer Token is provided
-        if bearer_token:
-            if use_simple_bearer:
-                # Official method: only pass Authorization header
-                headers['Authorization'] = f'Bearer {bearer_token}'
-            else:
-                # Original method: pass full signature headers
-                signature_value, signature_key = sign_bearer_token(bearer_token, self.private_key_wif, wallet_connect=False)
-                headers['Authorization'] = f'Bearer {bearer_token}'
-                headers['X-Bearer-Signature'] = signature_value
-                headers['X-Bearer-Signature-Key'] = signature_key
-        
-        # Add optional attributes
+        headers = {'Content-Type': 'application/octet-stream'}
+
+        # Business headers (unrelated to authentication)
         if attributes:
             headers['X-Attributes'] = json.dumps(attributes)
         if expiration_rfc3339:
@@ -222,19 +199,38 @@ class NeoFSClient:
             headers['X-Neofs-Expiration-Duration'] = expiration_duration
         if expiration_timestamp is not None:
             headers['X-Neofs-Expiration-Timestamp'] = str(expiration_timestamp)
-        
+
+        # Assemble authentication headers + URL
+        if bearer_token:
+            headers['Authorization'] = f'Bearer {bearer_token}'
+            if wallet_connect:
+                sig_hex, pub_hex = sign_bearer_token(bearer_token, self.private_key_wif, wallet_connect=True)
+                headers['Authorization'] = f'Bearer {bearer_token}'
+                headers['X-Bearer-Signature'] = sig_hex
+                headers['X-Bearer-Signature-Key'] = pub_hex
+                url = f'/v1/objects/{container_id}?walletConnect=true'   
+            else:
+                # Non-WC branch
+                if simple_bearer is None:
+                    simple_bearer = True
+                if simple_bearer:
+                    url = f'/v1/objects/{container_id}'
+                else:
+                    sig_hex, pub_hex = sign_bearer_token(bearer_token, self.private_key_wif, wallet_connect=False)
+                    headers['X-Bearer-Signature'] = sig_hex
+                    headers['X-Bearer-Signature-Key'] = pub_hex
+                    url = f'/v1/objects/{container_id}'
+        else:
+            # Public containers can work without token
+            url = f'/v1/objects/{container_id}'
+
         request_kwargs = {'headers': headers, 'content': content}
-        
-        # Add signature params if using full signature method
-        if bearer_token and not use_simple_bearer:
-            params = generate_simple_signature_params(self.private_key_wif, payload_parts=(headers['X-Bearer-Signature'].encode(),))
-            request_kwargs['params'] = params
-        
         if timeout is not None:
             request_kwargs['timeout'] = timeout
-        
-        response = self._request('POST', f'/v1/objects/{container_id}', **request_kwargs)
-        return UploadAddress(**response.json())
+
+        resp = self._request('POST', url, **request_kwargs)
+        return UploadAddress(**resp.json())
+
 
     # 5. Object Download & Retrieval
     def download_object_by_id(
@@ -264,6 +260,7 @@ class NeoFSClient:
         
         return self._request('GET', f'/v1/objects/{container_id}/by_id/{object_id}', headers=headers, params=params if params else None)
 
+    # 5. Object Download & Retrieval    
     def get_object_header_by_id(
         self,
         container_id: str,
@@ -288,6 +285,7 @@ class NeoFSClient:
         
         return self._request('HEAD', f'/v1/objects/{container_id}/by_id/{object_id}', headers=headers, params=params if params else None)
 
+    # 6. Object Download & Retrieval
     def download_object_by_attribute(
         self,
         container_id: str,
@@ -318,6 +316,7 @@ class NeoFSClient:
         encoded_val = quote(attr_val, safe="")
         return self._request('GET', f'/v1/objects/{container_id}/by_attribute/{encoded_key}/{encoded_val}', headers=headers, params=params if params else None)
         
+    # 7. Object Download & Retrieval
     def get_object_header_by_attribute(
         self,
         container_id: str,
@@ -344,13 +343,14 @@ class NeoFSClient:
         encoded_key = quote(attr_key, safe="")
         encoded_val = quote(attr_val, safe="")
         return self._request('HEAD', f'/v1/objects/{container_id}/by_attribute/{encoded_key}/{encoded_val}', headers=headers, params=params if params else None)
-    
+
+    # 8. Object Delete
     def delete_object(self, container_id: str, object_id: str) -> SuccessResponse:
         params = generate_simple_signature_params(self.private_key_wif)
         response = self._request('DELETE', f'/v1/objects/{container_id}/{object_id}', params=params)
         return SuccessResponse(**response.json())
 
-    # 6. Object Search
+    # 9. Object Search
     def search_objects(
         self,
         container_id: str,
@@ -381,13 +381,13 @@ class NeoFSClient:
         response = self._request('POST', f'/v2/objects/{container_id}/search', headers=headers, params=params, json=search_request.model_dump(by_alias=True))
         return ObjectListV2(**response.json())
 
-    # 7. Accounting
+    # 10. Accounting
     def get_balance(self, address: Optional[str] = None) -> Balance:
         address_to_query = address or self.owner_address
         response = self._request('GET', f'/v1/accounting/balance/{address_to_query}')
         return Balance(**response.json())
 
-    # 8. Network
+    # 11. Network
     def get_network_info(self) -> NetworkInfo:
         response = self._request('GET', '/v1/network-info')
         return NetworkInfo(**response.json())

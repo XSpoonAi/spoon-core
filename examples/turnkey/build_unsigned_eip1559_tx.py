@@ -36,8 +36,15 @@ def main():
 
     chain_id = w3.eth.chain_id
     nonce = w3.eth.get_transaction_count(Web3.to_checksum_address(from_addr))
-    latest = w3.eth.get_block("latest")
-    base_fee = latest.get("baseFeePerGas", w3.to_wei(1, "gwei"))
+    
+    # Get base fee from latest block
+    try:
+        latest = w3.eth.get_block("latest")
+        base_fee = latest.get("baseFeePerGas", w3.to_wei(1, "gwei"))
+    except Exception as e:
+        print(f"⚠️  Warning: Could not fetch latest block: {e}")
+        print("   Using default base fee of 1 gwei")
+        base_fee = w3.to_wei(1, "gwei")
     max_priority_fee_per_gas = w3.to_wei(priority_gwei, "gwei")
     max_fee_per_gas = (
         w3.to_wei(int(max_fee_gwei_override), "gwei")
@@ -105,6 +112,5 @@ def main():
 
 if __name__ == "__main__":
     main()
-
 
 
