@@ -41,7 +41,7 @@ When you need to use tools, please use the provided tool API. Don't pretend to c
     max_steps: int = 10
     tool_choice: str = "auto"
 
-    avaliable_tools: ToolManager = Field(default_factory=lambda: ToolManager([]))
+    available_tools: ToolManager = Field(default_factory=lambda: ToolManager([]))
     llm: ChatBot = Field(default_factory=lambda: ChatBot())
 
     # MCP integration configuration
@@ -201,6 +201,7 @@ When you need to use tools, please use the provided tool API. Don't pretend to c
             logger.error(f"Error getting tool info: {e}")
         
         return tool_info
+    
 
     def validate_tools(self) -> Dict[str, Any]:
         """
@@ -298,3 +299,28 @@ When you need to use tools, please use the provided tool API. Don't pretend to c
             logger.error(f"Error checking tools after clear: {e}")
         
         logger.debug(f"CustomAgent '{self.name}' fully cleared and validated")
+
+    
+    @property
+    def avaliable_tools(self):
+        """Backward compatibility property for misspelled field name."""
+        import warnings
+        warnings.warn(
+            "avaliable_tools is deprecated and will be removed in v2.0. "
+            "Use available_tools instead.",
+            DeprecationWarning,
+            stacklevel=2
+        )
+        return self.available_tools
+
+    @avaliable_tools.setter
+    def avaliable_tools(self, value):
+        """Backward compatibility setter for misspelled field name."""
+        import warnings
+        warnings.warn(
+            "avaliable_tools is deprecated and will be removed in v2.0. "
+            "Use available_tools instead.",
+            DeprecationWarning,
+            stacklevel=2
+        )
+        self.available_tools = value
