@@ -74,6 +74,8 @@ dependencies = [ # Complete dependencies from requirements.txt for out-of-the-bo
     "cryptography>=41.0.0",
     "eth-utils>=2.0.0",
     "rlp>=3.0.0",
+    "uvicorn[standard]>=0.32.0",
+    "x402>=0.2.1",
 ]
 
 [project.urls]

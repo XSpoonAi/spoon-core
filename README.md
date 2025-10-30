@@ -50,6 +50,7 @@ SpoonOS is a living, evolving agentic operating system. Its SCDF is purpose-buil
 - **🔄 State Management** - Comprehensive session history and state persistence
 - **🔗Composable Agent Logic** - Create agents that can sense, reason, plan, and execute modularly — enabling use cases across DeFi, creator economy, and more
 - **🚀 Easy to Use** - Well-designed API for rapid development and integration
+- **🪙 x402 Payment Rails** - Native x402 facilitator client, agent tools, CLI helpers, and FastAPI gateway for paywalled agent actions
 
 ## ⚙️ Quick Installation
 
@@ -118,6 +119,56 @@ Then load it in your Python entry file:
 from dotenv import load_dotenv
 load_dotenv(override=True)
 ```
+
+## 🪙 x402 Payments
+
+SpoonOS now ships with a first-class x402 integration, letting agents pay for external services and expose their own paywalled endpoints.
+
+### 1. Configure credentials
+
+Add the following entries to `.env` (or export them in your shell):
+
+```bash
+X402_AGENT_PRIVATE_KEY=0xyour-agent-wallet-private-key
+X402_RECEIVER_ADDRESS=0xwallet-that-receives-fees
+X402_FACILITATOR_URL=https://x402.org/facilitator
+X402_DEFAULT_ASSET=0xa063B8d5ada3bE64A24Df594F96aB75F0fb78160  # USDC on Base Sepolia
+X402_DEFAULT_NETWORK=base-sepolia
+X402_DEFAULT_AMOUNT_USDC=0.10
+```
+
+You can override additional values in `config.json` under the new `x402` section (branding, session tokens, per-resource metadata, etc.).
+
+### 2. Use the agent tools
+
+`SpoonReactAI` automatically registers two tools when x402 is configured:
+
+- `x402_create_payment` – generate signed `X-PAYMENT` headers for any resource.
+- `x402_paywalled_request` – negotiate a 402 challenge, sign the payment, and retry the HTTP call automatically.
+
+### 3. Command-line helpers
+
+Use the bundled CLI to inspect requirements, sign headers, or verify incoming requests:
+
+```bash
+uv run python -m spoon_ai.payments.cli requirements
+uv run python -m spoon_ai.payments.cli sign --amount-usdc 0.05 --resource https://api.example.com/data
+uv run python -m spoon_ai.payments.cli verify <base64-header>
+```
+
+### 4. Host a paywalled agent
+
+Run the FastAPI gateway to protect agent invocations with x402:
+
+```bash
+uv run python -m spoon_ai.payments.app
+```
+
+This exposes:
+- `GET /x402/requirements` – discover supported payment requirements.
+- `POST /x402/invoke/{agent_name}` – pay-to-invoke endpoint that verifies and settles headers, then forwards prompts to your agent. Successful responses include an `X-PAYMENT-RESPONSE` header containing the settlement receipt.
+
+Check `examples/x402_agent_demo.py` for an end-to-end walkthrough.
 
 ### Method 2: CLI Configuration
 
@@ -240,31 +291,39 @@ SpoonOS features a unified LLM infrastructure that provides seamless integration
 ### Basic Usage
 
 ```python
+import asyncio
 from spoon_ai.llm import LLMManager, ConfigurationManager
 
-# Initialize the LLM manager
-config_manager = ConfigurationManager()
-llm_manager = LLMManager(config_manager)
 
-# Simple chat request (uses default provider)
-response = await llm_manager.chat([
-    {"role": "user", "content": "Hello, world!"}
-])
-print(response.content)
+async def main():
+    # Initialize the LLM manager
+    config_manager = ConfigurationManager()
+    llm_manager = LLMManager(config_manager)
 
-# Use specific provider
-response = await llm_manager.chat(
-    messages=[{"role": "user", "content": "Hello!"}],
-    provider="anthropic"
-)
+    # Simple chat request (uses default provider)
+    response = await llm_manager.chat(
+        [{"role": "user", "content": "Hello, world!"}]
+    )
+    print(response.content)
 
-# Chat with tools
-tools = [{"name": "get_weather", "description": "Get weather info"}]
-response = await llm_manager.chat_with_tools(
-    messages=[{"role": "user", "content": "What's the weather?"}],
-    tools=tools,
-    provider="openai"
-)
+    # Use specific provider
+    response = await llm_manager.chat(
+        messages=[{"role": "user", "content": "Hello!"}],
+        provider="anthropic",
+    )
+
+    # Chat with tools
+    tools = [{"name": "get_weather", "description": "Get weather info"}]
+    response = await llm_manager.chat_with_tools(
+        messages=[{"role": "user", "content": "What's the weather?"}],
+        tools=tools,
+        provider="openai",
+    )
+    print(response.content)
+
+
+if __name__ == "__main__":
+    asyncio.run(main())
 ```
 
 ### Turnkey SDK Usage

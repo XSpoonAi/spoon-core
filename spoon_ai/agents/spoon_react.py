@@ -50,11 +50,13 @@ class SpoonReactAI(ToolCallAgent):
 
     mcp_transport: Union[str, WSTransport, SSETransport, PythonStdioTransport, NpxStdioTransport, FastMCPTransport, FastMCPStdioTransport, UvxStdioTransport, StdioTransport] = Field(default="mcp_server")
     mcp_topics: List[str] = Field(default=["spoon_react"])
+    x402_enabled: bool = Field(default=True, description="Automatically attach x402 payment tools when configuration is present.")
 
     def __init__(self, **kwargs):
         """Initialize SpoonReactAI with both ToolCallAgent and MCPClientMixin initialization"""
         # Call parent class initializers
         ToolCallAgent.__init__(self, **kwargs)
+        self._x402_tools_initialized = False
 
     async def initialize(self, __context: Any = None):
         """Initialize async components and subscribe to topics"""
@@ -64,6 +66,7 @@ class SpoonReactAI(ToolCallAgent):
         try:
             # Verify connection
             await self.connect()
+            await self._ensure_x402_tools()
 
         except Exception as e:
             logger.error(f"Failed to initialize agent {self.name}: {str(e)}")
@@ -71,3 +74,38 @@ class SpoonReactAI(ToolCallAgent):
             if __context and hasattr(__context, 'report_error'):
                 await __context.report_error(e)
             raise
+
+    async def _ensure_x402_tools(self) -> None:
+        """Attach x402 helper tools if configuration is available."""
+        if not self.x402_enabled or getattr(self, "_x402_tools_initialized", False):
+            return
+
+        try:
+            from spoon_ai.payments import X402PaymentService, X402ConfigurationError
+            from spoon_ai.tools.x402_payment import X402PaymentHeaderTool, X402PaywalledRequestTool
+        except ImportError as exc:
+            logger.debug(f"x402 integration unavailable: {exc}")
+            self._x402_tools_initialized = True
+            return
+
+        try:
+            service = X402PaymentService()
+        except X402ConfigurationError as exc:
+            logger.info(f"x402 configuration incomplete, skipping tool attachment: {exc}")
+            self._x402_tools_initialized = True
+            return
+        except Exception as exc:  # pragma: no cover - defensive
+            logger.warning(f"Unexpected error initialising x402 service: {exc}")
+            self._x402_tools_initialized = True
+            return
+
+        if getattr(self, "avaliable_tools", None) is None:
+            self.avaliable_tools = ToolManager([])
+
+        existing = set(self.avaliable_tools.tool_map.keys())
+        if "x402_create_payment" not in existing:
+            self.avaliable_tools.add_tool(X402PaymentHeaderTool(service=service))
+        if "x402_paywalled_request" not in existing:
+            self.avaliable_tools.add_tool(X402PaywalledRequestTool(service=service))
+
+        self._x402_tools_initialized = True

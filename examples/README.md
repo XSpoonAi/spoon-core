@@ -54,6 +54,12 @@ A comprehensive configuration example showing:
 - **Tools**: All available tool sets
 - **Best for**: Complex tasks requiring multiple tool types
 
+### `x402_agent_demo.py`
+- **Purpose**: Showcase x402 payment setup, header signing, and agent tooling
+- **Tools**: `X402PaymentService`, `x402_create_payment`, `x402_paywalled_request`
+- **Usage**: `uv run python examples/x402_agent_demo.py`
+- **Best for**: Understanding how agents initiate payments and how paywall negotiations work
+
 ## MCP Server Configuration
 
 ### Tavily Search

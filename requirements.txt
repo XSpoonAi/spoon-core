@@ -136,3 +136,8 @@ googleapis-common-protos>=1.60.0
 fastmcp>=2.12.0
 
 google-generativeai==0.8.5
+
+uvicorn[standard]>=0.32.0
+
+x402>=0.2.1
+    # via spoon-ai-sdk (pyproject.toml)
