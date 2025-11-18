@@ -27,8 +27,8 @@ python examples/starter/streaming_agent.py
 ```
 The script asks three generic topics in sequence. Each round prints:
 
-- `🔁 Streaming ChatBot response...` – LLM tokens stream in real time.
-- `✅ Final Answer` – Final text after streaming completes.
+- ` Streaming ChatBot response...` – LLM tokens stream in real time.
+
 
 ---
 
