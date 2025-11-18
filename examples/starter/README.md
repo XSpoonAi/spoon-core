@@ -1,6 +1,6 @@
 ## Streaming ChatBot Quick Start
 
-`streaming_agent.py` now demonstrates a **pure LLM ChatBot** using `ChatBot.astream()` to emit tokens in real time. The demo focuses purely on streaming—no Neo tools or ToolCallAgent dependencies.
+`streaming_agent.py` now demonstrates a **pure LLM ChatBot** using `ChatBot.astream()` to emit tokens in real time. 
 
 ---
 
@@ -10,7 +10,7 @@
    cd spoon-core
    python -m venv .venv && source .venv/bin/activate
    pip install -r requirements.txt
-   pip install -r examples/starter/requirements.txt
+
    ```
 2. **Configure an OpenRouter (or other OpenAI-compatible) API key**  
    Put the key into `.env`:
