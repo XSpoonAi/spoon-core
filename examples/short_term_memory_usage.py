@@ -1,5 +1,6 @@
 """spoon_ai short-term memory demos."""
 import asyncio
+from spoon_ai.graph.types import StateSnapshot
 import uuid
 from typing import Any, Dict, List, Optional, Tuple
 
@@ -43,7 +44,7 @@ class ShortTermMemoryDemoAgent:
         for prompt in self.prompts:
             user_msg = Message(id=str(uuid.uuid4()), role="user", content=prompt)
             history.append(user_msg)
-            response_text = await self.chatbot.ask(list(history))
+            response_text = await self.chatbot.ask(list[dict | Message](history))
             assistant_msg = Message(
                 id=str(uuid.uuid4()),
                 role="assistant",
@@ -101,7 +102,7 @@ async def example_remove_messages() -> None:
     removals = [
         chatbot.remove_message(assistant_ids[0]),
         chatbot.remove_message(assistant_ids[-1]),
-        chatbot.remove_all_messages(),
+        # chatbot.remove_all_messages(),
     ]
     print("Removal directives:")
     for rm in removals:
@@ -132,7 +133,8 @@ async def example_summarise_messages() -> None:
         content="Please summarize the recent conversation we just had about blockchain topics.",
     )
     history_with_request = history + [summary_prompt]
-
+    history_with_requesty_ids = [msg.id for msg in history_with_request if getattr(msg, "id", None)]
+    print(f"History with request ids: {history_with_requesty_ids}")
     tokens_after_request = await manager.token_counter.count_tokens(history_with_request, summary_model)
     print(f"  Tokens after adding summary request: {tokens_after_request}")
 
@@ -290,7 +292,7 @@ async def example_view_graph_state(graph: StateGraph, config: Dict[str, Dict[str
     else:
         print("  No checkpoint found for thread.")
 
-    history_snapshots = list(graph.get_state_history(config))
+    history_snapshots = list[StateSnapshot](graph.get_state_history(config))
     print(f"  Total checkpoints for thread: {len(history_snapshots)}")
     for snap in history_snapshots:
         cid = snap.metadata.get("checkpoint_id")
@@ -348,21 +350,34 @@ async def example_checkpoint_management() -> None:
     for entry in chatbot.list_checkpoints(thread_id):
         print(f"  -> id={entry['checkpoint_id']} created={entry['created_at']} count={entry['message_count']}")
 
+    # 恢复到指定的检查点（第一个检查点）
     restored = chatbot.restore_checkpoint(thread_id, cp1) or []
-    print("Messages restored from first checkpoint")
+    print("Messages restored from first checkpoint (specified by checkpoint_id):")
     for idx, msg in enumerate(restored):
         print(f"  {idx}: id={getattr(msg, 'id', None)} role={msg.role} -> {msg.content}")
 
+    # 恢复到指定的检查点（第二个检查点）
+    restored2 = chatbot.restore_checkpoint(thread_id, cp2) or []
+    print("\nMessages restored from second checkpoint (specified by checkpoint_id):")
+    for idx, msg in enumerate(restored2):
+        print(f"  {idx}: id={getattr(msg, 'id', None)} role={msg.role} -> {msg.content}")
+
+    # 恢复到最新的检查点（不指定 checkpoint_id，恢复最新的）
+    restored_latest = chatbot.restore_checkpoint(thread_id) or []
+    print("\nMessages restored from latest checkpoint (no checkpoint_id specified):")
+    for idx, msg in enumerate(restored_latest):
+        print(f"  {idx}: id={getattr(msg, 'id', None)} role={msg.role} -> {msg.content}")
+
     chatbot.clear_checkpoints(thread_id)
-    print("All checkpoints cleared.")
+    print("\nAll checkpoints cleared.")
 
 
 async def main() -> None:
-    await example_trim_messages()
-    await example_remove_messages()
-    await example_summarise_messages()
-    graph, graph_config = await example_graph_summarization_node()
-    await example_view_graph_state(graph, graph_config)
+    # await example_trim_messages()
+    # await example_remove_messages()
+    # await example_summarise_messages()
+    # graph, graph_config = await example_graph_summarization_node()
+    # await example_view_graph_state(graph, graph_config)
     await example_checkpoint_management()
 
 

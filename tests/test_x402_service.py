@@ -109,6 +109,9 @@ def test_build_payment_requirements_amount_conversion():
         description="x402 demo resource",
     )
     requirements = service.build_payment_requirements(request)
+    print("--------------------------------")
+    print(requirements)
+    print("--------------------------------")
     assert requirements.resource == "https://www.x402.org/protected"
     assert requirements.max_amount_required == str(int(0.01 * 10**service.settings.asset_decimals))
     assert requirements.pay_to == service.settings.pay_to
@@ -126,6 +129,9 @@ def test_build_payment_requirements_includes_metadata():
         output_schema={"type": "object", "properties": {"result": {"type": "string"}}},
     )
     requirements = service.build_payment_requirements(request)
+    print("--------------------------------")
+    print(requirements)
+    print("--------------------------------")
     assert requirements.output_schema == {"type": "object", "properties": {"result": {"type": "string"}}}
     assert requirements.extra["currency"] == "USDC"
     assert requirements.extra["memo"] == "Demo payment via x402"
@@ -144,7 +150,13 @@ def test_build_payment_header_respects_max_value():
 async def test_verify_and_settle(monkeypatch):
     service = X402PaymentService(facilitator=StubFacilitator())
     requirements = service.build_payment_requirements(X402PaymentRequest(amount_usdc=0.01))
+    print("--------------------------------")
+    print(requirements)
+    print("--------------------------------")
     header = service.build_payment_header(requirements)
+    print("--------------------------------")
+    print(header)
+    print("--------------------------------")
 
     outcome = await service.verify_and_settle(header, requirements)
     assert outcome.verify.is_valid
@@ -174,6 +186,9 @@ async def test_discover_resources_returns_stubbed_items():
         }
     )
     response = await service.discover_resources()
+    print("--------------------------------")
+    print(response)
+    print("--------------------------------")
     assert response.items
     assert response.items[0].metadata["category"] == "demo"
     assert response.items[0].accepts[0].resource == service.settings.resource

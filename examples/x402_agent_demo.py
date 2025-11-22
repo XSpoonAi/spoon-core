@@ -34,6 +34,40 @@ PAYWALLED_URL = os.getenv("X402_DEMO_URL", "https://www.x402.org/protected")
 PAYMENT_USDC = Decimal("0.01")
 
 
+DEBUG_ENV_KEYS: tuple[str, ...] = (
+    "TURNKEY_API_PUBLIC_KEY",
+    "TURNKEY_API_PRIVATE_KEY",
+    "TURNKEY_ORG_ID",
+    "TURNKEY_BASE_URL",
+    "TURNKEY_SIGN_WITH",
+    "TURNKEY_ADDRESS",
+    "X402_USE_TURNKEY",
+    "TURNKEY_ENABLED",
+    "PRIVATE_KEY",
+    "X402_AGENT_PRIVATE_KEY",
+)
+
+
+def _mask(value: str, keep: int = 4) -> str:
+    if len(value) <= keep * 2:
+        return "*" * len(value)
+    return f"{value[:keep]}…{value[-keep:]}"
+
+
+def debug_print_environment() -> None:
+    rprint("[bold blue]Signer configuration (environment snapshot)[/]")
+    for key in DEBUG_ENV_KEYS:
+        value = os.getenv(key)
+        if value is None or value == "":
+            rendered = "<unset>"
+        elif key in {"TURNKEY_API_PUBLIC_KEY", "TURNKEY_API_PRIVATE_KEY"}:
+            rendered = _mask(value, keep=6)
+        else:
+            rendered = value
+        rprint(f"  [cyan]{key:<24}[/]: {rendered}")
+    rprint("")
+
+
 class HttpProbeTool(BaseTool):
     """Simple HTTP GET that does not attach any payment headers."""
 
@@ -254,6 +288,8 @@ async def main() -> None:
         f"Target resource: [bold]{PAYWALLED_URL}[/] | Network: {service.settings.default_network} | Facilitator: {service.settings.facilitator_url}"
     )
 
+    debug_print_environment()
+
     query = (
         "Access the protected page, follow the playbook, and finish with a concise summary."
         " Include the signed payment header and settlement receipt in the final response."
@@ -293,6 +329,7 @@ async def main() -> None:
 
     payment_header: Optional[str] = None
     payment_receipt: Optional[Dict[str, Any]] = None
+    follow_up_response: Optional[httpx.Response] = None
 
     if payment_result:
         req_meta = payment_result.get("requirements")
@@ -306,6 +343,19 @@ async def main() -> None:
         receipt_header = (payment_result.get("headers") or {}).get("X-PAYMENT-RESPONSE")
         if not payment_receipt and receipt_header:
             payment_receipt = decode_receipt(receipt_header)
+        if payment_header:
+            rprint("\n[bold cyan]Attempting follow-up request with signed X-PAYMENT header...[/]")
+            try:
+                async with httpx.AsyncClient(timeout=20.0) as client:
+                    follow_up_response = await client.get(
+                        PAYWALLED_URL, headers={"X-PAYMENT": payment_header}
+                    )
+                rprint(
+                    f"[bold cyan]Follow-up status:[/] {follow_up_response.status_code} "
+                    f"{follow_up_response.reason_phrase}"
+                )
+            except Exception as exc:  # pragma: no cover - network failure
+                rprint(f"[bold red]Follow-up request failed:[/] {exc}")
 
     if assistant_summary:
         rprint("\n[bold green]Agent Final Summary[/]")
@@ -324,6 +374,14 @@ async def main() -> None:
                 " Double-check that your payer wallet holds at least 0.01 USDC on Base Sepolia"
                 " and that the private key or Turnkey credentials are correct."
             )
+    if follow_up_response is not None and follow_up_response.status_code < 500:
+        try:
+            content = follow_up_response.json()
+            rendered = json.dumps(content, indent=2, ensure_ascii=False)
+        except json.JSONDecodeError:
+            rendered = follow_up_response.text
+        rprint("\n[bold magenta]Follow-up response body[/]")
+        rprint(rendered)
 
 
 if __name__ == "__main__":

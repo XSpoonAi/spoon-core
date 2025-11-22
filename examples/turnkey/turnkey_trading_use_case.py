@@ -196,7 +196,7 @@ def main():
     
     print()
 
-    4) Activity Audit
+    # 4) Activity Audit
     print("🧩 Step 4/4 · Activity Audit & History")
     print("-" * 40)
     print("📊 Querying recent signing activities...")
