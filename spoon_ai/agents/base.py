@@ -74,6 +74,8 @@ class BaseAgent(BaseModel, ABC):
 
     llm: ChatBot = Field(..., description="The LLM to use for the agent")
     memory: Memory = Field(default_factory=Memory, description="The memory to use for the agent")
+    enable_long_term_memory: bool = Field(default=False, description="Enable Mem0-based long-term memory")
+    mem0_config: Dict[str, Any] = Field(default_factory=dict, description="Mem0 configuration passed to the LLM client")
     state: AgentState = Field(default=AgentState.IDLE, description="The state of the agent")
 
     max_steps: int = Field(default=10, description="The maximum number of steps the agent can take")
@@ -113,6 +115,16 @@ class BaseAgent(BaseModel, ABC):
         # Concurrency control
         self._active_operations = set()
         self._shutdown_event = asyncio.Event()
+
+        # Long-term memory configuration (Mem0)
+        self.mem0_config = self.mem0_config or {}
+        if self.name:
+            self.mem0_config.setdefault("agent_id", self.name)
+        if isinstance(self.llm, ChatBot):
+            try:
+                self.llm.update_mem0_config(self.mem0_config, enable=self.enable_long_term_memory)
+            except Exception as exc:
+                logger.warning("Unable to configure Mem0 for agent %s: %s", self.name, exc)
         
         # Initialize callback manager
         self._callback_manager = CallbackManager.from_callbacks(self.callbacks)

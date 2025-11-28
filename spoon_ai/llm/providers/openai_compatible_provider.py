@@ -226,12 +226,18 @@ class OpenAICompatibleProvider(LLMProviderInterface):
         tool_calls = []
         if message.tool_calls:
             for tool_call in message.tool_calls:
+                # Defensive defaults for providers that return nulls
+                func_name = getattr(tool_call.function, "name", None) or "unknown"
+                func_args = getattr(tool_call.function, "arguments", None)
+                if func_args is None:
+                    func_args = "{}"
+
                 tool_calls.append(ToolCall(
                     id=tool_call.id,
                     type=tool_call.type,
                     function=Function(
-                        name=tool_call.function.name,
-                        arguments=tool_call.function.arguments
+                        name=func_name,
+                        arguments=func_args
                     )
                 ))
 

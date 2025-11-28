@@ -19,7 +19,7 @@ classifiers = [
 ]
 dependencies = [ # Complete dependencies from requirements.txt for out-of-the-box usage
     "aiohappyeyeballs>=2.4.4",
-    "aiohttp>=3.10.5",
+    "aiohttp>=3.13.2",
     "aiosignal>=1.3.2",
     "annotated-types>=0.7.0",
     "anyio>=4.8.0",
@@ -76,6 +76,11 @@ dependencies = [ # Complete dependencies from requirements.txt for out-of-the-bo
     "rlp>=3.0.0",
     "uvicorn[standard]>=0.32.0",
     "x402>=0.2.1",
+]
+
+[project.optional-dependencies]
+memory = [
+    "mem0ai>=0.0.1",
 ]
 
 [project.urls]

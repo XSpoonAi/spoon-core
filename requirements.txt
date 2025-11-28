@@ -6,7 +6,7 @@
 #
 aiohappyeyeballs>=2.4.4
     # via aiohttp
-aiohttp==3.10.5
+aiohttp>=3.13.2
 aiosignal>=1.3.2
     # via aiohttp
 annotated-types>=0.7.0
