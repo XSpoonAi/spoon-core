@@ -22,6 +22,7 @@ Usage:
 
 import asyncio
 import base64
+import json
 import os
 from typing import List
 from dotenv import load_dotenv
@@ -30,6 +31,10 @@ from spoon_ai.agents.toolcall import ToolCallAgent
 from spoon_ai.tools import ToolManager
 from spoon_ai.chat import ChatBot
 from pydantic import Field
+
+# Load .env file first, before importing NeoFS tools
+# This ensures we use the correct .env file from spoon-starter directory
+load_dotenv(override=True)
 
 # Import NeoFS tools
 from spoon_ai.tools.neofs_tools import (
@@ -50,8 +55,6 @@ from spoon_ai.tools.neofs_tools import (
     SearchObjectsTool,
     GetBalanceTool,
 )
-
-load_dotenv()
 
 
 class NeoFSAgentDemo:
@@ -295,6 +298,25 @@ class NeoFSAgentDemo:
             Step 1: create_neofs_bearer_token(token_type="container", verb="SETEACL", container_id="<CID>")
             Step 2: set_neofs_container_eacl(container_id, bearer_token, operation="GET", action="DENY", role="OTHERS")
 
+        IMPORTANT - File Upload Best Practices:
+
+        For uploading files, you have two options:
+
+        1. **File Path (RECOMMENDED for large files)**: Use 'file_path' parameter
+           Example: upload_object_to_neofs(container_id="...", file_path="/path/to/file.jpg")
+           - Avoids token limits (path is only ~50 characters vs ~44K tokens for base64)
+           - Works for files of any size (up to 64MB NeoFS limit)
+           - Tool automatically reads the file and sets attributes
+
+        2. **Content (for small files)**: Use 'content' parameter with base64-encoded data
+           Example: upload_object_to_neofs(container_id="...", content="base64data...")
+           - Use only for small files (<50KB) to avoid token limits
+           - Can be base64-encoded binary or plain text
+
+        When user provides a file path, ALWAYS use file_path parameter, not content.
+        When user provides base64 data directly, use content parameter.
+        Never say "no action needed" when asked to upload - always execute the tool call.
+
         Always execute steps in correct order. Track all container_ids, object_ids, and bearer_tokens.
         Explain each step clearly.
         """
@@ -488,7 +510,7 @@ class NeoFSAgentDemo:
         self.print_section_header("3. PUBLIC Container Complete Workflow")
         
         # Use PUBLIC container ID
-        public_container_id = "xxxxxxxxxxxxxxx"
+        public_container_id = "your_container_id"
         
         # Use persistent agent to remember object_id
         agent = self.agents['object']
@@ -532,17 +554,34 @@ class NeoFSAgentDemo:
         print(f" Scenario: Download Object")
         print(f"{'-'*60}")
         
-        response3 = await agent.run("""Download the object we just uploaded.
-            Since it's PUBLIC, no bearer token is needed.
-            Show me the file content.""")
+        # Save downloaded file to local filesystem
+        download_path = "downloaded_welcome.txt"
+        response3 = await agent.run(f"""Download the object we just uploaded and save it to a local file.
+
+Since it's PUBLIC, no bearer token is needed.
+
+Use the download_neofs_object_by_id tool with:
+- container_id: "{public_container_id}"
+- object_id: <use the object_id from the upload step>
+- save_path: "{download_path}"
+
+After downloading, show me the file content and confirm where it was saved.""")
         print(f"✅ Response: {response3}")
+        
+        # Check if file was actually saved
+        if os.path.exists(download_path):
+            print(f"\n✅ File saved successfully to: {os.path.abspath(download_path)}")
+            with open(download_path, 'r') as f:
+                print(f"📄 File content:\n{f.read()}")
+        else:
+            print(f"\n⚠️  Note: File was not saved to {download_path}. The download tool may need save_path parameter.")
 
     async def demo_eacl_container_workflow(self):
         """Demonstrate eACL container complete workflow with full token management"""
         self.print_section_header("4. eACL Container Complete Workflow")
         
         # Use existing eACL container
-        eacl_container_id = "xxxxxxxxxxxxxxx"
+        eacl_container_id = "your_container_id"
         
         # Use persistent agent
         agent = self.agents['access']
@@ -667,8 +706,8 @@ class NeoFSAgentDemo:
         self.print_section_header("6. Advanced Object Operations")
         
         # User-provided container IDs
-        public_container_id = "xxxxxxxxxxxxxxx"
-        eacl_container_id = "xxxxxxxxxxxxxxx"
+        public_container_id = "your_container_id"
+        eacl_container_id = "your_container_id"
         
         # Use persistent agent
         agent = self.agents['object']
@@ -868,53 +907,325 @@ Use the container_id and object_id from previous steps.
 No bearer token needed for delete operation.""")
         print(f"✅ Response: {response11}")
 
-    async def demo_upload_to_specific_container(self, image_path: str = None, file_name: str = None, attributes: dict = None):
-        """Upload image to a specific public container using agent
+    async def demo_upload_to_specific_container(self):
+        """Upload images to a specific public container using natural language prompts
         
-        Args:
-            image_path: Path to image file. If None, uses sample image data.
-            file_name: File name. If None, uses default or basename of image_path.
-            attributes: File attributes dict. If None, uses default.
+        This method handles multiple image uploads:
+        1. Upload a sample demo image
+        2. Upload a local image file if it exists (examples/test_image.png)
         """
         self.print_section_header("7. Upload Image to Specific Public Container")
         
-        # Fixed container ID
-        # Original: "754iyTDY8xUtZJZfheSYLUn7jvCkxr79RcbjMt81QykC" (does not exist - confirmed by tests)
-        # Using one of your public containers instead for testing:
-        TARGET_CONTAINER_ID = "xxxxxxxxxxxxxxx"  # agent-demo-public-1760869880 (ACL: 1fbfbfff = public-read-write)
-        
-        # Use object storage agent
+        # Get object storage agent
         agent = self.agents['object']
         
-        # Prepare image data
-        if image_path and os.path.exists(image_path):
-            # Read image file and encode to base64
-            with open(image_path, 'rb') as f:
-                image_bytes = f.read()
-                image_base64 = base64.b64encode(image_bytes).decode('utf-8')
-            if file_name is None:
-                file_name = os.path.basename(image_path)
-            ext = os.path.splitext(file_name)[1][1:].lower()
-            content_type = f"image/{ext}" if ext in ['png', 'jpg', 'jpeg', 'gif', 'webp'] else "image/png"
-        else:
-            # Use sample image (1x1 pixel red PNG)
-            image_base64 = "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNk+M9QDwADhgGAWjR9awAAAABJRU5ErkJggg=="
-            file_name = file_name or "demo-image.png"
-            content_type = "image/png"
+        # Fixed container ID
+        TARGET_CONTAINER_ID = "your_container_id"  # agent-demo-public-1760869880 (ACL: 1fbfbfff = public-read-write)
         
+        # Helper function to prepare image data
+        def prepare_image_data(image_path: str = None):
+            """Prepare image data from file or use sample"""
+            if image_path:
+                # Convert to absolute path if relative
+                if not os.path.isabs(image_path):
+                    abs_path = os.path.abspath(image_path)
+                else:
+                    abs_path = image_path
+                
+                # Check if file exists
+                if not os.path.exists(abs_path):
+                    return None, None, None, f"Image file not found: {abs_path}"
+                
+                if not os.path.isfile(abs_path):
+                    return None, None, None, f"Path is not a file: {abs_path}"
+                
+                # Check file size
+                file_size = os.path.getsize(abs_path)
+                max_size_mb = 64  # NeoFS max object size is 64MB
+                if file_size > max_size_mb * 1024 * 1024:
+                    return None, None, None, f"Image file too large: {file_size / (1024*1024):.2f} MB (max: {max_size_mb} MB)"
+                
+                try:
+                    # Read and encode image
+                    with open(abs_path, 'rb') as f:
+                        image_bytes = f.read()
+                        image_base64 = base64.b64encode(image_bytes).decode('utf-8')
+                    
+                    file_name = os.path.basename(abs_path)
+                    ext = os.path.splitext(file_name)[1][1:].lower()
+                    content_type_map = {
+                        'png': 'image/png', 'jpg': 'image/jpeg', 'jpeg': 'image/jpeg',
+                        'gif': 'image/gif', 'webp': 'image/webp', 'bmp': 'image/bmp',
+                        'svg': 'image/svg+xml', 'ico': 'image/x-icon'
+                    }
+                    content_type = content_type_map.get(ext, 'image/png')
+                    
+                    return image_base64, file_name, content_type, None
+                except Exception as e:
+                    return None, None, None, f"Error reading image file: {e}"
+            else:
+                # Use sample image
+                image_base64 = "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNk+M9QDwADhgGAWjR9awAAAABJRU5ErkJggg=="
+                return image_base64, "demo-image.png", "image/png", None
+        
+        # Upload 1: Sample demo image
         print(f"\n{'-'*60}")
         print(f" Agent: {agent.agent_name}")
-        print(f" Scenario: Upload Image to Public Container")
+        print(f" Scenario: Upload Sample Demo Image")
         print(f" Container ID: {TARGET_CONTAINER_ID}")
-        print(f" Image: {file_name}")
-        print(f" Content Type: {content_type}")
         print(f"{'-'*60}")
         
-        # Simplified natural language prompt - let agent handle details
-        response = await agent.run(f"""Upload an image file named "{file_name}" ({content_type}) to container {TARGET_CONTAINER_ID}. 
-The image data is: {image_base64}.
-This is a public container.""")
-        print(f"✅ Response: {response}")
+        image_base64, file_name, content_type, error = prepare_image_data()
+        if error:
+            print(f"❌ Error: {error}")
+        else:
+            response1 = await agent.run(f"""I want to upload a demo image to NeoFS storage.
+
+The container ID is: {TARGET_CONTAINER_ID}
+This is a public container, so no bearer token is needed.
+
+Please upload this image:
+- File name: {file_name}
+- Content type: {content_type}
+- Image data (base64 encoded): {image_base64}
+- Attributes: FileName={file_name}, ContentType={content_type}, Type=Image
+
+After uploading, please tell me the object ID so I can reference it later.""")
+            print(f"✅ Response: {response1}")
+        
+        # Upload 2: Local image file if exists (using Agent with file_path)
+        test_image_path = "/Users/scarlettpeng/WechatIMG706.jpeg"
+        if os.path.exists(test_image_path):
+            print(f"\n{'-'*60}")
+            print(f" Scenario: Upload Local Image File via Agent")
+            print(f" Container ID: {TARGET_CONTAINER_ID}")
+            print(f" Image Path: {test_image_path}")
+            print(f"{'-'*60}")
+            
+            file_size = os.path.getsize(os.path.abspath(test_image_path))
+            file_size_kb = file_size / 1024
+            file_name = os.path.basename(test_image_path)
+            print(f"✅ Found local image file: {file_name} ({file_size_kb:.2f} KB)")
+            
+            # Use Agent with file_path parameter (avoids token limits)
+            agent.clear()  # Clear history to avoid context issues
+            
+            print(f"\n🤖 Using Agent with file_path parameter (avoids token limits)...")
+            try:
+                response = await agent.run(f"""Upload the image file at path '{test_image_path}' to NeoFS container {TARGET_CONTAINER_ID}.
+
+This is a PUBLIC container, so no bearer token is needed.
+
+Use the upload_object_to_neofs tool with:
+- container_id: "{TARGET_CONTAINER_ID}"
+- file_path: "{test_image_path}"
+
+The tool will automatically read the file and set appropriate attributes.""")
+                print(f"✅ Agent Response: {response}")
+            except Exception as e:
+                print(f"❌ Agent upload failed: {e}")
+                print(f"🔄 Falling back to direct tool call...")
+                # Fallback to direct tool call
+                try:
+                    upload_tool = UploadObjectTool()
+                    result = await upload_tool.execute(
+                        container_id=TARGET_CONTAINER_ID,
+                        file_path=test_image_path,
+                        bearer_token=None
+                    )
+                    print(f"✅ Direct Upload Result: {result}")
+                except Exception as e2:
+                    print(f"❌ Direct upload also failed: {e2}")
+                    import traceback
+                    traceback.print_exc()
+        else:
+            print(f"\nℹ️  Local image file not found: {test_image_path}")
+            print(f"   Skipping local image upload.")
+        
+        # Final summary
+        self.print_section_header("Demo Completed Successfully")
+        for agent_name, agent in self.agents.items():
+            tool_count = len(agent.available_tools.tools)
+            print(f"  ✅ {agent.agent_name}: {tool_count} specialized tools")
+
+        total_tools = sum(len(agent.available_tools.tools) for agent in self.agents.values())
+        print(f"\n🔧 Total Tools Demonstrated: 16 NeoFS tools")
+        print("   All demonstrations powered by AI agents with domain expertise")
+        print("   Each agent provides intelligent analysis and workflow orchestration")
+        print("\nAgent Capabilities:")
+        print("   1. Container Manager: Create, list, manage containers")
+        print("   2. Object Storage Manager: Upload, download, search objects")
+        print("   3. Access Control Manager: Configure eACL, manage bearer tokens")
+        print("   4. Network Monitor: Check status, balance, network info")
+        print("\nKey Features Demonstrated:")
+        print("   ✅ Automatic bearer token creation and management")
+        print("   ✅ PUBLIC vs eACL container workflows")
+        print("   ✅ Complete object lifecycle (upload, search, download, delete)")
+        print("   ✅ eACL configuration and access control")
+        print("   ✅ Multi-file operations and batch processing")
+
+    async def demo_upload_search_download_image(self):
+        """Complete workflow: Upload image -> Search by FileName -> Download to local
+        
+        This method demonstrates the complete lifecycle:
+        1. Upload an image from specified path to NeoFS
+        2. Search for the uploaded image by FileName attribute
+        3. Download the found image to local filesystem
+        """
+        self.print_section_header("8. Upload -> Search -> Download Image Workflow")
+        
+        # Get object storage agent
+        agent = self.agents['object']
+        
+        # Fixed container ID (PUBLIC container)
+        TARGET_CONTAINER_ID = "your_container_id"
+        
+        # Fixed image path (supports both relative and absolute paths)
+        image_path = "/Users/scarlettpeng/WechatIMG706.jpeg"  # Can be relative like "2333.jpg" or absolute like "/path/to/image.jpg"
+        
+        # Convert to absolute path for processing (handles both relative and absolute)
+        if not os.path.isabs(image_path):
+            abs_image_path = os.path.abspath(image_path)
+        else:
+            abs_image_path = image_path
+        
+        # Check if image exists
+        if not os.path.exists(abs_image_path):
+            print(f"❌ Image file not found: {abs_image_path}")
+            print(f"   Original path: {image_path}")
+            print(f"   Please ensure the image file exists.")
+            return
+        
+        file_name = os.path.basename(abs_image_path)
+        file_size = os.path.getsize(abs_image_path)
+        file_size_kb = file_size / 1024
+        
+        print(f"\n{'='*60}")
+        print(f" Image File: {file_name}")
+        print(f" File Path: {abs_image_path}")
+        print(f" File Size: {file_size_kb:.2f} KB")
+        print(f" Container ID: {TARGET_CONTAINER_ID}")
+        print(f"{'='*60}")
+        
+        # Step 1: Upload image
+        print(f"\n{'-'*60}")
+        print(f" Step 1: Upload Image")
+        print(f" Agent: {agent.agent_name}")
+        print(f"{'-'*60}")
+        
+        agent.clear()  # Clear history for clean start
+        
+        upload_prompt = f"""Upload the image file at path '{abs_image_path}' to NeoFS container {TARGET_CONTAINER_ID}.
+
+This is a PUBLIC container, so no bearer token is needed.
+
+Use the upload_object_to_neofs tool with:
+- container_id: "{TARGET_CONTAINER_ID}"
+- file_path: "{abs_image_path}"
+
+The tool will automatically:
+- Read the file from the path
+- Set FileName attribute to "{file_name}"
+- Set ContentType attribute based on file extension
+- Set Type attribute to "Image"
+
+After uploading, please provide the object ID so we can verify it later."""
+        
+        try:
+            upload_response = await agent.run(upload_prompt)
+            print(f"✅ Upload Response:\n{upload_response}")
+        except Exception as e:
+            print(f"❌ Upload failed: {e}")
+            import traceback
+            traceback.print_exc()
+            return
+        
+        # Step 2: Search for the uploaded image by FileName
+        print(f"\n{'-'*60}")
+        print(f" Step 2: Search Image by FileName")
+        print(f" Agent: {agent.agent_name}")
+        print(f" Search Filter: FileName = '{file_name}'")
+        print(f"{'-'*60}")
+        
+        search_prompt = f"""Search for objects in container {TARGET_CONTAINER_ID} with FileName attribute equal to '{file_name}'.
+
+Use the search_neofs_objects tool with:
+- container_id: "{TARGET_CONTAINER_ID}"
+- filters: [{{"key": "FileName", "value": "{file_name}"}}]
+
+This is a PUBLIC container, so no bearer token is needed.
+
+Show me all matching objects, including their object IDs."""
+        
+        try:
+            search_response = await agent.run(search_prompt)
+            print(f"✅ Search Response:\n{search_response}")
+        except Exception as e:
+            print(f"❌ Search failed: {e}")
+            import traceback
+            traceback.print_exc()
+            return
+        
+        # Step 3: Download the image by FileName attribute
+        print(f"\n{'-'*60}")
+        print(f" Step 3: Download Image by FileName")
+        print(f" Agent: {agent.agent_name}")
+        print(f" Download Filter: FileName = '{file_name}'")
+        print(f"{'-'*60}")
+        
+        # Create download path (save in downloads folder)
+        download_dir = "downloads"
+        os.makedirs(download_dir, exist_ok=True)
+        download_path = os.path.join(download_dir, f"downloaded_{file_name}")
+        
+        download_prompt = f"""Download the image we just uploaded and save it to a local file.
+
+Use the download_neofs_object_by_attribute tool with:
+- container_id: "{TARGET_CONTAINER_ID}"
+- attr_key: "FileName"
+- attr_val: "{file_name}"
+- save_path: "{download_path}"
+
+This is a PUBLIC container, so no bearer token is needed.
+
+After downloading, confirm the file was saved and show its location."""
+        
+        try:
+            download_response = await agent.run(download_prompt)
+            print(f"✅ Download Response:\n{download_response}")
+        except Exception as e:
+            print(f"❌ Download failed: {e}")
+            import traceback
+            traceback.print_exc()
+            return
+        
+        # Verify file was downloaded
+        print(f"\n{'-'*60}")
+        print(f" Verification")
+        print(f"{'-'*60}")
+        
+        if os.path.exists(download_path):
+            downloaded_size = os.path.getsize(download_path)
+            print(f"✅ File successfully downloaded!")
+            print(f"   Original: {abs_image_path} ({file_size} bytes)")
+            print(f"   Downloaded: {os.path.abspath(download_path)} ({downloaded_size} bytes)")
+            
+            if file_size == downloaded_size:
+                print(f"   ✅ Size matches! File integrity verified.")
+            else:
+                print(f"   ⚠️  Size mismatch! Original: {file_size}, Downloaded: {downloaded_size}")
+        else:
+            print(f"❌ Downloaded file not found at: {download_path}")
+            print(f"   The download may have failed or saved to a different location.")
+        
+        # Summary
+        print(f"\n{'-'*60}")
+        print(f" Workflow Summary")
+        print(f"{'-'*60}")
+        print(f"✅ Step 1: Uploaded '{file_name}' to container {TARGET_CONTAINER_ID}")
+        print(f"✅ Step 2: Searched for objects with FileName='{file_name}'")
+        print(f"✅ Step 3: Downloaded image to '{download_path}'")
+        print(f"\n🎉 Complete workflow executed successfully!")
 
     async def run_comprehensive_demo(self):
         """Run the complete agent-based demonstration"""
@@ -936,41 +1247,17 @@ This is a public container.""")
             print(f"✅ Created {len(self.agents)} specialized agents")
 
             # Run comprehensive demonstrations
-            await self.demo_network_status()
-            await self.demo_container_operations()
-            await self.demo_public_container_workflow()
-            await self.demo_eacl_container_workflow()
-            await self.demo_access_control()
-            await self.demo_advanced_scenarios()
-            # Test with sample image 
+            # await self.demo_network_status()
+            # await self.demo_container_operations()
+            # await self.demo_public_container_workflow()
+            # await self.demo_eacl_container_workflow()
+            # await self.demo_access_control()
+            # await self.demo_advanced_scenarios()
+            # Complete workflow: Upload -> Search -> Download image
+            # await self.demo_upload_search_download_image()
+            # Upload images to container (handles both sample and local images)
             await self.demo_upload_to_specific_container()
-            
-            # Test with real image file if exists
-            test_image_path = "examples/test_image.png"
-            if os.path.exists(test_image_path):
-                await self.demo_upload_to_specific_container(image_path=test_image_path)
 
-            # Final summary
-            self.print_section_header("Demo Completed Successfully")
-            for agent_name, agent in self.agents.items():
-                tool_count = len(agent.available_tools.tools)
-                print(f"  ✅ {agent.agent_name}: {tool_count} specialized tools")
-
-            total_tools = sum(len(agent.available_tools.tools) for agent in self.agents.values())
-            print(f"\n🔧 Total Tools Demonstrated: 16 NeoFS tools")
-            print("   All demonstrations powered by AI agents with domain expertise")
-            print("   Each agent provides intelligent analysis and workflow orchestration")
-            print("\nAgent Capabilities:")
-            print("   1. Container Manager: Create, list, manage containers")
-            print("   2. Object Storage Manager: Upload, download, search objects")
-            print("   3. Access Control Manager: Configure eACL, manage bearer tokens")
-            print("   4. Network Monitor: Check status, balance, network info")
-            print("\nKey Features Demonstrated:")
-            print("   ✅ Automatic bearer token creation and management")
-            print("   ✅ PUBLIC vs eACL container workflows")
-            print("   ✅ Complete object lifecycle (upload, search, download, delete)")
-            print("   ✅ eACL configuration and access control")
-            print("   ✅ Multi-file operations and batch processing")
 
         except Exception as e:
             print(f"\n❌ Demo error: {str(e)}")

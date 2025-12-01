@@ -7,11 +7,17 @@ All parameters map directly to client method parameters.
 """
 
 import json
+import os
 from typing import Optional
 from pydantic import Field
+from dotenv import load_dotenv
 
 from spoon_ai.tools import BaseTool
 from spoon_ai.neofs import NeoFSClient
+
+# Load environment variables from .env file
+# Use override=False to avoid overriding env vars already loaded by the main script
+load_dotenv(override=False)
 from spoon_ai.neofs.models import (
     Bearer,
     Rule,
@@ -165,7 +171,7 @@ class UploadObjectTool(BaseTool):
     """Upload object to container"""
     
     name: str = "upload_object_to_neofs"
-    description: str = "Upload file to NeoFS container. Supports custom attributes (key-value pairs) for later retrieval by attribute. bearer_token optional for public containers, required for eACL containers."
+    description: str = "Upload file to NeoFS container. Supports custom attributes (key-value pairs) for later retrieval by attribute. bearer_token optional for public containers, required for eACL containers. Can accept either file_path (for local files) or content (for base64-encoded data or plain text)."
     parameters: dict = {
         "type": "object",
         "properties": {
@@ -175,7 +181,11 @@ class UploadObjectTool(BaseTool):
             },
             "content": {
                 "type": "string",
-                "description": "File content"
+                "description": "File content (base64-encoded or plain text). Use this if you have the content directly. Alternative to file_path."
+            },
+            "file_path": {
+                "type": "string",
+                "description": "Path to local file to upload. Use this for large files to avoid token limits. Alternative to content. Must be absolute path or relative to current working directory."
             },
             "bearer_token": {
                 "type": "string",
@@ -210,13 +220,14 @@ class UploadObjectTool(BaseTool):
                 "description": "Use wallet_connect mode for signing"
             }
         },
-        "required": ["container_id", "content"]
+        "required": ["container_id"]
     }
     
     async def execute(
         self, 
         container_id: str, 
-        content: str, 
+        content: str = None,
+        file_path: str = None,
         bearer_token: str = None, 
         attributes: dict = None,
         attributes_json: str = None,
@@ -231,20 +242,65 @@ class UploadObjectTool(BaseTool):
         
         try:
             import base64
+            import os
             client = get_shared_neofs_client()
             
-            # Handle content encoding:
-            # - If content is base64-encoded (images, binary files), decode it
-            # - If content is plain text (not base64), encode as UTF-8
-            # This ensures backward compatibility: plain text files work as-is,
-            # while base64-encoded content (like images) is properly decoded
-            try:
-                # Attempt base64 decode - if it succeeds, use decoded bytes
-                content_bytes = base64.b64decode(content, validate=True)
-            except Exception:
-                # If base64 decode fails, treat as plain text and encode as UTF-8
-                # This handles regular text files without requiring base64 encoding
-                content_bytes = content.encode('utf-8')
+            # Handle file_path or content
+            if file_path:
+                # Option 1: Read from file path (avoids token limits for large files)
+                if not os.path.isabs(file_path):
+                    # Convert to absolute path if relative
+                    file_path = os.path.abspath(file_path)
+                
+                # Security check: ensure file exists and is a file
+                if not os.path.exists(file_path):
+                    return f"❌ Failed: File not found: {file_path}"
+                
+                if not os.path.isfile(file_path):
+                    return f"❌ Failed: Path is not a file: {file_path}"
+                
+                # Check file size (NeoFS limit is 64MB)
+                file_size = os.path.getsize(file_path)
+                max_size = 64 * 1024 * 1024  # 64MB
+                if file_size > max_size:
+                    return f"❌ Failed: File too large ({file_size / (1024*1024):.2f} MB, max 64 MB)"
+                
+                # Read file
+                with open(file_path, 'rb') as f:
+                    content_bytes = f.read()
+                
+                # Auto-set file attributes if not provided
+                if not attributes and not attributes_json:
+                    file_name = os.path.basename(file_path)
+                    ext = os.path.splitext(file_name)[1][1:].lower()
+                    content_type_map = {
+                        'png': 'image/png', 'jpg': 'image/jpeg', 'jpeg': 'image/jpeg',
+                        'gif': 'image/gif', 'webp': 'image/webp', 'bmp': 'image/bmp',
+                        'svg': 'image/svg+xml', 'ico': 'image/x-icon',
+                        'txt': 'text/plain', 'json': 'application/json',
+                        'pdf': 'application/pdf', 'zip': 'application/zip'
+                    }
+                    content_type = content_type_map.get(ext, 'application/octet-stream')
+                    attributes = {
+                        "FileName": file_name,
+                        "ContentType": content_type
+                    }
+                    
+            elif content:
+                # Option 2: Handle content (base64 or plain text)
+                # - If content is base64-encoded (images, binary files), decode it
+                # - If content is plain text (not base64), encode as UTF-8
+                # This ensures backward compatibility: plain text files work as-is,
+                # while base64-encoded content (like images) is properly decoded
+                try:
+                    # Attempt base64 decode - if it succeeds, use decoded bytes
+                    content_bytes = base64.b64decode(content, validate=True)
+                except Exception:
+                    # If base64 decode fails, treat as plain text and encode as UTF-8
+                    # This handles regular text files without requiring base64 encoding
+                    content_bytes = content.encode('utf-8')
+            else:
+                return "❌ Failed: Either 'file_path' or 'content' must be provided"
             
             # Parse attributes from JSON string if provided, otherwise use dict
             if attributes_json:
@@ -284,7 +340,7 @@ class DownloadObjectByIdTool(BaseTool):
     """Download object by ID"""
     
     name: str = "download_neofs_object_by_id"
-    description: str = "Download object by ID."
+    description: str = "Download object by ID. Optionally save to local file if save_path is provided."
     parameters: dict = {
         "type": "object",
         "properties": {
@@ -292,12 +348,14 @@ class DownloadObjectByIdTool(BaseTool):
             "object_id": {"type": "string", "description": "Object ID"},
             "bearer_token": {"type": "string", "description": "Bearer token (for eACL containers)"},
             "download": {"type": "boolean", "description": "Enable download mode"},
-            "range_header": {"type": "string", "description": "Range header for partial download"}
+            "range_header": {"type": "string", "description": "Range header for partial download"},
+            "save_path": {"type": "string", "description": "Optional local file path to save the downloaded content. If not provided, only returns content preview."}
         },
         "required": ["container_id", "object_id"]
     }
     
-    async def execute(self, container_id: str, object_id: str, bearer_token: str = None, download: bool = None, range_header: str = None, **kwargs) -> str:
+    async def execute(self, container_id: str, object_id: str, bearer_token: str = None, download: bool = None, range_header: str = None, save_path: str = None, **kwargs) -> str:
+        import os
         try:
             client = get_shared_neofs_client()
             response = client.download_object_by_id(
@@ -309,6 +367,39 @@ class DownloadObjectByIdTool(BaseTool):
             )
             content = response.content
             
+            # Save to file if save_path is provided
+            if save_path:
+                # Convert to absolute path if relative
+                if not os.path.isabs(save_path):
+                    save_path = os.path.abspath(save_path)
+                
+                # Create directory if it doesn't exist
+                save_dir = os.path.dirname(save_path)
+                if save_dir and not os.path.exists(save_dir):
+                    os.makedirs(save_dir, exist_ok=True)
+                
+                # Write file
+                with open(save_path, 'wb') as f:
+                    f.write(content)
+                
+                try:
+                    text = content.decode('utf-8')
+                    return f"""✅ Downloaded and saved!
+Object ID: {object_id}
+Container ID: {container_id}
+Size: {len(content)} bytes
+Saved to: {save_path}
+
+Content preview:
+{text[:500]}{'...' if len(text) > 500 else ''}"""
+                except:
+                    return f"""✅ Downloaded and saved!
+Object ID: {object_id}
+Container ID: {container_id}
+Size: {len(content)} bytes (binary)
+Saved to: {save_path}"""
+            
+            # Return content preview if not saving
             try:
                 text = content.decode('utf-8')
                 return f"""✅ Downloaded!
@@ -366,7 +457,7 @@ class DownloadObjectByAttributeTool(BaseTool):
     """Download object by attribute"""
     
     name: str = "download_neofs_object_by_attribute"
-    description: str = "Download object by searching attribute."
+    description: str = "Download object by searching attribute. Optionally save to local file if save_path is provided."
     parameters: dict = {
         "type": "object",
         "properties": {
@@ -375,12 +466,13 @@ class DownloadObjectByAttributeTool(BaseTool):
             "attr_val": {"type": "string", "description": "Attribute value"},
             "bearer_token": {"type": "string", "description": "Bearer token"},
             "download": {"type": "boolean", "description": "Enable download mode"},
-            "range_header": {"type": "string", "description": "Range header"}
+            "range_header": {"type": "string", "description": "Range header"},
+            "save_path": {"type": "string", "description": "Optional local file path to save the downloaded content. If not provided, only returns content preview."}
         },
         "required": ["container_id", "attr_key", "attr_val"]
     }
     
-    async def execute(self, container_id: str, attr_key: str, attr_val: str, bearer_token: str = None, download: bool = None, range_header: str = None, **kwargs) -> str:
+    async def execute(self, container_id: str, attr_key: str, attr_val: str, bearer_token: str = None, download: bool = None, range_header: str = None, save_path: str = None, **kwargs) -> str:
         try:
             client = get_shared_neofs_client()
             response = client.download_object_by_attribute(
@@ -393,6 +485,40 @@ class DownloadObjectByAttributeTool(BaseTool):
             )
             content = response.content
             
+            # Save to file if save_path is provided
+            if save_path:
+                import os
+                # Convert to absolute path if relative
+                if not os.path.isabs(save_path):
+                    save_path = os.path.abspath(save_path)
+                
+                # Create directory if it doesn't exist
+                save_dir = os.path.dirname(save_path)
+                if save_dir and not os.path.exists(save_dir):
+                    os.makedirs(save_dir, exist_ok=True)
+                
+                # Write file
+                with open(save_path, 'wb') as f:
+                    f.write(content)
+                
+                try:
+                    text = content.decode('utf-8')
+                    return f"""✅ Downloaded by attribute and saved!
+Attribute: {attr_key}={attr_val}
+Container ID: {container_id}
+Size: {len(content)} bytes
+Saved to: {save_path}
+
+Content preview:
+{text[:500]}{'...' if len(text) > 500 else ''}"""
+                except:
+                    return f"""✅ Downloaded by attribute and saved!
+Attribute: {attr_key}={attr_val}
+Container ID: {container_id}
+Size: {len(content)} bytes (binary)
+Saved to: {save_path}"""
+            
+            # Return content preview if not saving
             try:
                 text = content.decode('utf-8')
                 return f"""✅ Downloaded by attribute!
@@ -403,7 +529,7 @@ Size: {len(content)} bytes
 Content:
 {text[:500]}{'...' if len(text) > 500 else ''}"""
             except:
-                return f"✅ Downloaded! Size: {len(content)} bytes (binary)"
+                return f"✅ Downloaded by attribute! Size: {len(content)} bytes (binary)"
         except Exception as e:
             return f"❌ Failed: {str(e)}"
 

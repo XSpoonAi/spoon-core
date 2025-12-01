@@ -28,7 +28,7 @@ from .utils import generate_simple_signature_params, sign_bearer_token, sign_wit
 
 class NeoFSClient:
     def __init__(self, base_url: Optional[str] = None, owner_address: Optional[str] = None, private_key_wif: Optional[str] = None):
-        load_dotenv()
+        load_dotenv(override=False)  # Don't override existing env vars to avoid reading wrong .env files
         self.base_url = base_url or os.getenv("NEOFS_BASE_URL")
         self.owner_address = owner_address or os.getenv("NEOFS_OWNER_ADDRESS")
         self.private_key_wif = private_key_wif or os.getenv("NEOFS_PRIVATE_KEY_WIF")
