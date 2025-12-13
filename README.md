@@ -51,6 +51,18 @@ Here's how to navigate it:
 
 By the end of this README, you'll not only understand what SCDF is—but you'll be ready to build and run your own AI agents and will gain ideas on scenarios what SCDF could empower. **Have fun!**
 
+### RAG Quick Links
+
+- RAG Overview: `doc/rag/overview.md`
+- RAG Backends: `doc/rag/backends.md`
+- RAG Examples: `doc/rag/examples.md`
+
+Quick smoke (offline, from source):
+
+```
+PYTHONPATH=. RAG_BACKEND=faiss RAG_FAKE_QA=1 python examples/smoke/rag_faiss_smoke.py
+```
+
 ## Features
 
 SpoonOS is a living, evolving agentic operating system. Its SCDF is purpose-built to meet the growing demands of Web3 developers — offering a complete toolkit for building sentient, composable, and interoperable AI agents.

@@ -61,17 +61,26 @@ def _resolve_version() -> str:
 
 __version__: str = _resolve_version()
 
-from spoon_ai.chat import ChatBot
-from spoon_ai.schema import LLMResponse, LLMResponseChunk, Message
+# Optional runtime imports: make top-level import of spoon_ai lightweight
+# so that subpackages (e.g., spoon_ai.rag) can be used in minimal/offline envs.
+try:
+    from spoon_ai.chat import ChatBot  # type: ignore
+    from spoon_ai.schema import LLMResponse, LLMResponseChunk, Message  # type: ignore
+    _exported = [
+        "__version__",
+        "ChatBot",
+        "Message",
+        "LLMResponse",
+        "LLMResponseChunk",
+    ]
+except Exception:  # pragma: no cover - optional dependency surface
+    ChatBot = None  # type: ignore
+    Message = None  # type: ignore
+    LLMResponse = None  # type: ignore
+    LLMResponseChunk = None  # type: ignore
+    _exported = ["__version__"]
 
-__all__ = [
-    "__version__",
-    "ChatBot",
-    "Message",
-    "LLMResponse",
-    "LLMResponseChunk",
-]
-
+__all__ = _exported
 
 
 
