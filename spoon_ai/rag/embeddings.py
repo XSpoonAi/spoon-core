@@ -224,9 +224,11 @@ def get_embedding_client(
     # Handle backward compatibility: if openai_model is provided but model is not, use openai_model
     if model is None and openai_model is not None:
         model = openai_model
-    # Default to OpenAI's default model name if neither is provided
-    if model is None:
-        model = "text-embedding-3-small"
+    # Note: We don't set a default model here. Each provider handles None appropriately:
+    # - OpenAI: uses OpenAIEmbeddingClient's default "text-embedding-3-small"
+    # - Gemini: uses "models/embedding-001" (see line 339)
+    # - OpenRouter: uses _derive_openrouter_embedding_model which returns "openai/text-embedding-3-small"
+    # - Ollama: raises error (requires explicit model)
 
     def _normalize(value: Optional[str]) -> str:
         return (value or "").strip().lower()
@@ -335,6 +337,7 @@ def get_embedding_client(
 
         model_name = (model or "").strip()
         # If model is empty or is OpenAI's default model name, use Gemini's default
+        # if not model_name or model_name == "text-embedding-3-small":
         if not model_name:
             # Use Gemini's embedding model. embedding-001 is the standard Gemini embedding model
             model_name = "models/embedding-001"
