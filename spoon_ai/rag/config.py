@@ -5,8 +5,9 @@ from typing import Optional
 # Try to import python-dotenv
 try:
     from dotenv import load_dotenv
-    # Load .env immediately if available, aligning with project habit
-    load_dotenv()
+    # Load .env immediately if available, but don't override existing env vars
+    # This allows command-line env vars to override .env file values
+    load_dotenv(override=False)
 except ImportError:
     pass
 
@@ -27,9 +28,14 @@ class RagConfig:
     # - "openai_compatible": custom OpenAI-compatible embeddings (RAG_EMBEDDINGS_API_KEY + RAG_EMBEDDINGS_BASE_URL)
     # - "hash": deterministic offline fallback
     embeddings_provider: Optional[str] = None
-    openai_embeddings_model: str = "text-embedding-3-small"
+    embeddings_model: str = "text-embedding-3-small"  # Generic model name for all embedding providers
     # Storage paths
     rag_dir: str = ".rag_store"
+    
+    @property
+    def openai_embeddings_model(self) -> str:
+        """Deprecated: use 'embeddings_model' instead. Kept for backward compatibility."""
+        return self.embeddings_model
 
 def get_default_config() -> RagConfig:
     backend = os.getenv("RAG_BACKEND", "faiss").lower()
@@ -50,6 +56,6 @@ def get_default_config() -> RagConfig:
         chunk_size=chunk_size,
         chunk_overlap=chunk_overlap,
         embeddings_provider=embeddings_provider,
-        openai_embeddings_model=embeddings_model,
+        embeddings_model=embeddings_model,
         rag_dir=rag_dir,
     )

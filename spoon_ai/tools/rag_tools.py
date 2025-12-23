@@ -22,7 +22,7 @@ def _build_components():
     store = get_vector_store(cfg.backend)
     embed = get_embedding_client(
         cfg.embeddings_provider,
-        openai_model=cfg.openai_embeddings_model,
+        model=cfg.embeddings_model,
     )
     return cfg, store, embed
 

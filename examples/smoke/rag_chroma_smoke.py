@@ -46,13 +46,13 @@ async def main():
     embed = get_embedding_client(cfg.embeddings_provider)
 
     index = RagIndex(config=cfg, store=store, embeddings=embed)
-    n = index.ingest(["./doc"])  # small local docs
+    n = index.ingest(["./README.md"])  # small local docs
     print(f"Ingested {n} chunks.")
 
     retr = RagRetriever(config=cfg, store=store, embeddings=embed)
-    chunks = retr.retrieve("How to install?", top_k=3)
+    chunks = retr.retrieve("How do I configure API keys for SpoonOS?", top_k=3)
     qa = RagQA(config=cfg, llm=None)  # offline QA for smoke
-    res = await qa.answer("How to install?", chunks)
+    res = await qa.answer("How do I configure API keys for SpoonOS?", chunks)
     print("Answer:", res.answer[:200], "...")
     print("Citations:", res.citations)
 

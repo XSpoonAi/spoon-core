@@ -66,7 +66,7 @@ async def main() -> None:
 
     cfg = get_default_config()
     store = get_vector_store(cfg.backend)
-    embed = get_embedding_client(cfg.embeddings_provider, openai_model=cfg.openai_embeddings_model)
+    embed = get_embedding_client(cfg.embeddings_provider, model=cfg.embeddings_model)
 
     print("== RAG GitHub Loader Smoke ==")
     print("URL:", TEST_URL)
