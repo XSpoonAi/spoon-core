@@ -228,7 +228,8 @@ def get_embedding_client(
     # - OpenAI: uses OpenAIEmbeddingClient's default "text-embedding-3-small"
     # - Gemini: uses "models/embedding-001" (see line 339)
     # - OpenRouter: uses _derive_openrouter_embedding_model which returns "openai/text-embedding-3-small"
-    # - Ollama: raises error (requires explicit model)
+    # - DeepSeek: uses "text-embedding-3-small" (OpenAI-compatible)
+    # - Ollama: auto-detects embedding models or defaults to "nomic-embed-text"
 
     def _normalize(value: Optional[str]) -> str:
         return (value or "").strip().lower()
@@ -246,14 +247,14 @@ def get_embedding_client(
 
     if provider_norm in ("", "auto"):
         # Auto: pick the first configured embeddings provider using a dedicated priority
-        # order (OpenAI > OpenRouter > Gemini). This is intentionally independent from
+        # order (OpenAI > OpenRouter > Gemini > DeepSeek). This is intentionally independent from
         # the chat LLM provider and its fallback chain.
         try:
             from spoon_ai.llm.config import ConfigurationManager
 
             cm = ConfigurationManager()
             available = set(cm.list_configured_providers())
-            for p in ("openai", "openrouter", "gemini"):
+            for p in ("openai", "openrouter", "gemini", "deepseek"):
                 if p in available:
                     provider_norm = p
                     break
@@ -271,11 +272,11 @@ def get_embedding_client(
             # If core config is unavailable/misconfigured, fall back to offline embeddings.
             provider_norm = "hash"
 
-    supported = {"", "auto", "hash", "openai", "openrouter", "gemini", "openai_compatible", "ollama"}
+    supported = {"", "auto", "hash", "openai", "openrouter", "deepseek", "gemini", "openai_compatible", "ollama"}
     if provider_norm not in supported:
         raise ValueError(
             f"Unsupported embeddings provider '{provider_norm}'. "
-            "Supported: auto, openai, openrouter, gemini, openai_compatible, ollama, hash."
+            "Supported: auto, openai, openrouter, deepseek, gemini, openai_compatible, ollama, hash."
         )
 
     if provider_norm == "hash":
@@ -377,11 +378,55 @@ def get_embedding_client(
             custom_headers=cfg.custom_headers,
         )
 
+    if provider_norm == "deepseek":
+        # DeepSeek uses OpenAI-compatible API for embeddings
+        from spoon_ai.llm.config import ConfigurationManager
+
+        cm = ConfigurationManager()
+        cfg = cm.load_provider_config("deepseek")
+
+        if not cfg.api_key:
+            raise ValueError("DEEPSEEK_API_KEY not configured for DeepSeek embeddings")
+
+        # DeepSeek embeddings use OpenAI-compatible endpoint
+        # Default model: text-embedding-3-small (OpenAI-compatible)
+        model_name = model or "text-embedding-3-small"
+        return OpenAICompatibleEmbeddingClient(
+            api_key=cfg.api_key,
+            base_url=cfg.base_url or "https://api.deepseek.com/v1",
+            model=model_name,
+            custom_headers=cfg.custom_headers,
+        )
+
     if provider_norm == "ollama":
         base_url = os.getenv("OLLAMA_BASE_URL", "http://localhost:11434").strip() or "http://localhost:11434"
         model_name = (model or "").strip()
         if not model_name:
-            raise ValueError("RAG_EMBEDDINGS_MODEL is required for Ollama embeddings")
+            # Try to auto-detect embedding model from Ollama
+            try:
+                resp = requests.get(f"{base_url.rstrip('/')}/api/tags", timeout=5)
+                resp.raise_for_status()
+                data = resp.json()
+                models = []
+                for m in data.get("models", []) or []:
+                    name = m.get("name") or m.get("model")
+                    if name:
+                        models.append(str(name))
+                
+                # Prefer obvious embedding models
+                for name in models:
+                    lowered = name.lower()
+                    if "embed" in lowered or "embedding" in lowered:
+                        model_name = name
+                        break
+                
+                # Fallback to common default: nomic-embed-text
+                if not model_name:
+                    model_name = "nomic-embed-text"  # Common Ollama embedding model
+            except Exception:
+                # If auto-detection fails, use common default
+                model_name = "nomic-embed-text"
+        
         return OllamaEmbeddingClient(base_url=base_url, model=model_name)
 
     # Default deterministic offline embedding

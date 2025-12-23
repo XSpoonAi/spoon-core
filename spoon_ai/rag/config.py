@@ -23,8 +23,9 @@ class RagConfig:
     # - None/"auto": select an embedding-capable provider using core LLM config (env + fallback chain)
     # - "openai": force OpenAI embeddings
     # - "openrouter": force OpenRouter embeddings (OpenAI-compatible /embeddings)
+    # - "deepseek": force DeepSeek embeddings (requires DEEPSEEK_API_KEY, OpenAI-compatible)
     # - "gemini": force Gemini embeddings (requires GEMINI_API_KEY + RAG_EMBEDDINGS_MODEL)
-    # - "ollama": Ollama local embeddings (OLLAMA_BASE_URL + RAG_EMBEDDINGS_MODEL)
+    # - "ollama": Ollama local embeddings (OLLAMA_BASE_URL + RAG_EMBEDDINGS_MODEL, auto-detects if not set)
     # - "openai_compatible": custom OpenAI-compatible embeddings (RAG_EMBEDDINGS_API_KEY + RAG_EMBEDDINGS_BASE_URL)
     # - "hash": deterministic offline fallback
     embeddings_provider: Optional[str] = None
@@ -47,7 +48,15 @@ def get_default_config() -> RagConfig:
     embeddings_provider = os.getenv("RAG_EMBEDDINGS_PROVIDER")
     if embeddings_provider is not None:
         embeddings_provider = embeddings_provider.strip().lower() or None
-    embeddings_model = os.getenv("RAG_EMBEDDINGS_MODEL", "text-embedding-3-small").strip()
+    
+    # Don't set a default model here. Each provider handles None/empty appropriately:
+    # - OpenAI: uses OpenAIEmbeddingClient's default "text-embedding-3-small"
+    # - Gemini: uses "models/embedding-001" (see embeddings.py line 339)
+    # - OpenRouter: uses _derive_openrouter_embedding_model
+    # - Ollama: raises error (requires explicit model)
+    # - Hash: ignores model (not needed)
+    embeddings_model = os.getenv("RAG_EMBEDDINGS_MODEL", "").strip()
+
 
     return RagConfig(
         backend=backend,
