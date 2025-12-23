@@ -335,7 +335,7 @@ def get_embedding_client(
 
         model_name = (model or "").strip()
         # If model is empty or is OpenAI's default model name, use Gemini's default
-        if not model_name or model_name == "text-embedding-3-small":
+        if not model_name:
             # Use Gemini's embedding model. embedding-001 is the standard Gemini embedding model
             model_name = "models/embedding-001"
         
