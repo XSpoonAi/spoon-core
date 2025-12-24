@@ -21,13 +21,15 @@ class RagConfig:
     chunk_overlap: int = 120
     # Embeddings
     # - None/"auto": select an embedding-capable provider using core LLM config (env + fallback chain)
-    # - "openai": force OpenAI embeddings
+    # - "openai": force OpenAI embeddings (text-embedding-3-small, text-embedding-3-large)
     # - "openrouter": force OpenRouter embeddings (OpenAI-compatible /embeddings)
-    # - "deepseek": force DeepSeek embeddings (requires DEEPSEEK_API_KEY, OpenAI-compatible)
     # - "gemini": force Gemini embeddings (requires GEMINI_API_KEY + RAG_EMBEDDINGS_MODEL)
     # - "ollama": Ollama local embeddings (OLLAMA_BASE_URL + RAG_EMBEDDINGS_MODEL, auto-detects if not set)
-    # - "openai_compatible": custom OpenAI-compatible embeddings (RAG_EMBEDDINGS_API_KEY + RAG_EMBEDDINGS_BASE_URL)
+    # - "openai_compatible": custom OpenAI-compatible embeddings endpoint
+    #   Configure via: RAG_EMBEDDINGS_API_KEY + RAG_EMBEDDINGS_BASE_URL + RAG_EMBEDDINGS_MODEL
     # - "hash": deterministic offline fallback
+    # Note: DeepSeek specializes in LLM (text generation), not embeddings.
+    #       Use DeepSeek as LLM for QA generation, and other models for embeddings.
     embeddings_provider: Optional[str] = None
     embeddings_model: str = "text-embedding-3-small"  # Generic model name for all embedding providers
     # Storage paths

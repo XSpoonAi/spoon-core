@@ -328,7 +328,7 @@ class ConfigurationManager:
             'deepseek': {
                 'model': 'deepseek-reasoner',
                 'base_url': 'https://api.deepseek.com/v1',
-                'max_tokens': 65536,  # DeepSeek supports larger context
+                'max_tokens': 8192,  # DeepSeek API limit: [1, 8192]
                 'temperature': 0.2,   # Slightly lower for reasoning model
                 **{k: v for k, v in common_defaults.items() if k not in ['max_tokens', 'temperature']}
             },

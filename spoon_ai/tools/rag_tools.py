@@ -15,7 +15,7 @@ from spoon_ai.rag import (
     RagRetriever,
     RagQA,
 )
-
+import json
 
 def _build_components():
     cfg = get_default_config()
@@ -78,7 +78,7 @@ class RAGQATool(BaseTool):
         "type": "object",
         "properties": {
             "question": {"type": "string"},
-            "top_k": {"type": "integer", "description": "Number of snippets to use (default: 5)"},
+            "top_k": {"type": "integer","default": 5, "description": "Number of snippets to use (default: 5)"},
             "collection": {"type": "string", "description": "Collection to search (default: 'default')"},
         },
         "required": ["question"],
@@ -104,7 +104,11 @@ class RAGQATool(BaseTool):
 
         qa = RagQA(config=cfg, llm=llm)
         res = await qa.answer(question, chunks)
-        return ToolResult(output=res.answer, system=str({"citations": res.citations}))
+        return ToolResult(
+            output=res.answer,
+            system=json.dumps({"citations": res.citations}, ensure_ascii=False)
+        )
+
 
 
 __all__ = ["RAGIngestTool", "RAGSearchTool", "RAGQATool"]
