@@ -114,10 +114,10 @@ async def main() -> None:
 
     cfg = get_default_config()
     print(f"backend={cfg.backend} collection={cfg.collection}")
-    print(f"embeddings_provider={cfg.embeddings_provider} embeddings_model={cfg.openai_embeddings_model}")
+    print(f"embeddings_provider={cfg.embeddings_provider} embeddings_model={cfg.embeddings_model}")
 
     store = get_vector_store(cfg.backend)
-    embed = get_embedding_client(cfg.embeddings_provider, openai_model=cfg.openai_embeddings_model)
+    embed = get_embedding_client(cfg.embeddings_provider, model=cfg.embeddings_model)
 
     # Ingest a small local target (defaults to README.md on the core repo)
     index = RagIndex(config=cfg, store=store, embeddings=embed)

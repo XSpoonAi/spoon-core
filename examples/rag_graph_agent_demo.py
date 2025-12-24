@@ -22,11 +22,17 @@ from spoon_ai.rag import (
 
 
 def build_pipeline():
+    # Force offline backend: faiss or in-memory (not chroma)
+    # Override config to ensure offline mode
+    os.environ.setdefault("RAG_BACKEND", "faiss")
+    os.environ.setdefault("RAG_EMBEDDINGS_PROVIDER", "hash")
     cfg = get_default_config()
-    store = get_vector_store(cfg.backend)
+    # Ensure we use faiss backend (fallback to in-memory if faiss not available)
+    backend = "faiss" if cfg.backend != "faiss" else cfg.backend
+    store = get_vector_store(backend)
     embed = get_embedding_client(
         cfg.embeddings_provider,
-        openai_model=cfg.openai_embeddings_model,
+        model=cfg.embeddings_model,
     )
 
     index = RagIndex(config=cfg, store=store, embeddings=embed)

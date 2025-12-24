@@ -33,7 +33,7 @@ async def main() -> None:
     print("\n== RAG ReAct Agent Demo ==\n")
 
     # 1) Ingest a local directory or url
-    docs_dir = os.getenv("RAG_DOCS", "./doc")
+    docs_dir = os.getenv("RAG_DOCS", "./readme.md")
     ingest_request = f"Use rag_ingest to index docs in {docs_dir}"
     print("User:", ingest_request)
     out = await agent.run(ingest_request)

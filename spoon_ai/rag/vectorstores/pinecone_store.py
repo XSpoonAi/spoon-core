@@ -131,7 +131,51 @@ class PineconeVectorStore(VectorStore):
         return self._index
 
     def add(self, *, collection: str, ids: List[str], embeddings: List[List[float]], metadatas: List[Dict]) -> None:
-        index = self._ensure_index(dim=len(embeddings[0]) if embeddings else None)
+        if not embeddings:
+            return
+        
+        embedding_dim = len(embeddings[0])
+        index = self._ensure_index(dim=embedding_dim)
+        
+        # Check if index dimension matches embedding dimension
+        try:
+            # Try to get index stats to check dimension
+            stats = index.describe_index_stats()
+            # Extract dimension from stats (format varies by SDK version)
+            index_dim = None
+            if isinstance(stats, dict):
+                index_dim = stats.get("dimension") or stats.get("dim")
+            elif hasattr(stats, "dimension"):
+                index_dim = stats.dimension
+            elif hasattr(stats, "dim"):
+                index_dim = stats.dim
+            
+            if index_dim and index_dim != embedding_dim:
+                raise ValueError(
+                    f"Embedding dimension mismatch: "
+                    f"Current embedding model produces {embedding_dim}-dimensional vectors, "
+                    f"but Pinecone index '{self.index_name}' expects {index_dim}-dimensional vectors.\n"
+                    f"Solutions:\n"
+                    f"1. Delete the existing index and recreate it with the correct dimension:\n"
+                    f"   - Use a different index name: RAG_PINECONE_INDEX=new-index-name\n"
+                    f"   - Or delete the index manually in Pinecone console\n"
+                    f"2. Use an embedding model that matches the index dimension ({index_dim}):\n"
+                    f"   - For 1536 dimensions: text-embedding-3-large or text-embedding-ada-002\n"
+                    f"   - For 768 dimensions: text-embedding-3-small\n"
+                )
+        except Exception as e:
+            # If we can't check dimension, let Pinecone API handle it
+            # but wrap the error with helpful message
+            if "dimension" in str(e).lower() or "dim" in str(e).lower():
+                raise ValueError(
+                    f"Embedding dimension mismatch with Pinecone index '{self.index_name}'. "
+                    f"Current embedding produces {embedding_dim}-dimensional vectors. "
+                    f"Please use an embedding model that matches the index dimension, "
+                    f"or delete the index and recreate it with the correct dimension."
+                ) from e
+            # Re-raise other exceptions as-is
+            raise
+        
         vectors = [
             {"id": id_, "values": [float(x) for x in vec], "metadata": md}
             for id_, vec, md in zip(ids, embeddings, metadatas)

@@ -203,9 +203,16 @@ def get_embedding_client(
     provider: Optional[str],
     *,
     openai_api_key: Optional[str] = None,
-    openai_model: str = "text-embedding-3-small",
+    model: Optional[str] = None,
+    openai_model: Optional[str] = None,  # Deprecated: use 'model' instead. Kept for backward compatibility.
 ) -> EmbeddingClient:
     """Create an embedding client.
+
+    Args:
+        provider: Embedding provider name ("openai", "gemini", "ollama", etc.) or None/"auto" for auto-detection.
+        openai_api_key: Optional OpenAI API key (for OpenAI provider only).
+        model: Model name/ID for the embedding provider. This is a generic parameter that works for all providers.
+        openai_model: Deprecated alias for 'model'. Use 'model' instead.
 
     Provider selection rules:
     - provider is None/"auto": pick the first configured embeddings provider using a dedicated
@@ -214,6 +221,15 @@ def get_embedding_client(
     - provider is "openai_compatible": use OpenAI-compatible embeddings via RAG_EMBEDDINGS_* env vars.
     - otherwise: deterministic hash embeddings (offline).
     """
+    # Handle backward compatibility: if openai_model is provided but model is not, use openai_model
+    if model is None and openai_model is not None:
+        model = openai_model
+    # Note: We don't set a default model here. Each provider handles None appropriately:
+    # - OpenAI: uses OpenAIEmbeddingClient's default "text-embedding-3-small"
+    # - Gemini: uses "models/embedding-001" (see line 339)
+    # - OpenRouter: uses _derive_openrouter_embedding_model which returns "openai/text-embedding-3-small"
+    # - DeepSeek: uses "text-embedding-3-small" (OpenAI-compatible)
+    # - Ollama: auto-detects embedding models or defaults to "nomic-embed-text"
 
     def _normalize(value: Optional[str]) -> str:
         return (value or "").strip().lower()
@@ -231,14 +247,14 @@ def get_embedding_client(
 
     if provider_norm in ("", "auto"):
         # Auto: pick the first configured embeddings provider using a dedicated priority
-        # order (OpenAI > OpenRouter > Gemini). This is intentionally independent from
+        # order (OpenAI > OpenRouter > Gemini > DeepSeek). This is intentionally independent from
         # the chat LLM provider and its fallback chain.
         try:
             from spoon_ai.llm.config import ConfigurationManager
 
             cm = ConfigurationManager()
             available = set(cm.list_configured_providers())
-            for p in ("openai", "openrouter", "gemini"):
+            for p in ("openai", "openrouter", "gemini", "deepseek"):
                 if p in available:
                     provider_norm = p
                     break
@@ -256,11 +272,11 @@ def get_embedding_client(
             # If core config is unavailable/misconfigured, fall back to offline embeddings.
             provider_norm = "hash"
 
-    supported = {"", "auto", "hash", "openai", "openrouter", "gemini", "openai_compatible", "ollama"}
+    supported = {"", "auto", "hash", "openai", "openrouter", "deepseek", "gemini", "openai_compatible", "ollama"}
     if provider_norm not in supported:
         raise ValueError(
             f"Unsupported embeddings provider '{provider_norm}'. "
-            "Supported: auto, openai, openrouter, gemini, openai_compatible, ollama, hash."
+            "Supported: auto, openai, openrouter, deepseek, gemini, openai_compatible, ollama, hash."
         )
 
     if provider_norm == "hash":
@@ -284,8 +300,8 @@ def get_embedding_client(
 
         # Allow passing OpenRouter-style namespaced IDs (e.g. openai/text-embedding-3-small)
         # while keeping OpenAI's expected model id (text-embedding-3-small).
-        model = openai_model.split("/", 1)[-1] if "/" in (openai_model or "") else openai_model
-        return OpenAIEmbeddingClient(api_key=key, model=model, base_url=base_url)
+        model_name = model.split("/", 1)[-1] if "/" in (model or "") else model
+        return OpenAIEmbeddingClient(api_key=key, model=model_name, base_url=base_url)
 
     if provider_norm == "openrouter":
         # OpenRouter is OpenAI-compatible for embeddings.
@@ -296,9 +312,9 @@ def get_embedding_client(
 
         # If OPENROUTER_MODEL is an embedding model, use it; otherwise default to OpenAI embeddings via OpenRouter.
         if cfg.model and "embedding" in cfg.model.lower():
-            model = cfg.model
+            model_name = cfg.model
         else:
-            model = _derive_openrouter_embedding_model(openai_model)
+            model_name = _derive_openrouter_embedding_model(model)
 
         if not cfg.api_key:
             raise ValueError("OPENROUTER_API_KEY not configured for OpenRouter embeddings")
@@ -306,13 +322,13 @@ def get_embedding_client(
         return OpenAICompatibleEmbeddingClient(
             api_key=cfg.api_key,
             base_url=cfg.base_url or "https://openrouter.ai/api/v1",
-            model=model,
+            model=model_name,
             custom_headers=cfg.custom_headers,
         )
 
     if provider_norm == "gemini":
         # Gemini embeddings are handled via google-genai SDK. The embedding model must be
-        # provided via RAG_EMBEDDINGS_MODEL (passed as openai_model here).
+        # provided via RAG_EMBEDDINGS_MODEL (passed as model parameter here).
         from spoon_ai.llm.config import ConfigurationManager
 
         cm = ConfigurationManager()
@@ -320,17 +336,24 @@ def get_embedding_client(
         if not cfg.api_key:
             raise ValueError("GEMINI_API_KEY not configured for Gemini embeddings")
 
-        model = (openai_model or "").strip()
-        if not model:
-            raise ValueError("RAG_EMBEDDINGS_MODEL is required for Gemini embeddings")
+        model_name = (model or "").strip()
+        # If model is empty or is OpenAI's default model name, use Gemini's default
+        # if not model_name or model_name == "text-embedding-3-small":
+        if not model_name:
+            # Use Gemini's embedding model. embedding-001 is the standard Gemini embedding model
+            model_name = "models/embedding-001"
+        
+        # Ensure model has 'models/' prefix if not already present
+        if not model_name.startswith("models/"):
+            model_name = f"models/{model_name}"
 
-        return GeminiEmbeddingClient(api_key=cfg.api_key, model=model)
+        return GeminiEmbeddingClient(api_key=cfg.api_key, model=model_name)
 
     if provider_norm == "openai_compatible":
         # Custom OpenAI-compatible embeddings endpoint configured via:
         # - RAG_EMBEDDINGS_API_KEY
         # - RAG_EMBEDDINGS_BASE_URL
-        # - RAG_EMBEDDINGS_MODEL (optional; defaults to openai_model)
+        # - RAG_EMBEDDINGS_MODEL (optional; defaults to model parameter)
         from spoon_ai.llm.config import ConfigurationManager
 
         cm = ConfigurationManager()
@@ -347,20 +370,64 @@ def get_embedding_client(
                 "RAG_EMBEDDINGS_BASE_URL must be set when RAG_EMBEDDINGS_PROVIDER=openai_compatible."
             )
 
-        model = cfg.model or openai_model
+        model_name = cfg.model or model
         return OpenAICompatibleEmbeddingClient(
             api_key=cfg.api_key,
             base_url=cfg.base_url,
-            model=model,
+            model=model_name,
+            custom_headers=cfg.custom_headers,
+        )
+
+    if provider_norm == "deepseek":
+        # DeepSeek uses OpenAI-compatible API for embeddings
+        from spoon_ai.llm.config import ConfigurationManager
+
+        cm = ConfigurationManager()
+        cfg = cm.load_provider_config("deepseek")
+
+        if not cfg.api_key:
+            raise ValueError("DEEPSEEK_API_KEY not configured for DeepSeek embeddings")
+
+        # DeepSeek embeddings use OpenAI-compatible endpoint
+        # Default model: text-embedding-3-small (OpenAI-compatible)
+        model_name = model or "text-embedding-3-small"
+        return OpenAICompatibleEmbeddingClient(
+            api_key=cfg.api_key,
+            base_url=cfg.base_url or "https://api.deepseek.com/v1",
+            model=model_name,
             custom_headers=cfg.custom_headers,
         )
 
     if provider_norm == "ollama":
         base_url = os.getenv("OLLAMA_BASE_URL", "http://localhost:11434").strip() or "http://localhost:11434"
-        model = (openai_model or "").strip()
-        if not model:
-            raise ValueError("RAG_EMBEDDINGS_MODEL is required for Ollama embeddings")
-        return OllamaEmbeddingClient(base_url=base_url, model=model)
+        model_name = (model or "").strip()
+        if not model_name:
+            # Try to auto-detect embedding model from Ollama
+            try:
+                resp = requests.get(f"{base_url.rstrip('/')}/api/tags", timeout=5)
+                resp.raise_for_status()
+                data = resp.json()
+                models = []
+                for m in data.get("models", []) or []:
+                    name = m.get("name") or m.get("model")
+                    if name:
+                        models.append(str(name))
+                
+                # Prefer obvious embedding models
+                for name in models:
+                    lowered = name.lower()
+                    if "embed" in lowered or "embedding" in lowered:
+                        model_name = name
+                        break
+                
+                # Fallback to common default: nomic-embed-text
+                if not model_name:
+                    model_name = "nomic-embed-text"  # Common Ollama embedding model
+            except Exception:
+                # If auto-detection fails, use common default
+                model_name = "nomic-embed-text"
+        
+        return OllamaEmbeddingClient(base_url=base_url, model=model_name)
 
     # Default deterministic offline embedding
     return HashEmbeddingClient()
