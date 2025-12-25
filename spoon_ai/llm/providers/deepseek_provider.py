@@ -39,7 +39,7 @@ class DeepSeekProvider(OpenAICompatibleProvider):
                 ProviderCapability.TOOLS,
                 ProviderCapability.STREAMING
             ],
-            max_tokens=64000,  # DeepSeek context limit
+            max_tokens=8192,  # DeepSeek API limit: [1, 8192]
             supports_system_messages=True,
             rate_limits={
                 "requests_per_minute": 60,   # DeepSeek rate limits
