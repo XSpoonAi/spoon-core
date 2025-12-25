@@ -36,11 +36,45 @@ class OpenAIEmbeddingClient(EmbeddingClient):
         }
         if self.custom_headers:
             headers.update(self.custom_headers)
-        data = {"input": list(texts), "model": self.model}
-        resp = requests.post(url, headers=headers, data=json.dumps(data), timeout=60)
-        resp.raise_for_status()
-        payload = resp.json()
-        return [d["embedding"] for d in payload.get("data", [])]
+        
+        # OpenAI-specific limits:
+        # - Max tokens per text: 8191 (text-embedding-3-small/large)
+        # - Batch size: No hard limit, but recommended 100-1000 per batch
+        # Approximate: 1 token ≈ 4 characters
+        texts_list = list(texts)
+        max_chars = 32000  # ~8k tokens per text (conservative)
+        batch_size = 100  # Conservative batch size
+        
+        # Truncate texts that are too long
+        truncated_texts = []
+        for text in texts_list:
+            if len(text) > max_chars:
+                truncated_texts.append(text[:max_chars])
+            else:
+                truncated_texts.append(text)
+        
+        # Process in batches
+        all_embeddings = []
+        for i in range(0, len(truncated_texts), batch_size):
+            batch = truncated_texts[i:i + batch_size]
+            data = {"input": batch, "model": self.model}
+            resp = requests.post(url, headers=headers, data=json.dumps(data), timeout=60)
+            
+            if resp.status_code != 200:
+                try:
+                    error_detail = resp.json()
+                    error_msg = error_detail.get("error", {}).get("message", resp.text)
+                except:
+                    error_msg = resp.text
+                raise RuntimeError(
+                    f"OpenAI embeddings API error ({resp.status_code}): {error_msg}\n"
+                    f"Model: {self.model}, Batch size: {len(batch)}, Total texts: {len(truncated_texts)}"
+                )
+            
+            payload = resp.json()
+            all_embeddings.extend([d["embedding"] for d in payload.get("data", [])])
+        
+        return all_embeddings
 
 
 class OpenAICompatibleEmbeddingClient(EmbeddingClient):
@@ -65,14 +99,46 @@ class OpenAICompatibleEmbeddingClient(EmbeddingClient):
         }
         if self.custom_headers:
             headers.update(self.custom_headers)
-        # If model is provided, pass it; else rely on server default
-        payload = {"input": list(texts)}
-        if self.model:
-            payload["model"] = self.model
-        resp = requests.post(url, headers=headers, data=json.dumps(payload), timeout=60)
-        resp.raise_for_status()
-        data = resp.json()
-        return [d["embedding"] for d in data.get("data", [])]
+        
+        # OpenAI-compatible limits (conservative defaults):
+        # - Max tokens per text: varies by service, use 8k tokens as safe default
+        # - Batch size: varies by service, use 100 as safe default
+        texts_list = list(texts)
+        max_chars = 32000  # ~8k tokens per text (conservative)
+        batch_size = 100  # Conservative batch size
+        
+        # Truncate texts that are too long
+        truncated_texts = []
+        for text in texts_list:
+            if len(text) > max_chars:
+                truncated_texts.append(text[:max_chars])
+            else:
+                truncated_texts.append(text)
+        
+        # Process in batches
+        all_embeddings = []
+        for i in range(0, len(truncated_texts), batch_size):
+            batch = truncated_texts[i:i + batch_size]
+            payload = {"input": batch}
+            if self.model:
+                payload["model"] = self.model
+            resp = requests.post(url, headers=headers, data=json.dumps(payload), timeout=60)
+            
+            if resp.status_code != 200:
+                try:
+                    error_detail = resp.json()
+                    error_msg = error_detail.get("error", {}).get("message", resp.text)
+                except:
+                    error_msg = resp.text
+                raise RuntimeError(
+                    f"OpenAI-compatible embeddings API error ({resp.status_code}): {error_msg}\n"
+                    f"Base URL: {self.base_url}, Batch size: {len(batch)}, Total texts: {len(truncated_texts)}"
+                )
+            
+            data = resp.json()
+            all_embeddings.extend([d["embedding"] for d in data.get("data", [])])
+        
+        return all_embeddings
 
 
 class GeminiEmbeddingClient(EmbeddingClient):
@@ -93,12 +159,42 @@ class GeminiEmbeddingClient(EmbeddingClient):
 
     def embed(self, texts: Iterable[str]) -> List[List[float]]:
         contents = list(texts)
-        response = self.client.models.embed_content(
-            model=self.model,
-            contents=contents,
-        )
-        embeddings = getattr(response, "embeddings", None) or []
-        return [e.values for e in embeddings]
+        if not contents:
+            return []
+        
+        # Gemini-specific limits:
+        # - Max tokens per text: 2048 (models/embedding-001)
+        # - Batch size: 100 requests per batch (API limit)
+        # Approximate: 1 token ≈ 4 characters
+        max_chars = 8000  # ~2k tokens per text
+        batch_size = 100  # Gemini API limit
+        
+        # Truncate texts that are too long
+        truncated_contents = []
+        for text in contents:
+            if len(text) > max_chars:
+                truncated_contents.append(text[:max_chars])
+            else:
+                truncated_contents.append(text)
+        
+        # Process in batches (Gemini has strict 100 limit)
+        all_embeddings = []
+        for i in range(0, len(truncated_contents), batch_size):
+            batch = truncated_contents[i:i + batch_size]
+            try:
+                response = self.client.models.embed_content(
+                    model=self.model,
+                    contents=batch,
+                )
+                embeddings = getattr(response, "embeddings", None) or []
+                all_embeddings.extend([e.values for e in embeddings])
+            except Exception as e:
+                raise RuntimeError(
+                    f"Gemini embeddings API error for model {self.model}: {e}\n"
+                    f"Batch size: {len(batch)}, Total texts: {len(truncated_contents)}"
+                ) from e
+        
+        return all_embeddings
 
 
 class OllamaEmbeddingClient(EmbeddingClient):
