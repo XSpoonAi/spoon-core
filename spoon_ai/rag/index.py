@@ -33,6 +33,7 @@ class RagIndex:
         docs = load_inputs(inputs)
         records: List[IndexedRecord] = []
         for d in docs:
+            print(f"Indexing document: {d.source}")
             chunks = chunk_text(d.text, self.config.chunk_size, self.config.chunk_overlap)
             for i, ch in enumerate(chunks):
                 rec_id = str(uuid.uuid4())
