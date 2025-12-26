@@ -34,8 +34,10 @@ class RagRetriever:
         *,
         collection: Optional[str] = None,
         top_k: Optional[int] = None,
+        min_similarity: Optional[float] = None,
     ) -> List[RetrievedChunk]:
         k = top_k or self.config.top_k
+        threshold = min_similarity if min_similarity is not None else self.config.min_similarity
         query_vec = self.embeddings.embed([query])
         raw = self.store.query(
             collection=collection or self.config.collection,
@@ -45,6 +47,8 @@ class RagRetriever:
         # Build chunks
         chunks: List[RetrievedChunk] = []
         for id_, score, md in raw:
+            if score < threshold:
+                continue
             text = md.get("text", "")
             chunks.append(RetrievedChunk(id=id_, text=text, score=score, metadata=md))
 
