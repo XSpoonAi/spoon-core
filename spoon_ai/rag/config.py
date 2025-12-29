@@ -17,9 +17,9 @@ class RagConfig:
     backend: str = "faiss"  # faiss|pinecone|qdrant|chroma
     collection: str = "default"
     top_k: int = 5
-    chunk_size: int = 800
+    chunk_size: int = 1200
     chunk_overlap: int = 120
-    min_similarity: float = 0.5
+    min_similarity: float = -10.0
     # Embeddings
     # - None/"auto": select an embedding-capable provider using core LLM config (env + fallback chain)
     # - "openai": force OpenAI embeddings (text-embedding-3-small, text-embedding-3-large)
@@ -46,7 +46,7 @@ def get_default_config() -> RagConfig:
     collection = os.getenv("RAG_COLLECTION", "default")
     rag_dir = os.getenv("RAG_DIR", ".rag_store")
     top_k = int(os.getenv("TOP_K", "5"))
-    chunk_size = int(os.getenv("CHUNK_SIZE", "800"))
+    chunk_size = int(os.getenv("CHUNK_SIZE", "1200"))
     chunk_overlap = int(os.getenv("CHUNK_OVERLAP", "120"))
     min_similarity = float(os.getenv("RAG_MIN_SIMILARITY", "0.7"))
     embeddings_provider = os.getenv("RAG_EMBEDDINGS_PROVIDER")
