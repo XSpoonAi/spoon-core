@@ -25,6 +25,20 @@ from spoon_ai.callbacks.manager import CallbackManager
 logger = logging.getLogger(__name__)
 DEBUG = False
 
+# Import middleware support (optional for backward compatibility)
+try:
+    from spoon_ai.middleware import (
+        AgentMiddleware,
+        MiddlewarePipeline,
+        AgentRuntime,
+        AgentPhase,
+        create_middleware_pipeline
+    )
+    MIDDLEWARE_AVAILABLE = True
+except ImportError:
+    MIDDLEWARE_AVAILABLE = False
+    logger.warning("Middleware system not available. Install spoon_ai.middleware for deep agent features.")
+
 def debug_log(message):
     if DEBUG:
         logger.info(f"DEBUG: {message}\n")
@@ -92,6 +106,19 @@ class BaseAgent(BaseModel, ABC):
     # Callback system
     callbacks: List[BaseCallbackHandler] = Field(default_factory=list, description="Callback handlers for monitoring")
 
+    # Middleware system (Deep Agent support)
+    middleware: List[Any] = Field(default_factory=list, description="Middleware for Plan-Act-Reflect and hooks")
+    enable_plan_phase: bool = Field(default=False, description="Enable explicit planning phase before action loop")
+    enable_reflect_phase: bool = Field(default=False, description="Enable reflection phase after N steps")
+    reflect_interval: int = Field(default=5, description="Steps between reflection phases")
+
+    # Thread ID for conversation isolation
+    thread_id: Optional[str] = Field(default=None, description="Thread ID for conversation isolation")
+
+    # Internal middleware state (not in Pydantic schema)
+    _middleware_pipeline: Optional[Any] = None
+    _agent_state: Dict[str, Any] = {}
+
     model_config = {
         "arbitrary_types_allowed": True,
         "extra": "allow"
@@ -129,9 +156,46 @@ class BaseAgent(BaseModel, ABC):
                 self.llm.update_mem0_config(self.mem0_config, enable=self.enable_long_term_memory)
             except Exception as exc:
                 logger.warning("Unable to configure Mem0 for agent %s: %s", self.name, exc)
-        
+
         # Initialize callback manager
         self._callback_manager = CallbackManager.from_callbacks(self.callbacks)
+
+        # Initialize middleware pipeline (Deep Agent support)
+        self._initialize_middleware()
+
+        # Initialize thread ID
+        if not self.thread_id:
+            self.thread_id = str(uuid.uuid4())
+
+        # Initialize agent state dict
+        self._agent_state = {}
+
+    def _initialize_middleware(self) -> None:
+        """Initialize middleware pipeline if middleware is configured."""
+        if not MIDDLEWARE_AVAILABLE:
+            if self.middleware:
+                logger.warning(f"Agent {self.name} has middleware configured but middleware system is not available")
+            return
+
+        if self.middleware:
+            try:
+                self._middleware_pipeline = create_middleware_pipeline(self.middleware)
+                logger.info(f"Agent {self.name} initialized with {len(self.middleware)} middleware")
+
+                # Inject middleware tools
+                middleware_tools = self._middleware_pipeline.collect_tools()
+                if middleware_tools and hasattr(self, 'available_tools'):
+                    for tool in middleware_tools:
+                        self.available_tools.add_tool(tool)
+                    logger.info(f"Injected {len(middleware_tools)} middleware tools into agent {self.name}")
+
+                # Extend system prompt with middleware prompts
+                if self.system_prompt:
+                    self.system_prompt = self._middleware_pipeline.build_system_prompt(self.system_prompt)
+
+            except Exception as e:
+                logger.error(f"Failed to initialize middleware for agent {self.name}: {e}")
+                self._middleware_pipeline = None
 
     async def add_message(
         self,
@@ -658,7 +722,7 @@ class BaseAgent(BaseModel, ABC):
             self._state_transition_history.pop(0)
 
     async def run(self, request: Optional[str] = None, timeout: Optional[float] = None) -> str:
-        """Thread-safe run method with proper concurrency control and callback support."""
+        """Thread-safe run method with proper concurrency control, callback support, and Plan-Act-Reflect phases."""
         timeout = timeout or self._default_timeout
         run_id = uuid.uuid4()
 
@@ -683,18 +747,37 @@ class BaseAgent(BaseModel, ABC):
 
         results: List[str] = []
         operation_id = str(uuid.uuid4())
+        runtime = None  # Will be set in try block
 
         try:
             self._active_operations.add(operation_id)
 
             async with asyncio.timeout(timeout):
                 async with self.state_context(AgentState.RUNNING):
+                    # Create runtime context for middleware
+                    runtime = self._create_runtime_context(run_id)
+
+                    # PLAN PHASE: Execute before action loop (Deep Agent feature)
+                    if self.enable_plan_phase:
+                        await self._execute_plan_phase(runtime)
+
+                    # BEFORE AGENT: Execute middleware before_agent hooks
+                    if self._middleware_pipeline:
+                        state_updates = self._middleware_pipeline.execute_before_agent(
+                            self._agent_state,
+                            runtime
+                        )
+                        if state_updates:
+                            logger.debug(f"Agent {self.name} state updated by before_agent hooks: {list(state_updates.keys())}")
+
+                    # ACTION LOOP: Standard think-act cycle
                     while (
                         self.current_step < self.max_steps and
                         self.state == AgentState.RUNNING and
                         not self._shutdown_event.is_set()
                     ):
                         self.current_step += 1
+                        runtime.current_step = self.current_step
                         logger.info(f"Agent {self.name} is running step {self.current_step}/{self.max_steps}")
 
                         # Execute step with timeout protection
@@ -707,6 +790,15 @@ class BaseAgent(BaseModel, ABC):
                             step_result = f"Step {self.current_step} timed out"
                             logger.warning(f"Agent {self.name} step {self.current_step} timed out")
 
+                        # REFLECT PHASE: Periodic reflection (Deep Agent feature)
+                        if (self.enable_reflect_phase and
+                            self.current_step % self.reflect_interval == 0):
+                            await self._execute_reflect_phase(runtime, {
+                                "current_step": self.current_step,
+                                "step_result": step_result,
+                                "results": results
+                            })
+
                         if await self.is_stuck():
                             await self.handle_stuck_state()
 
@@ -716,19 +808,56 @@ class BaseAgent(BaseModel, ABC):
                     if self.current_step >= self.max_steps:
                         results.append(f"Step {self.current_step}: Reached maximum steps. Stopping.")
 
+                    # FINAL REFLECTION: Ensure reflection happens at least once before finishing
+                    # This fixes the issue where agents finish before reaching reflect_interval
+                    if self.enable_reflect_phase and self.current_step > 0:
+                        # Calculate if we've done reflection recently
+                        last_reflection_step = (self.current_step // self.reflect_interval) * self.reflect_interval
+                        steps_since_reflection = self.current_step - last_reflection_step
+
+                        # If we haven't reflected recently (or at all), do it now
+                        if steps_since_reflection > 0 or last_reflection_step == 0:
+                            logger.info(f"Agent {self.name} performing final reflection before completion")
+                            await self._execute_reflect_phase(runtime, {
+                                "current_step": self.current_step,
+                                "step_result": "Final step completed",
+                                "results": results,
+                                "is_final_reflection": True
+                            })
+
+                    # FINISH PHASE: Final middleware hooks
+                    if self._middleware_pipeline:
+                        await self._execute_finish_phase(runtime, {"results": results})
+
             final_output = "\n".join(results) if results else "No results"
             return final_output
 
         except asyncio.TimeoutError as e:
             logger.error(f"Agent {self.name} run() timed out after {timeout}s")
-            
             raise RuntimeError(f"Agent run timed out after {timeout}s")
-            
+
         except Exception as e:
             logger.error(f"Error during agent run: {e}")
-            
             raise
+
         finally:
+            #AFTER AGENT hooks in finally block to guarantee execution
+            # This ensures checkpointing always happens, even on errors/timeouts
+            if runtime and self._middleware_pipeline:
+                try:
+                    # Update runtime with current messages
+                    runtime.messages = self.memory.get_messages() if hasattr(self.memory, 'get_messages') else []
+                    runtime.current_step = self.current_step
+
+                    state_updates = self._middleware_pipeline.execute_after_agent(
+                        self._agent_state,
+                        runtime
+                    )
+                    if state_updates:
+                        logger.debug(f"Agent {self.name} state updated by after_agent hooks: {list(state_updates.keys())}")
+                except Exception as e:
+                    logger.error(f"Error in after_agent hooks: {e}")
+
             self._active_operations.discard(operation_id)
 
             # Always reset to IDLE state safely
@@ -1005,9 +1134,167 @@ class BaseAgent(BaseModel, ABC):
 
         logger.info(f"Agent {self.name} shutdown complete")
 
+    # ========================================================================
+    # Deep Agent Support - Plan-Act-Reflect Phases
+    # ========================================================================
+
+    def _create_runtime_context(self, run_id: Optional[uuid.UUID] = None) -> Any:
+        """Create runtime context for middleware.
+
+        Returns AgentRuntime if middleware is available, None otherwise.
+        """
+        if not MIDDLEWARE_AVAILABLE:
+            return None
+
+        messages = self.memory.get_messages() if hasattr(self.memory, 'get_messages') else []
+
+        runtime = AgentRuntime(
+            agent_name=self.name,
+            run_id=run_id,
+            thread_id=self.thread_id,
+            state=self._agent_state,
+            config={},
+            current_phase=AgentPhase.THINK,
+            current_step=self.current_step,
+            max_steps=self.max_steps,
+            messages=messages,
+            metadata={}
+        )
+
+        # CRITICAL FIX: Add agent instance reference for SubAgentMiddleware
+        # This allows middleware to access the parent agent for delegation
+        setattr(runtime, '_agent_instance', self)
+
+        return runtime
+
+    async def _execute_plan_phase(self, runtime: Any) -> None:
+        """Execute PLAN phase hooks from middleware.
+
+        This is called BEFORE the action loop starts, allowing middleware
+        to generate an initial plan based on the user's request.
+        """
+        if not self._middleware_pipeline or not runtime:
+            return
+
+        try:
+            runtime.current_phase = AgentPhase.PLAN if MIDDLEWARE_AVAILABLE else None
+            logger.info(f"Agent {self.name} entering PLAN phase")
+
+            phase_data = {
+                "user_request": runtime.get_last_message(Role.USER) if MIDDLEWARE_AVAILABLE else None,
+                "existing_plan": self._agent_state.get("plan"),
+            }
+
+            state_updates = self._middleware_pipeline.execute_phase_hook(
+                AgentPhase.PLAN,
+                runtime,
+                phase_data
+            )
+
+            if state_updates:
+                logger.info(f"Agent {self.name} plan created/updated: {list(state_updates.keys())}")
+
+        except Exception as e:
+            logger.error(f"Error in PLAN phase for agent {self.name}: {e}")
+
+    async def _execute_reflect_phase(self, runtime: Any, phase_data: Dict[str, Any]) -> None:
+        """Execute REFLECT phase hooks from middleware.
+
+        This is called periodically during the action loop (every N steps)
+        to allow middleware to evaluate progress and potentially revise the plan.
+        """
+        if not self._middleware_pipeline or not runtime:
+            return
+
+        try:
+            runtime.current_phase = AgentPhase.REFLECT if MIDDLEWARE_AVAILABLE else None
+            logger.info(f"Agent {self.name} entering REFLECT phase (step {self.current_step})")
+
+            # Add plan and progress to phase data
+            phase_data.update({
+                "plan": self._agent_state.get("plan"),
+                "progress": {
+                    "steps_completed": self.current_step,
+                    "steps_remaining": self.max_steps - self.current_step,
+                }
+            })
+
+            state_updates = self._middleware_pipeline.execute_phase_hook(
+                AgentPhase.REFLECT,
+                runtime,
+                phase_data
+            )
+
+            if state_updates:
+                logger.info(f"Agent {self.name} reflection complete: {list(state_updates.keys())}")
+
+        except Exception as e:
+            logger.error(f"Error in REFLECT phase for agent {self.name}: {e}")
+
+    async def _execute_finish_phase(self, runtime: Any, phase_data: Dict[str, Any]) -> None:
+        """Execute FINISH phase hooks from middleware.
+
+        This is called after the action loop completes, before returning
+        to allow middleware to finalize results and clean up.
+        """
+        if not self._middleware_pipeline or not runtime:
+            return
+
+        try:
+            runtime.current_phase = AgentPhase.FINISH if MIDDLEWARE_AVAILABLE else None
+            logger.info(f"Agent {self.name} entering FINISH phase")
+
+            # Add final statistics to phase data
+            phase_data.update({
+                "plan": self._agent_state.get("plan"),
+                "total_steps": self.current_step,
+                "completed": self.current_step < self.max_steps,
+            })
+
+            state_updates = self._middleware_pipeline.execute_phase_hook(
+                AgentPhase.FINISH,
+                runtime,
+                phase_data
+            )
+
+            if state_updates:
+                logger.info(f"Agent {self.name} finish phase complete: {list(state_updates.keys())}")
+
+        except Exception as e:
+            logger.error(f"Error in FINISH phase for agent {self.name}: {e}")
+
+    def get_agent_state(self, key: str, default: Any = None) -> Any:
+        """Get value from agent state (for middleware access).
+
+        Args:
+            key: State key
+            default: Default value if key not found
+
+        Returns:
+            State value or default
+        """
+        return self._agent_state.get(key, default)
+
+    def set_agent_state(self, key: str, value: Any) -> None:
+        """Set value in agent state (for middleware access).
+
+        Args:
+            key: State key
+            value: State value
+        """
+        self._agent_state[key] = value
+
+    def update_agent_state(self, updates: Dict[str, Any]) -> None:
+        """Bulk update agent state (for middleware access).
+
+        Args:
+            updates: Dictionary of state updates
+        """
+        self._agent_state.update(updates)
+
     def get_diagnostics(self) -> Dict[str, Any]:
         """Get diagnostic information about the agent's state"""
-        return {
+        diagnostics = {
             'name': self.name,
             'state': self.state.value if hasattr(self.state, 'value') else str(self.state),
             'current_step': self.current_step,
@@ -1019,3 +1306,10 @@ class BaseAgent(BaseModel, ABC):
             'shutdown_requested': self._shutdown_event.is_set(),
             'memory_messages': len(self.memory.get_messages()) if hasattr(self.memory, 'get_messages') else 0
         }
+
+        # Add middleware diagnostics if available
+        if self._middleware_pipeline:
+            diagnostics['middleware_count'] = len(self.middleware)
+            diagnostics['agent_state_keys'] = list(self._agent_state.keys())
+
+        return diagnostics

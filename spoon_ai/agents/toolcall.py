@@ -1,6 +1,7 @@
 import json
 import asyncio
 import time
+import uuid
 from logging import getLogger
 from typing import Any, List, Optional
 import logging
@@ -29,7 +30,7 @@ class ToolCallAgent(ReActAgent):
     next_step_prompt: str = TOOLCALL_NEXT_STEP_PROMPT
 
     available_tools: ToolManager = Field(
-        default_factory=ToolManager,
+        default_factory=lambda: ToolManager(tools=[]),
         validation_alias=AliasChoices("available_tools", "avaliable_tools"),
     )
     special_tool_names: List[str] = Field(default_factory=list)
@@ -181,16 +182,23 @@ class ToolCallAgent(ReActAgent):
         else:
             llm_timeout = base_timeout
         try:
-            response = await asyncio.wait_for(
-                self.llm.ask_tool(
-                    messages=self.memory.messages,
-                    system_msg=self.system_prompt,
-                    tools=unique_tools_list,
-                    tool_choice=self.tool_choices,
-                    output_queue=self.output_queue,
-                ),
-                timeout=llm_timeout,
-            )
+            if hasattr(self, '_middleware_pipeline') and self._middleware_pipeline:
+                response = await self._call_llm_with_middleware(
+                    unique_tools_list,
+                    llm_timeout
+                )
+            else:
+                # Fallback: direct LLM call without middleware
+                response = await asyncio.wait_for(
+                    self.llm.ask_tool(
+                        messages=self.memory.messages,
+                        system_msg=self.system_prompt,
+                        tools=unique_tools_list,
+                        tool_choice=self.tool_choices,
+                        output_queue=self.output_queue,
+                    ),
+                    timeout=llm_timeout,
+                )
         except asyncio.TimeoutError:
             logger.error(f"{self.name} LLM tool selection timed out after {llm_timeout}s")
             # Gracefully continue without tools
@@ -245,12 +253,24 @@ class ToolCallAgent(ReActAgent):
             await self.add_message("assistant", f"Error encountered while thinking: {e}")
             return False
 
-    async def run(self, request: Optional[str] = None) -> str:
-        """Override run method to handle finish_reason termination specially."""
-        if self.state != AgentState.IDLE:
-            raise RuntimeError(f"Agent {self.name} is not in the IDLE state")
+    async def run(self, request: Optional[str] = None, timeout: Optional[float] = None) -> str:
+        """
 
-        self.state = AgentState.RUNNING
+        This ensures:
+        1. Thread-safe execution (no concurrent runs)
+        2. Proper timeout handling
+        3. Plan/Reflect/Finish phases are executed
+        4. Middleware hooks are called correctly
+        """
+        timeout = timeout or self._default_timeout
+        try:
+            async with asyncio.timeout(1.0):
+                async with self._run_lock:
+                    if self.state != AgentState.IDLE:
+                        raise RuntimeError(f"Agent {self.name} is not in the IDLE state")
+                    self.state = AgentState.RUNNING
+        except asyncio.TimeoutError:
+            raise RuntimeError(f"Agent {self.name} is busy - another run() operation is in progress")
 
         if request is not None:
             await self.add_message("user", request)
@@ -260,94 +280,138 @@ class ToolCallAgent(ReActAgent):
         self._final_response_content = None
 
         results: List[str] = []
+        runtime = None  # Will be set in try block
+
         try:
-            async with self.state_context(AgentState.RUNNING):
-                while (
-                    self.current_step < self.max_steps and
-                    self.state == AgentState.RUNNING
-                ):
-                    self.current_step += 1
-                    logger.info(f"Agent {self.name} is running step {self.current_step}/{self.max_steps}")
+    
 
+            run_id = uuid.uuid4()
+            runtime = self._create_runtime_context(run_id)
 
-                    # For steps with tool calls, allow more time to avoid premature timeouts
+            if self._middleware_pipeline:
+                state_updates = self._middleware_pipeline.execute_before_agent(
+                    self._agent_state,
+                    runtime
+                )
+                if state_updates:
+                    logger.debug(f"Agent {self.name} state updated by before_agent hooks: {list(state_updates.keys())}")
+
+            if self.enable_plan_phase:
+                await self._execute_plan_phase(runtime)
+
+            # Main action loop
+            while (
+                self.current_step < self.max_steps and
+                self.state == AgentState.RUNNING
+            ):
+                self.current_step += 1
+                runtime.current_step = self.current_step
+                logger.info(f"Agent {self.name} is running step {self.current_step}/{self.max_steps}")
+
+                # For steps with tool calls, allow more time to avoid premature timeouts
+                try:
+                    step_timeout = self._default_timeout
+                    has_mcp_tools = False
                     try:
-                        # Allow more time when MCP tools are available or selected
-                        step_timeout = self._default_timeout
-                        has_mcp_tools = False
-                        try:
-                            if hasattr(self, 'available_tools') and hasattr(self.available_tools, 'tool_map'):
-                                has_mcp_tools = any(hasattr(t, 'mcp_config') for t in self.available_tools.tool_map.values())
-                            if not has_mcp_tools:
-                                has_mcp_tools = bool(getattr(self, 'mcp_tools_cache', None))
-                        except Exception:
-                            pass
-                        if has_mcp_tools:
-                            step_timeout = max(step_timeout, 60.0)
-                        if getattr(self, 'tool_calls', None):
-                            # Bump step timeout modestly when tools are selected
-                            step_timeout = max(step_timeout, 60.0)
-                        
-                        # Check if messages contain images or documents (multimodal content)
-                        # These require more processing time, so increase step timeout
-                        has_images = False
-                        has_documents = False
-                        try:
-                            for msg in self.memory.messages:
-                                if hasattr(msg, 'has_images') and msg.has_images:
+                        if hasattr(self, 'available_tools') and hasattr(self.available_tools, 'tool_map'):
+                            has_mcp_tools = any(hasattr(t, 'mcp_config') for t in self.available_tools.tool_map.values())
+                        if not has_mcp_tools:
+                            has_mcp_tools = bool(getattr(self, 'mcp_tools_cache', None))
+                    except Exception:
+                        pass
+                    if has_mcp_tools:
+                        step_timeout = max(step_timeout, 120.0)  # 2 minutes for MCP tools
+                    if getattr(self, 'tool_calls', None):
+                        step_timeout = max(step_timeout, 60.0)
+
+                    # Check for multimodal content (images/documents need more processing time)
+                    has_images = False
+                    has_documents = False
+                    try:
+                        for msg in self.memory.messages:
+                            if hasattr(msg, 'has_images') and msg.has_images:
+                                has_images = True
+                            if hasattr(msg, 'has_documents') and msg.has_documents:
+                                has_documents = True
+                            if hasattr(msg, 'content') and isinstance(msg.content, str):
+                                if "data:image" in msg.content:
                                     has_images = True
-                                if hasattr(msg, 'has_documents') and msg.has_documents:
+                                if "data:application/pdf" in msg.content:
                                     has_documents = True
-                                if hasattr(msg, 'content') and isinstance(msg.content, str):
-                                    if "data:image" in msg.content:
-                                        has_images = True
-                                    if "data:application/pdf" in msg.content or "application/pdf" in str(msg.content):
-                                        has_documents = True
-                                if has_images and has_documents:
-                                    break
-                        except Exception:
-                            pass
-                        
-                        if has_images or has_documents:
-                            # Increase step timeout significantly for image/document processing
-                            # Documents (especially PDFs) can be large and require more processing time
-                            # Large PDFs (4MB+) may need up to 180 seconds (3 minutes) for upload + processing
-                            if has_documents:
-                                step_timeout = max(step_timeout, 180.0)  # 3 minutes for large PDF processing
-                            else:
-                                step_timeout = max(step_timeout, 120.0)  # 2 minutes for images
-                            content_type = "images and documents" if (has_images and has_documents) else ("images" if has_images else "documents")
-                            logger.debug(f"Detected {content_type}, increased step timeout to {step_timeout}s for processing")
-                        
-                        step_result = await asyncio.wait_for(self.step(), timeout=step_timeout)
-                        if await self.is_stuck():
-                            await self.handle_stuck_state()
-                    except asyncio.TimeoutError:
-                        logger.error(f"Step {self.current_step} timed out for agent {self.name}")
-                        break
+                            if has_images and has_documents:
+                                break
+                    except Exception:
+                        pass
 
+                    if has_documents:
+                        step_timeout = max(step_timeout, 180.0)  # 3 minutes for large PDF
+                    elif has_images:
+                        step_timeout = max(step_timeout, 120.0)  # 2 minutes for images
 
-                    # Check if terminated by finish_reason
-                    if hasattr(self, '_finish_reason_terminated') and self._finish_reason_terminated:
-                        # Return the LLM content directly without step formatting
-                        final_content = getattr(self, '_final_response_content', step_result)
-                        # Clean up flags
-                        self._finish_reason_terminated = False
-                        if hasattr(self, '_final_response_content'):
-                            delattr(self, '_final_response_content')
-                        return final_content
+                    # Check for subagent middleware - subagents need much more time
+                    if hasattr(self, 'middleware') and self.middleware:
+                        for mw in self.middleware:
+                            if hasattr(mw, 'subagents') and mw.subagents:
+                                max_subagent_steps = max((getattr(s, 'max_steps', 5) or 5 for s in mw.subagents), default=5)
+                                estimated_time = max_subagent_steps * 120 * 2
+                                step_timeout = max(step_timeout, estimated_time)
+                                logger.info(f"Subagent detected: step_timeout={step_timeout}s")
+                                break
 
-                    results.append(f"Step {self.current_step}: {step_result}")
-                    logger.info(f"Step {self.current_step}: {step_result}")
+                    step_result = await asyncio.wait_for(self.step(), timeout=step_timeout)
+                    if await self.is_stuck():
+                        await self.handle_stuck_state()
+                except asyncio.TimeoutError:
+                    logger.error(f"Step {self.current_step} timed out for agent {self.name}")
+                    break
 
-                if self.current_step >= self.max_steps:
-                    results.append(f"Step {self.current_step}: Stuck in loop. Resetting state.")
+                if self.enable_reflect_phase and self.current_step % self.reflect_interval == 0:
+                    await self._execute_reflect_phase(runtime, {
+                        "current_step": self.current_step,
+                        "step_result": step_result,
+                        "results": results,
+                    })
+
+                # Check if terminated by finish_reason
+                if hasattr(self, '_finish_reason_terminated') and self._finish_reason_terminated:
+                    # Return the LLM content directly without step formatting
+                    final_content = getattr(self, '_final_response_content', step_result)
+                    # Clean up flags
+                    self._finish_reason_terminated = False
+                    if hasattr(self, '_final_response_content'):
+                        delattr(self, '_final_response_content')
+                    return final_content
+
+                results.append(f"Step {self.current_step}: {step_result}")
+                logger.info(f"Step {self.current_step}: {step_result}")
+
+            if self.current_step >= self.max_steps:
+                results.append(f"Step {self.current_step}: Stuck in loop. Resetting state.")
+
+            if self._middleware_pipeline:
+                await self._execute_finish_phase(runtime, {"results": results})
 
             return "\n".join(results) if results else "No results"
+
         except Exception as e:
             logger.error(f"Error during agent run: {e}")
             raise
         finally:
+            if runtime and self._middleware_pipeline:
+                try:
+                    # Update runtime with current messages
+                    runtime.messages = self.memory.get_messages() if hasattr(self.memory, 'get_messages') else []
+                    runtime.current_step = self.current_step
+
+                    state_updates = self._middleware_pipeline.execute_after_agent(
+                        self._agent_state,
+                        runtime
+                    )
+                    if state_updates:
+                        logger.debug(f"Agent {self.name} state updated by after_agent hooks: {list(state_updates.keys())}")
+                except Exception as e:
+                    logger.error(f"Error in after_agent hooks: {e}")
+
             # Always reset to IDLE state after run completes or fails
             if self.state != AgentState.IDLE:
                 logger.info(f"Resetting agent {self.name} state from {self.state} to IDLE")
@@ -397,6 +461,11 @@ class ToolCallAgent(ReActAgent):
         return "\n\n".join(results)
 
     async def execute_tool(self, tool_call: ToolCall) -> str:
+        """Execute tool with middleware wrapping.
+
+        CRITICAL: This method now routes ALL tool executions through the middleware
+        pipeline, enabling HITL approval, observability, and other middleware features.
+        """
         def parse_tool_arguments(arguments):
             """Parse tool arguments using improved logic."""
             if isinstance(arguments, str):
@@ -413,63 +482,96 @@ class ToolCallAgent(ReActAgent):
             else:
                 return {}
 
-        if tool_call.function.name not in self.available_tools.tool_map:
-            kwargs = parse_tool_arguments(tool_call.function.arguments)
+        # Parse arguments once
+        kwargs = parse_tool_arguments(tool_call.function.arguments)
 
-            # Prefer executing via an existing MCPTool instance if available
+        if hasattr(self, '_middleware_pipeline') and self._middleware_pipeline:
+            from spoon_ai.middleware.base import ToolCallRequest, ToolCallResult
+
+            # Create runtime context
+            runtime = self._create_runtime_context() if hasattr(self, '_create_runtime_context') else None
+
+            # Create tool call request
+            request = ToolCallRequest(
+                tool_name=tool_call.function.name,
+                arguments=kwargs,
+                tool_call_id=tool_call.id,
+                runtime=runtime,
+                tool_call=tool_call
+            )
+
+            # Define base handler that does the actual tool execution
+            async def base_handler(req: ToolCallRequest) -> ToolCallResult:
+                try:
+                    result = await self._execute_tool_direct(req.tool_name, req.arguments)
+                    return ToolCallResult.from_string(result)
+                except Exception as e:
+                    return ToolCallResult.from_error(str(e))
+
+            # Execute through middleware pipeline
+            result = await self._middleware_pipeline.awrap_tool_call(request, base_handler)
+
+            if result.error:
+                self.last_tool_error = result.error
+                raise Exception(result.error)
+
+            return result.output
+
+        else:
+            # Fallback: direct execution without middleware
+            return await self._execute_tool_direct(tool_call.function.name, kwargs)
+
+    async def _execute_tool_direct(self, tool_name: str, arguments: dict[str, Any]) -> str:
+        """Direct tool execution without middleware wrapping.
+
+        This is the actual execution logic, separated so it can be wrapped by middleware.
+        """
+        # Check if tool is in available_tools
+        if tool_name not in self.available_tools.tool_map:
+            # Handle MCP tools
             try:
                 mcp_tools = [t for t in self.available_tools.tool_map.values() if hasattr(t, 'mcp_config')]
                 # Direct name match to a specific MCPTool instance (post-rename)
-                direct_match = next((t for t in mcp_tools if getattr(t, 'name', None) == tool_call.function.name), None)
+                direct_match = next((t for t in mcp_tools if getattr(t, 'name', None) == tool_name), None)
                 if direct_match is not None:
-                    return await direct_match.execute(**kwargs)
+                    return await direct_match.execute(**arguments)
 
                 # Otherwise, route the requested name to the first MCPTool's server
                 if mcp_tools:
-                    # Call server tool by requested name using the MCPTool's session
-                    # This allows calling server-exposed subtools even if local names don't match
                     primary_mcp_tool = mcp_tools[0]
-                    return await primary_mcp_tool.call_mcp_tool(tool_call.function.name, **kwargs)
+                    return await primary_mcp_tool.call_mcp_tool(tool_name, **arguments)
             except Exception as e:
-                # Fall through to agent-level MCP call handling if available
                 logger.warning(f"MCPTool direct execution failed, falling back: {e}")
 
             # Agent-level fallback if it implements MCP client methods
             if hasattr(self, "call_mcp_tool"):
                 try:
-                    actual_tool_name = self._map_mcp_tool_name(tool_call.function.name)
+                    actual_tool_name = self._map_mcp_tool_name(tool_name)
                     if not actual_tool_name:
-                        return f"MCP tool '{tool_call.function.name}' not found. Available tools: {list(self.available_tools.tool_map.keys())}"
-                    result = await self.call_mcp_tool(actual_tool_name, **kwargs)
+                        return f"MCP tool '{tool_name}' not found. Available tools: {list(self.available_tools.tool_map.keys())}"
+                    result = await self.call_mcp_tool(actual_tool_name, **arguments)
                     return result
                 except Exception as e:
                     return f"MCP tool execution failed: {str(e)}"
 
             # Nothing worked
-            return f"MCP tool '{tool_call.function.name}' not found"
+            return f"MCP tool '{tool_name}' not found"
 
-        if not tool_call or not tool_call.function or not tool_call.function.name:
-            return "Error: Invalid tool call"
-
-        name = tool_call.function.name
-        if name not in self.available_tools.tool_map:
-            return f"Error: Tool {name} not found"
-
+        # Execute standard tool
         try:
-            args = parse_tool_arguments(tool_call.function.arguments)
-            result = await self.available_tools.execute(name=name, tool_input=args)
+            result = await self.available_tools.execute(name=tool_name, tool_input=arguments)
 
             observation = (
-                f"Observed output of cmd {name} execution: {result}"
+                f"Observed output of cmd {tool_name} execution: {result}"
                 if result
-                else f"cmd {name} execution without any output"
+                else f"cmd {tool_name} execution without any output"
             )
 
-            self._handle_special_tool(name, result)
+            self._handle_special_tool(tool_name, result)
             return observation
 
         except Exception as e:
-            print(f"❌ Tool execution error for {name}: {e}")
+            print(f"❌ Tool execution error for {tool_name}: {e}")
             self.last_tool_error = str(e)
             raise
 
@@ -503,6 +605,53 @@ class ToolCallAgent(ReActAgent):
             # Accept either "stop" (OpenAI) or "end_turn" (Anthropic) as valid termination signals
             return native_finish_reason in ["stop", "end_turn"]
         return False
+
+    async def _call_llm_with_middleware(self, tools: list, timeout: float):
+        """Call LLM through middleware pipeline for observability.
+
+        """
+        from spoon_ai.middleware.base import ModelRequest, ModelResponse, AgentPhase
+
+        # Create runtime context
+        runtime = self._create_runtime_context() if hasattr(self, '_create_runtime_context') else None
+
+        # If tool_choices is an enum, extract its value; otherwise use as-is
+        tool_choice = (
+            self.tool_choices.value
+            if hasattr(self.tool_choices, "value")
+            else self.tool_choices
+        )
+
+        # Create model request
+        request = ModelRequest(
+            system_prompt=self.system_prompt,
+            messages=self.memory.messages,
+            tools=tools,
+            tool_choice=tool_choice,
+            runtime=runtime,
+            phase=AgentPhase.THINK
+        )
+
+        # Define base handler that calls the actual LLM
+        async def base_handler(req: ModelRequest) -> ModelResponse:
+            # Call LLM directly
+            llm_response = await asyncio.wait_for(
+                self.llm.ask_tool(
+                    messages=req.messages,
+                    system_msg=req.system_prompt,
+                    tools=req.tools,
+                    tool_choice=req.tool_choice,
+                    output_queue=self.output_queue,
+                ),
+                timeout=timeout,
+            )
+            # The response from ask_tool is already in the right format
+            return llm_response
+
+        # Execute through middleware pipeline
+        response = await self._middleware_pipeline.awrap_model_call(request, base_handler)
+
+        return response
 
     def _invalidate_mcp_cache(self):
         """Properly invalidate and clean up MCP tools cache."""
