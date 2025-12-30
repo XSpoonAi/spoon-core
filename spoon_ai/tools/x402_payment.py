@@ -27,6 +27,7 @@ from spoon_ai.payments import (
 class X402PaymentHeaderTool(BaseTool):
     """Create a signed X-PAYMENT header for a given resource."""
 
+    requires_decrypted_env = True
     name: str = "x402_create_payment"
     description: str = "Generate a signed x402 payment header for a paywalled resource."
     parameters: Dict[str, Any] = {
@@ -112,6 +113,7 @@ class X402PaymentHeaderTool(BaseTool):
 class X402PaywalledRequestTool(BaseTool):
     """Fetch a paywalled resource, handling the x402 402 negotiation automatically."""
 
+    requires_decrypted_env = True
     name: str = "x402_paywalled_request"
     description: str = "Call an HTTP endpoint protected by x402; automatically signs and retries with payment."
     parameters: Dict[str, Any] = {

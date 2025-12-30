@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from pathlib import Path
-
+from .security import init_security
 try:  # Python 3.12+
     from importlib.metadata import PackageNotFoundError, version as _dist_version
 except Exception:  # pragma: no cover - fallback for older environments
@@ -104,8 +104,10 @@ except Exception:  # pragma: no cover - optional dependency surface
     ContentBlock = None  # type: ignore
     _exported = ["__version__"]
 
-__all__ = _exported
 
+init_security()
+
+__all__ = _exported
 
 
 
