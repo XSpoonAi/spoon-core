@@ -279,19 +279,16 @@ class AgentMiddleware(ABC):
     6. Implement Plan-Act-Reflect phases
 
     Example:
-        class PlanningMiddleware(AgentMiddleware):
-            tools = [create_plan_tool(), update_plan_tool()]
-            system_prompt = "You create and follow detailed plans."
+        class TaskTrackingMiddleware(AgentMiddleware):
+            tools = [create_todo_tool(), update_todo_tool()]
+            system_prompt = "You track tasks using a todo list."
 
             def on_plan_phase(self, runtime, phase_data):
-                # Generate initial plan before action loop
-                return {"plan": self._generate_plan(runtime)}
+                # Initialize task list before action loop
+                return {"todos": []}
 
             def on_reflect_phase(self, runtime, phase_data):
-                # Evaluate progress and update plan
-                plan_success = self._evaluate_plan(runtime)
-                if not plan_success:
-                    return {"plan": self._revise_plan(runtime)}
+                # Evaluate progress and update tasks
                 return None
     """
 
@@ -970,9 +967,9 @@ def create_middleware_pipeline(
 
     Example:
         pipeline = create_middleware_pipeline([
-            PlanningMiddleware(),
-            ObservabilityMiddleware(),
-            FilesystemMiddleware
+            TodoListMiddleware(),
+            FilesystemMiddleware(),
+            SummarizationMiddleware(),
         ])
     """
     instances = []
