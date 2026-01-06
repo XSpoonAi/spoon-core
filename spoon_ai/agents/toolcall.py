@@ -270,8 +270,8 @@ class ToolCallAgent(ReActAgent):
 
                 # For steps with tool calls, allow more time to avoid premature timeouts
                 try:
-                    # Allow more time when MCP tools are available or selected
-                    step_timeout = self._default_timeout
+                    # Use configured step_timeout if set, otherwise use _default_timeout
+                    step_timeout = self.step_timeout if self.step_timeout else self._default_timeout
                     has_mcp_tools = False
                     try:
                         if hasattr(self, 'available_tools') and hasattr(self.available_tools, 'tool_map'):
@@ -383,7 +383,7 @@ class ToolCallAgent(ReActAgent):
         for tool_call in self.tool_calls:
             try:
                 result = await self.execute_tool(tool_call)
-                logger.info(f"Tool {tool_call.function.name} executed with result: {result}")
+                logger.debug(f"Tool {tool_call.function.name} executed with result: {result}")
                 # Flag error-like results so callers can decide on fallbacks
                 if isinstance(result, str) and (
                     "not healthy" in result.lower() or "execution failed" in result.lower()

@@ -158,6 +158,9 @@ class SubAgentSpec:
     # HITL configuration for subagent (overrides default_interrupt_on)
     interrupt_on: Optional[Dict[str, Union[bool, InterruptOnConfig]]] = None
 
+    # Timeout configuration for subagent execution (independent of parent step timeout)
+    timeout: Optional[float] = 120.0  # Default 2 minutes for subagent execution
+
 
 @dataclass
 class CompiledSubAgent:
@@ -488,12 +491,19 @@ class SubAgentManager:
             )
 
         logger.debug(f"Compiling subagent {spec.name} with parent {self.parent.name}")
+
+        # Calculate step timeout from spec timeout and max_steps
+        # This ensures each step has enough time, especially for MCP tool calls
+        subagent_max_steps = spec.max_steps or self.parent.max_steps
+        subagent_step_timeout = spec.timeout / subagent_max_steps if spec.timeout else None
+
         subagent = ToolCallAgent(
             name=f"{self.parent.name}/{spec.name}",
             llm=self.parent.llm,
             system_prompt=spec.system_prompt,
             available_tools=tool_manager,
-            max_steps=spec.max_steps or self.parent.max_steps,
+            max_steps=subagent_max_steps,
+            step_timeout=subagent_step_timeout,
             middleware=middleware if middleware else []
         )
 
@@ -521,7 +531,7 @@ class SubAgentManager:
 
         tools = self.default_tools
         if not tools and hasattr(self.parent, 'available_tools'):
-            tools = list(self.parent.available_tools.get_tools().values())
+            tools = list(self.parent.available_tools.tool_map.values())
 
         tool_manager = ToolManager(tools=[])
         for tool in tools:
@@ -628,6 +638,13 @@ class SubAgentManager:
         if not subagent:
             return f"Error: Failed to compile subagent '{subagent_name}'"
 
+        # Get timeout from subagent spec (default 120s for SubAgentSpec, 60s for others)
+        subagent_timeout = 60.0
+        if subagent_name in self.subagent_specs:
+            spec = self.subagent_specs[subagent_name]
+            if isinstance(spec, SubAgentSpec) and spec.timeout:
+                subagent_timeout = spec.timeout
+
         logger.info(
             f"Delegating task to subagent '{subagent_name}' at depth {depth + 1}/{self.max_depth}: "
             f"{task_description[:100]}..."
@@ -686,7 +703,7 @@ class SubAgentManager:
                 from spoon_ai.schema import AgentState
                 subagent.state = AgentState.IDLE
 
-                result = await subagent.run(task_description)
+                result = await subagent.run(task_description, timeout=subagent_timeout)
                 logger.info(f"Subagent '{subagent_name}' completed task at depth {depth + 1}")
 
                 # Return Command if tool_call_id provided

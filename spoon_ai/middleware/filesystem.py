@@ -676,15 +676,14 @@ class FilesystemMiddleware(AgentMiddleware):
         result = await handler(request)
 
         # Truncate large results
-        if result.success and isinstance(result.result, str):
-            if len(result.result) > self._tool_token_limit * 4:
+        if result.success and isinstance(result.output, str):
+            if len(result.output) > self._tool_token_limit * 4:
                 # Truncate and add notice
-                truncated = result.result[:self._tool_token_limit * 4]
+                truncated = result.output[:self._tool_token_limit * 4]
                 truncated += "\n\n[Output truncated due to size limits]"
                 return ToolCallResult(
-                    tool_name=result.tool_name,
-                    result=truncated,
-                    success=True
+                    output=truncated,
+                    metadata=result.metadata
                 )
 
         return result

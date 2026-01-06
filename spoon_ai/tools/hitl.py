@@ -53,11 +53,9 @@ from typing import (
     Callable,
     Union,
     TypedDict,
-    Sequence,
 )
 from dataclasses import dataclass, field
 from enum import Enum
-from copy import deepcopy
 
 from spoon_ai.middleware.base import (
     AgentMiddleware,
@@ -404,13 +402,18 @@ class HITLManager:
         """Add a pending action for batch interrupt.
 
         Args:
-            tool_call: The tool call dict with name, args, id
+            tool_call: The ToolCall object with function.name, function.arguments, id
             state: Current agent state
             runtime: Agent runtime
         """
-        tool_name = tool_call.get("name", "")
-        tool_id = tool_call.get("id", str(uuid.uuid4()))
-        args = tool_call.get("args", {})
+        tool_name = tool_call.function.name
+        tool_id = tool_call.id
+        # Parse arguments from JSON string
+        import json
+        try:
+            args = json.loads(tool_call.function.arguments) if tool_call.function.arguments else {}
+        except (json.JSONDecodeError, TypeError):
+            args = {}
 
         config = self.tool_configs.get(tool_name)
         if not config:
@@ -476,22 +479,26 @@ class HITLManager:
         Returns:
             Modified tool calls with edits applied, rejected calls removed
         """
+        from spoon_ai.schema import ToolCall as ToolCallSchema, Function
+        import json
+
         result = []
 
-        for i, (decision, tool_call) in enumerate(zip(decisions, tool_calls)):
+        for decision, tool_call in zip(decisions, tool_calls):
+            tool_name = tool_call.function.name
             if decision.type == "reject":
-                logger.info(f"Tool {tool_call.get('name')} rejected: {decision.reason}")
+                logger.info(f"Tool {tool_name} rejected: {decision.reason}")
                 continue
             elif decision.type == "edit":
-                # Apply edited arguments
-                modified = deepcopy(tool_call)
-                if decision.args:
-                    modified["args"] = decision.args
+                # Apply edited arguments - create new ToolCall with modified function
+                new_args = json.dumps(decision.args) if decision.args else tool_call.function.arguments
+                new_function = Function(name=tool_name, arguments=new_args)
+                modified = ToolCallSchema(id=tool_call.id, type=tool_call.type, function=new_function)
                 result.append(modified)
-                logger.info(f"Tool {tool_call.get('name')} approved with edits")
+                logger.info(f"Tool {tool_name} approved with edits")
             else:  # approve
                 result.append(tool_call)
-                logger.info(f"Tool {tool_call.get('name')} approved")
+                logger.info(f"Tool {tool_name} approved")
 
         return result
 
@@ -654,20 +661,25 @@ Be prepared for tool calls to be rejected or modified.
             self._resume_data = None
 
             # Filter and modify tool calls based on decisions
+            from spoon_ai.schema import ToolCall as ToolCallSchema, Function
+            import json
+
             approved_calls = []
             rejection_messages = []
 
             for i, tool_call in enumerate(response.tool_calls):
+                tool_name = tool_call.function.name
                 if i < len(decisions):
                     decision = decisions[i]
                     if decision.type == "reject":
                         rejection_messages.append(
-                            f"Tool '{tool_call.get('name')}' was rejected: {decision.reason or 'User rejected'}"
+                            f"Tool '{tool_name}' was rejected: {decision.reason or 'User rejected'}"
                         )
                     elif decision.type == "edit":
-                        modified = deepcopy(tool_call)
-                        if decision.args:
-                            modified["args"] = decision.args
+                        # Create new ToolCall with modified arguments
+                        new_args = json.dumps(decision.args) if decision.args else tool_call.function.arguments
+                        new_function = Function(name=tool_name, arguments=new_args)
+                        modified = ToolCallSchema(id=tool_call.id, type=tool_call.type, function=new_function)
                         approved_calls.append(modified)
                     else:
                         approved_calls.append(tool_call)
@@ -688,7 +700,7 @@ Be prepared for tool calls to be rejected or modified.
         tools_not_requiring_approval = []
 
         for tool_call in response.tool_calls:
-            tool_name = tool_call.get("name", "")
+            tool_name = tool_call.function.name
             if self.manager.should_interrupt(tool_name):
                 tools_requiring_approval.append(tool_call)
                 self.manager.add_pending_action(
@@ -773,8 +785,13 @@ def format_tool_call_description(
 
     Can be used as a base for custom description functions.
     """
-    name = tool_call.get("name", "unknown")
-    args = tool_call.get("args", {})
+    import json
+
+    name = tool_call.function.name
+    try:
+        args = json.loads(tool_call.function.arguments) if tool_call.function.arguments else {}
+    except (json.JSONDecodeError, TypeError):
+        args = {}
 
     # Format arguments
     args_str = ", ".join(f"{k}={v!r}" for k, v in args.items())

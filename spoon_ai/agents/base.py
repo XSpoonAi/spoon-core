@@ -98,6 +98,7 @@ class BaseAgent(BaseModel, ABC):
 
     max_steps: int = Field(default=10, description="The maximum number of steps the agent can take")
     current_step: int = Field(default=0, description="The current step of the agent")
+    step_timeout: Optional[float] = Field(default=None, description="Max timeout per step in seconds. If None, uses min(timeout/max_steps, 30.0)")
 
     # Thread-safe replacements
     output_queue: ThreadSafeOutputQueue = Field(default_factory=ThreadSafeOutputQueue, description="Thread-safe output queue")
@@ -590,10 +591,12 @@ class BaseAgent(BaseModel, ABC):
                         logger.info(f"Agent {self.name} is running step {self.current_step}/{self.max_steps}")
 
                         # Execute step with timeout protection
+                        # Use step_timeout if configured, otherwise calculate from total timeout
+                        effective_step_timeout = self.step_timeout or min(timeout / self.max_steps, 30.0)
                         try:
                             step_result = await asyncio.wait_for(
                                 self.step(run_id=run_id),  # Pass run_id to step
-                                timeout=min(timeout / self.max_steps, 30.0)
+                                timeout=effective_step_timeout
                             )
                         except asyncio.TimeoutError:
                             step_result = f"Step {self.current_step} timed out"
