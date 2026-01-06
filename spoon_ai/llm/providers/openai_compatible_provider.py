@@ -4,6 +4,7 @@ This includes OpenAI, OpenRouter, DeepSeek, and other providers with similar int
 """
 
 import asyncio
+import base64
 from typing import List, Dict, Any, Optional, AsyncGenerator, AsyncIterator
 from logging import getLogger
 from uuid import uuid4
@@ -22,6 +23,10 @@ from spoon_ai.callbacks.base import BaseCallbackHandler
 from spoon_ai.callbacks.manager import CallbackManager
 
 logger = getLogger(__name__)
+
+# Maximum file size for inline base64 upload (4MB)
+# Files larger than this will be uploaded via Files API
+MAX_INLINE_FILE_SIZE = 4 * 1024 * 1024  # 4MB in bytes
 
 
 class OpenAICompatibleProvider(LLMProviderInterface):
@@ -108,7 +113,26 @@ class OpenAICompatibleProvider(LLMProviderInterface):
 
             # Treat explicit None/empty base_url as "use provider default".
             base_url = config.get('base_url') or self.get_default_base_url()
-            timeout = config.get('timeout', 30)
+            # Increase default timeout to 300s (5 minutes) for better support of large documents (PDFs, images)
+            # Use httpx.Timeout for granular control: read timeout is most important for large document processing
+            timeout_config = config.get('timeout', 300)
+            try:
+                import httpx
+                HTTPX_AVAILABLE = True
+            except ImportError:
+                HTTPX_AVAILABLE = False
+            
+            if HTTPX_AVAILABLE and isinstance(timeout_config, (int, float)):
+                # Use httpx.Timeout for better control: read timeout is critical for large documents
+                timeout = httpx.Timeout(
+                    connect=10.0,  # Connection timeout: 10 seconds
+                    read=float(timeout_config),  # Read timeout: configurable (default 300s for large docs)
+                    write=30.0,  # Write timeout: 30 seconds
+                    pool=10.0  # Pool timeout: 10 seconds
+                )
+            else:
+                # Fallback to simple timeout if httpx not available or timeout is already a Timeout object
+                timeout = timeout_config
 
             # Get provider-specific headers
             additional_headers = self.get_additional_headers(config)
@@ -126,6 +150,146 @@ class OpenAICompatibleProvider(LLMProviderInterface):
             if isinstance(e, (AuthenticationError, ProviderError)):
                 raise
             raise ProviderError(self.get_provider_name(), f"Failed to initialize: {str(e)}", original_error=e)
+
+    async def _upload_file_to_openai(self, file_data: bytes, filename: str, purpose: str = "user_data") -> str:
+        """Upload a file to OpenAI Files API and return the file ID.
+
+        This is used for large files that exceed the inline base64 size limit.
+
+        Args:
+            file_data: Raw bytes of the file
+            filename: Name of the file
+            purpose: File purpose (default: "user_data" for chat inputs)
+
+        Returns:
+            File ID from OpenAI
+        """
+        if not self.client:
+            raise ProviderError(self.get_provider_name(), "Client not initialized")
+
+        try:
+            # Create a file-like object from bytes
+            from io import BytesIO
+            file_obj = BytesIO(file_data)
+            file_obj.name = filename
+
+            # Upload to OpenAI Files API with extended timeout for large files
+            # Large files (4MB+) may need up to 600 seconds (10 minutes) to upload
+            # Use httpx.Timeout for granular control: write timeout is critical for file uploads
+            try:
+                import httpx
+                # For file uploads, we need longer write timeout (uploading data) and read timeout (waiting for response)
+                upload_timeout = httpx.Timeout(
+                    connect=30.0,  # Connection timeout: 30 seconds
+                    read=600.0,  # Read timeout: 10 minutes (waiting for server response)
+                    write=600.0,  # Write timeout: 10 minutes (uploading file data) - CRITICAL for large files
+                    pool=30.0  # Pool timeout: 30 seconds
+                )
+                logger.debug(f"[File Upload] Using granular timeout: connect=30s, read=600s, write=600s, pool=30s")
+            except ImportError:
+                # Fallback to simple timeout if httpx not available
+                upload_timeout = 600.0  # 10 minutes
+                logger.debug(f"[File Upload] httpx not available, using simple timeout: {upload_timeout}s")
+            
+            # Use with_options to temporarily increase timeout for this specific call
+            # This overrides the client's default timeout (300s) with a longer timeout for file uploads
+            response = await self.client.with_options(timeout=upload_timeout).files.create(
+                file=file_obj,
+                purpose=purpose
+            )
+
+            file_id = response.id
+            logger.info(f"Uploaded file '{filename}' to OpenAI, file_id: {file_id}")
+            return file_id
+
+        except Exception as e:
+            logger.error(f"Failed to upload file to OpenAI: {e}")
+            raise ProviderError(self.get_provider_name(), f"File upload failed: {str(e)}", original_error=e)
+
+    async def _cleanup_uploaded_files(self, file_ids: List[str]) -> None:
+        """Clean up uploaded files from OpenAI.
+
+        Call this after the chat completion to remove temporary files.
+        This method is request-scoped to ensure concurrent requests don't
+        interfere with each other's file cleanup.
+
+        Args:
+            file_ids: List of file IDs to delete (scoped to the current request)
+        """
+        if not self.client or not file_ids:
+            return
+
+        for file_id in file_ids:
+            try:
+                await self.client.files.delete(file_id)
+                logger.debug(f"Deleted uploaded file: {file_id}")
+            except Exception as e:
+                logger.warning(f"Failed to delete uploaded file {file_id}: {e}")
+
+    async def _prepare_large_files(self, messages: List[Dict[str, Any]]) -> tuple:
+        """Process messages and upload any large files to OpenAI Files API.
+
+        Finds file blocks marked with _pending_upload and uploads them,
+        replacing the placeholder with the actual file_id.
+
+        Args:
+            messages: Converted OpenAI-format messages
+
+        Returns:
+            Tuple of (messages, uploaded_file_ids) where:
+            - messages: Messages with large files uploaded and file_ids filled in
+            - uploaded_file_ids: List of file IDs uploaded in this request (for cleanup)
+        """
+        uploaded_file_ids: List[str] = []
+
+        for msg in messages:
+            content = msg.get("content")
+            if not isinstance(content, list):
+                continue
+
+            for i, block in enumerate(content):
+                if block.get("type") != "file":
+                    continue
+
+                file_info = block.get("file", {})
+                if not file_info.get("_pending_upload"):
+                    continue
+
+                # Upload the file
+                try:
+                    b64_data = file_info.get("_base64_data", "")
+                    filename = file_info.get("_filename", "document.pdf")
+                    media_type = file_info.get("_media_type", "application/pdf")
+
+                    # Decode base64 to bytes
+                    file_bytes = base64.b64decode(b64_data)
+
+                    # Upload to OpenAI
+                    file_id = await self._upload_file_to_openai(file_bytes, filename)
+                    uploaded_file_ids.append(file_id)
+
+                    # Replace the placeholder with the actual file reference
+                    content[i] = {
+                        "type": "file",
+                        "file": {
+                            "file_id": file_id
+                        }
+                    }
+                    logger.info(f"Large file '{filename}' uploaded successfully, file_id: {file_id}")
+
+                except Exception as e:
+                    logger.error(f"Failed to upload large file: {e}")
+                    # Fallback: try inline anyway (may fail with API error)
+                    file_data = f"data:{media_type};base64,{b64_data}"
+                    content[i] = {
+                        "type": "file",
+                        "file": {
+                            "filename": filename,
+                            "file_data": file_data
+                        }
+                    }
+
+        return messages, uploaded_file_ids
 
     def _convert_content_block(self, block: ContentBlock) -> Dict[str, Any]:
         """Convert a content block to OpenAI-compatible format.
@@ -160,16 +324,64 @@ class OpenAICompatibleProvider(LLMProviderInterface):
         elif isinstance(block, DocumentContent):
             # OpenAI supports PDF via type: "file" with file_data as data URL
             # https://platform.openai.com/docs/guides/pdf-files
-            filename = block.filename or "document.pdf"
-            # Format: data:application/pdf;base64,<base64_data>
-            file_data = f"data:{block.source.media_type};base64,{block.source.data}"
-            return {
-                "type": "file",
-                "file": {
-                    "filename": filename,
-                    "file_data": file_data
-                }
-            }
+            # For non-PDF documents, convert to text content
+            if block.source.media_type == "application/pdf":
+                # Use native PDF support
+                filename = block.filename or "document.pdf"
+
+                # Check if file size exceeds inline limit (4MB)
+                # Base64 data size ≈ original size * 4/3
+                decoded_size = len(block.source.data) * 3 // 4  # Approximate original size
+
+                if decoded_size > MAX_INLINE_FILE_SIZE:
+                    # Large file - mark for async upload via Files API
+                    # The actual upload will be handled in _prepare_large_files()
+                    logger.info(f"Document '{filename}' ({decoded_size / (1024*1024):.2f} MB) exceeds inline limit, will use Files API")
+                    return {
+                        "type": "file",
+                        "file": {
+                            "file_id": None,  # Will be filled by _prepare_large_files()
+                            "_pending_upload": True,
+                            "_base64_data": block.source.data,
+                            "_media_type": block.source.media_type,
+                            "_filename": filename
+                        }
+                    }
+                else:
+                    # Small file - use inline base64 data URL
+                    # Format: data:application/pdf;base64,<base64_data>
+                    file_data = f"data:{block.source.media_type};base64,{block.source.data}"
+                    return {
+                        "type": "file",
+                        "file": {
+                            "filename": filename,
+                            "file_data": file_data
+                        }
+                    }
+            else:
+                # For non-PDF documents (text/plain, application/json, etc.),
+                # decode the base64 content and include as text
+                try:
+                    decoded_bytes = base64.b64decode(block.source.data)
+                    # Try to decode as UTF-8 text
+                    try:
+                        text_content = decoded_bytes.decode("utf-8")
+                    except UnicodeDecodeError:
+                        # If not valid UTF-8, return as base64 representation
+                        text_content = f"[Binary document: {block.source.media_type}, size: {len(decoded_bytes)} bytes]"
+
+                    # Include filename in text if available
+                    if block.filename:
+                        text_content = f"[Document: {block.filename} ({block.source.media_type})]\n\n{text_content}"
+
+                    logger.debug(f"Converting non-PDF document ({block.source.media_type}) to text content for OpenAI")
+                    return {"type": "text", "text": text_content}
+                except Exception as e:
+                    logger.warning(f"Failed to decode document content: {e}, converting to text placeholder")
+                    return {
+                        "type": "text",
+                        "text": f"[Document: {block.filename or 'unknown'} ({block.source.media_type}) - Failed to decode]"
+                    }
 
         elif isinstance(block, FileContent):
             # File content - include as text with path info (OpenAI doesn't support files directly)
@@ -289,7 +501,22 @@ class OpenAICompatibleProvider(LLMProviderInterface):
 
                 # Merge content if both have content
                 if (fixed_messages[-1].get("content") and current_msg.get("content")):
-                    fixed_messages[-1]["content"] += "\n" + current_msg["content"]
+                    prev_content = fixed_messages[-1]["content"]
+                    curr_content = current_msg["content"]
+                    
+                    # Handle different content types
+                    if isinstance(prev_content, list) and isinstance(curr_content, list):
+                        # Both are lists (multimodal) - merge lists
+                        fixed_messages[-1]["content"] = prev_content + curr_content
+                    elif isinstance(prev_content, list) and isinstance(curr_content, str):
+                        # Previous is list, current is string - convert string to text object and append
+                        fixed_messages[-1]["content"] = prev_content + [{"type": "text", "text": curr_content}]
+                    elif isinstance(prev_content, str) and isinstance(curr_content, list):
+                        # Previous is string, current is list - convert string to text object and prepend
+                        fixed_messages[-1]["content"] = [{"type": "text", "text": prev_content}] + curr_content
+                    else:
+                        # Both are strings - simple concatenation
+                        fixed_messages[-1]["content"] = prev_content + "\n" + curr_content
                     i += 1
                     continue
                 # If current message has content but previous doesn't, replace
@@ -370,10 +597,14 @@ class OpenAICompatibleProvider(LLMProviderInterface):
         if not self.client:
             raise ProviderError(self.get_provider_name(), "Provider not initialized")
 
+        uploaded_file_ids: List[str] = []
         try:
             start_time = asyncio.get_event_loop().time()
 
             openai_messages = self._convert_messages(messages)
+
+            # Handle large files by uploading to Files API (request-scoped)
+            openai_messages, uploaded_file_ids = await self._prepare_large_files(openai_messages)
 
             # Extract parameters
             model = kwargs.get('model', self.model)
@@ -407,6 +638,9 @@ class OpenAICompatibleProvider(LLMProviderInterface):
 
         except Exception as e:
             await self._handle_error(e)
+        finally:
+            # Clean up any uploaded files (request-scoped)
+            await self._cleanup_uploaded_files(uploaded_file_ids)
 
     async def chat_stream(self,messages: List[Message],callbacks: Optional[List[BaseCallbackHandler]] = None,**kwargs) -> AsyncIterator[LLMResponseChunk]:
         """Send streaming chat request with full callback support.
@@ -419,9 +653,13 @@ class OpenAICompatibleProvider(LLMProviderInterface):
         # Create callback manager
         callback_manager = CallbackManager.from_callbacks(callbacks)
         run_id = uuid4()
+        uploaded_file_ids: List[str] = []
 
         try:
             openai_messages = self._convert_messages(messages)
+
+            # Handle large files by uploading to Files API (request-scoped)
+            openai_messages, uploaded_file_ids = await self._prepare_large_files(openai_messages)
 
             # Extract parameters
             model = kwargs.get('model', self.model)
@@ -610,6 +848,9 @@ class OpenAICompatibleProvider(LLMProviderInterface):
                 run_id=run_id
             )
             await self._handle_error(e)
+        finally:
+            # Clean up any uploaded files (request-scoped)
+            await self._cleanup_uploaded_files(uploaded_file_ids)
 
     async def completion(self, prompt: str, **kwargs) -> LLMResponse:
         """Send completion request to the provider."""
@@ -622,10 +863,14 @@ class OpenAICompatibleProvider(LLMProviderInterface):
         if not self.client:
             raise ProviderError(self.get_provider_name(), "Provider not initialized")
 
+        uploaded_file_ids: List[str] = []
         try:
             start_time = asyncio.get_event_loop().time()
 
             openai_messages = self._convert_messages(messages)
+
+            # Handle large files by uploading to Files API (request-scoped)
+            openai_messages, uploaded_file_ids = await self._prepare_large_files(openai_messages)
 
             # Extract parameters
             model = kwargs.get('model', self.model)
@@ -657,6 +902,9 @@ class OpenAICompatibleProvider(LLMProviderInterface):
 
         except Exception as e:
             await self._handle_error(e)
+        finally:
+            # Clean up any uploaded files (request-scoped)
+            await self._cleanup_uploaded_files(uploaded_file_ids)
 
     def get_metadata(self) -> ProviderMetadata:
         """Get provider metadata. Should be overridden by subclasses."""

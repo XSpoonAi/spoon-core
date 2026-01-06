@@ -33,9 +33,9 @@ IDENTITY_ABI_MIN = [
     {
         "anonymous": False,
         "inputs": [
-            {"indexed": False, "internalType": "uint256", "name": "agentId", "type": "uint256"},
+            {"indexed": True, "internalType": "uint256", "name": "agentId", "type": "uint256"},
             {"indexed": False, "internalType": "string", "name": "tokenURI", "type": "string"},
-            {"indexed": False, "internalType": "address", "name": "owner", "type": "address"},
+            {"indexed": True, "internalType": "address", "name": "owner", "type": "address"},
         ],
         "name": "Registered",
         "type": "event",
@@ -45,6 +45,24 @@ IDENTITY_ABI_MIN = [
 IDENTITY_ABI_WITH_REGISTER = IDENTITY_ABI_MIN + [
     {
         "inputs": [{"internalType": "string", "name": "tokenURI_", "type": "string"}],
+        "name": "register",
+        "outputs": [{"internalType": "uint256", "name": "agentId", "type": "uint256"}],
+        "stateMutability": "nonpayable",
+        "type": "function",
+    },
+    {
+        "inputs": [
+            {"internalType": "string", "name": "tokenURI_", "type": "string"},
+            {
+                "components": [
+                    {"internalType": "string", "name": "key", "type": "string"},
+                    {"internalType": "bytes", "name": "value", "type": "bytes"},
+                ],
+                "internalType": "tuple[]",
+                "name": "metadata",
+                "type": "tuple[]",
+            },
+        ],
         "name": "register",
         "outputs": [{"internalType": "uint256", "name": "agentId", "type": "uint256"}],
         "stateMutability": "nonpayable",
@@ -184,6 +202,37 @@ AGENT_REGISTRY_ABI = [
         "outputs": [{"type": "bool"}],
         "stateMutability": "nonpayable",
         "type": "function",
+    },
+    # Events for event indexing
+    {
+        "anonymous": False,
+        "inputs": [
+            {"indexed": False, "internalType": "bytes32", "name": "didHash", "type": "bytes32"},
+            {"indexed": False, "internalType": "address", "name": "controller", "type": "address"},
+            {"indexed": False, "internalType": "string", "name": "agentCardURI", "type": "string"},
+            {"indexed": False, "internalType": "string", "name": "didDocURI", "type": "string"},
+        ],
+        "name": "AgentRegistered",
+        "type": "event",
+    },
+    {
+        "anonymous": False,
+        "inputs": [
+            {"indexed": False, "internalType": "bytes32", "name": "didHash", "type": "bytes32"},
+            {"indexed": False, "internalType": "string", "name": "agentCardURI", "type": "string"},
+            {"indexed": False, "internalType": "string", "name": "didDocURI", "type": "string"},
+        ],
+        "name": "URIsUpdated",
+        "type": "event",
+    },
+    {
+        "anonymous": False,
+        "inputs": [
+            {"indexed": False, "internalType": "bytes32", "name": "didHash", "type": "bytes32"},
+            {"indexed": False, "internalType": "string[]", "name": "capabilities", "type": "string[]"},
+        ],
+        "name": "CapabilitiesUpdated",
+        "type": "event",
     },
 ]
 

@@ -9,7 +9,7 @@ Run:
 
 Prereqs:
     export TAVILY_API_KEY=...
-    export NEOX_IDENTITY_REGISTRY=0x25fC6fF0D5d64a8e12b1f37c476A49637035Db46  # or your own
+    export NEOX_IDENTITY_REGISTRY=0xaB5623F3DD66f2a52027FA06007C78c7b0E63508  # or your own
     (Optional) ERC8004_AGENT_ID, ERC8004_AGENT_DID_URI, NEOX_RPC_URL, NEOX_CHAIN_ID
 """
 
@@ -21,6 +21,15 @@ import argparse
 import subprocess
 import sys
 import time
+
+try:
+    # Load local dev secrets/config (e.g. PRIVATE_KEY, NEOX_RPC_URL) without printing.
+    from dotenv import load_dotenv  # type: ignore
+
+    core_dir = Path(__file__).resolve().parents[2]
+    load_dotenv(core_dir / ".env", override=False)
+except Exception:
+    pass
 
 
 def main() -> None:
@@ -35,7 +44,10 @@ def main() -> None:
     parser.add_argument("--agent-registry", default=os.getenv("NEOX_AGENT_REGISTRY") or os.getenv("AGENT_REGISTRY"))
     parser.add_argument("--rpc", default=os.getenv("NEOX_RPC_URL", "https://testnet.rpc.banelabs.org"))
     parser.add_argument("--chain-id", default=os.getenv("NEOX_CHAIN_ID", "12227332"))
-    parser.add_argument("--private-key", default=os.getenv("PRIVATE_KEY"))
+    parser.add_argument(
+        "--private-key",
+        default=os.getenv("PRIVATE_KEY") or os.getenv("NEOX_PRIVATE_KEY") or os.getenv("REACT_PRIVATE_KEY"),
+    )
     args = parser.parse_args()
 
     server_port = int(os.getenv("ERC8004_AGENT_PORT", "8004"))
@@ -43,6 +55,9 @@ def main() -> None:
     # Ensure core package path on PYTHONPATH so sub-processes can import examples.*
     core_dir = Path(__file__).resolve().parents[2]
     env["PYTHONPATH"] = f"{core_dir}{os.pathsep}{env.get('PYTHONPATH', '')}"
+    if args.private_key:
+        # Avoid passing secrets via argv (process list / logs).
+        env["PRIVATE_KEY"] = str(args.private_key)
 
     server_cmd = [
         sys.executable,
@@ -73,8 +88,6 @@ def main() -> None:
             server_cmd += ["--did-uri", args.did_uri]
         if args.did_doc_uri:
             server_cmd += ["--did-doc-uri", args.did_doc_uri]
-        if args.private_key:
-            server_cmd += ["--private-key", args.private_key]
 
     print("Launching server:", " ".join(server_cmd))
     server = subprocess.Popen(server_cmd, env=env)
@@ -91,7 +104,9 @@ def main() -> None:
         client_cmd += ["--registry", args.registry]
     if args.token_uri:
         client_cmd += ["--token-uri", args.token_uri]
-    if os.getenv("AGENT_DID_URI"):
+    if args.did_uri:
+        client_cmd += ["--did-uri", args.did_uri]
+    elif os.getenv("AGENT_DID_URI"):
         client_cmd += ["--did-uri", os.getenv("AGENT_DID_URI")]
     if args.chain_id:
         client_cmd += ["--chain-id", str(args.chain_id)]

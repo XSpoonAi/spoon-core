@@ -30,6 +30,7 @@ class EthereumNeoFSIndexer:
         self.w3 = erc8004_client.w3
         self.agent_registry = erc8004_client.agent_registry
         self.from_block = from_block
+        self.current_block = from_block  # Track current block position
         self.poll_interval = poll_interval
         self.running = False
 
@@ -48,42 +49,57 @@ class EthereumNeoFSIndexer:
             block_limit: Optional block limit for testing (stops after N blocks)
         """
         self.running = True
-        current_block = self.from_block
+        self.current_block = self.from_block
         blocks_processed = 0
 
-        print(f"Starting indexer from block {current_block}")
+        print(f"Starting indexer from block {self.current_block}")
 
-        while self.running:
-            try:
-                latest_block = self.w3.eth.block_number
+        try:
+            while self.running:
+                try:
+                    latest_block = self.w3.eth.block_number
 
-                if current_block > latest_block:
+                    if self.current_block > latest_block:
+                        time.sleep(self.poll_interval)
+                        continue
+
+                    # Calculate how many blocks to process in this batch
+                    # Respect block_limit if set
+                    max_blocks_in_batch = 1000
+                    if block_limit:
+                        remaining_blocks = block_limit - blocks_processed
+                        if remaining_blocks <= 0:
+                            print(f"Block limit reached ({block_limit}), stopping")
+                            break
+                        max_blocks_in_batch = min(max_blocks_in_batch, remaining_blocks)
+                    
+                    # Process blocks in batches
+                    to_block = min(self.current_block + max_blocks_in_batch - 1, latest_block)
+
+                    print(f"Processing blocks {self.current_block} to {to_block}")
+
+                    # Fetch events
+                    self._process_agent_registered_events(self.current_block, to_block)
+                    self._process_uris_updated_events(self.current_block, to_block)
+                    self._process_capabilities_updated_events(self.current_block, to_block)
+
+                    # Calculate blocks processed before updating current_block
+                    blocks_in_batch = to_block - self.current_block + 1
+                    blocks_processed += blocks_in_batch
+                    
+                    self.current_block = to_block + 1
+
+                    # Stop if block limit reached
+                    if block_limit and blocks_processed >= block_limit:
+                        print(f"Block limit reached ({block_limit}), stopping")
+                        break
+
+                except Exception as e:
+                    print(f"Indexer error: {e}")
                     time.sleep(self.poll_interval)
-                    continue
-
-                # Process blocks in batches
-                to_block = min(current_block + 1000, latest_block)
-
-                print(f"Processing blocks {current_block} to {to_block}")
-
-                # Fetch events
-                self._process_agent_registered_events(current_block, to_block)
-                self._process_uris_updated_events(current_block, to_block)
-                self._process_capabilities_updated_events(current_block, to_block)
-
-                current_block = to_block + 1
-                blocks_processed += (to_block - current_block + 1)
-
-                # Stop if block limit reached
-                if block_limit and blocks_processed >= block_limit:
-                    print(f"Block limit reached ({block_limit}), stopping")
-                    break
-
-            except Exception as e:
-                print(f"Indexer error: {e}")
-                time.sleep(self.poll_interval)
-
-        print("Indexer stopped")
+        finally:
+            self.running = False
+            print("Indexer stopped")
 
     def stop_indexing(self):
         """Stop the indexer"""
@@ -91,81 +107,139 @@ class EthereumNeoFSIndexer:
 
     def _process_agent_registered_events(self, from_block: int, to_block: int):
         """Process AgentRegistered events"""
-        event_filter = self.agent_registry.events.AgentRegistered.create_filter(
-            fromBlock=from_block,
-            toBlock=to_block
-        )
+        try:
+            if not hasattr(self.agent_registry.events, 'AgentRegistered'):
+                # Event not defined in ABI, skip silently
+                return
+            
+            event_filter = self.agent_registry.events.AgentRegistered.create_filter(
+                fromBlock=from_block,
+                toBlock=to_block
+            )
 
-        events = event_filter.get_all_entries()
+            events = event_filter.get_all_entries()
 
-        for event in events:
-            try:
-                did_hash = event['args']['didHash']
-                controller = event['args']['controller']
-                agent_card_uri = event['args']['agentCardURI']
-                did_doc_uri = event['args']['didDocURI']
-                block_number = event['blockNumber']
-                tx_hash = event['transactionHash'].hex()
+            for event in events:
+                try:
+                    did_hash = event['args']['didHash']
+                    controller = event['args']['controller']
+                    agent_card_uri = event['args']['agentCardURI']
+                    did_doc_uri = event['args']['didDocURI']
+                    block_number = event['blockNumber']
+                    tx_hash = event['transactionHash'].hex()
 
-                print(f"AgentRegistered: DID={did_hash.hex()}, Controller={controller}")
+                    print(f"AgentRegistered: DID={did_hash.hex()}, Controller={controller}")
 
-                # Verify URIs are accessible
-                self._verify_and_replicate(did_hash.hex(), agent_card_uri, did_doc_uri)
+                    # Verify URIs are accessible
+                    self._verify_and_replicate(did_hash.hex(), agent_card_uri, did_doc_uri)
 
-                # Call custom handler if registered
-                if 'AgentRegistered' in self.event_handlers:
-                    self.event_handlers['AgentRegistered'](event)
+                    # Call custom handler if registered
+                    if 'AgentRegistered' in self.event_handlers:
+                        self.event_handlers['AgentRegistered'](event)
 
-            except Exception as e:
-                print(f"Error processing AgentRegistered event: {e}")
+                except Exception as e:
+                    print(f"Error processing AgentRegistered event: {e}")
+        except Exception as e:
+            # Silently skip if event is not available (e.g., ABI doesn't include events)
+            pass
 
     def _process_uris_updated_events(self, from_block: int, to_block: int):
         """Process URIsUpdated events"""
-        event_filter = self.agent_registry.events.URIsUpdated.create_filter(
-            fromBlock=from_block,
-            toBlock=to_block
-        )
+        try:
+            if not hasattr(self.agent_registry.events, 'URIsUpdated'):
+                # Event not defined in ABI, skip silently
+                return
+            
+            event_filter = self.agent_registry.events.URIsUpdated.create_filter(
+                fromBlock=from_block,
+                toBlock=to_block
+            )
 
-        events = event_filter.get_all_entries()
+            events = event_filter.get_all_entries()
 
-        for event in events:
-            try:
-                did_hash = event['args']['didHash']
-                agent_card_uri = event['args']['agentCardURI']
-                did_doc_uri = event['args']['didDocURI']
+            for event in events:
+                try:
+                    did_hash = event['args']['didHash']
+                    agent_card_uri = event['args']['agentCardURI']
+                    did_doc_uri = event['args']['didDocURI']
 
-                print(f"URIsUpdated: DID={did_hash.hex()}")
+                    print(f"URIsUpdated: DID={did_hash.hex()}")
 
-                # Verify and replicate new URIs
-                self._verify_and_replicate(did_hash.hex(), agent_card_uri, did_doc_uri)
+                    # Verify and replicate new URIs
+                    self._verify_and_replicate(did_hash.hex(), agent_card_uri, did_doc_uri)
 
-                if 'URIsUpdated' in self.event_handlers:
-                    self.event_handlers['URIsUpdated'](event)
+                    if 'URIsUpdated' in self.event_handlers:
+                        self.event_handlers['URIsUpdated'](event)
 
-            except Exception as e:
-                print(f"Error processing URIsUpdated event: {e}")
+                except Exception as e:
+                    print(f"Error processing URIsUpdated event: {e}")
+        except Exception as e:
+            # Silently skip if event is not available (e.g., ABI doesn't include events)
+            pass
 
     def _process_capabilities_updated_events(self, from_block: int, to_block: int):
         """Process CapabilitiesUpdated events"""
-        event_filter = self.agent_registry.events.CapabilitiesUpdated.create_filter(
-            fromBlock=from_block,
-            toBlock=to_block
-        )
+        try:
+            if not hasattr(self.agent_registry.events, 'CapabilitiesUpdated'):
+                # Event not defined in ABI, skip silently
+                return
+            
+            event_filter = self.agent_registry.events.CapabilitiesUpdated.create_filter(
+                fromBlock=from_block,
+                toBlock=to_block
+            )
 
-        events = event_filter.get_all_entries()
+            events = event_filter.get_all_entries()
 
-        for event in events:
-            try:
-                did_hash = event['args']['didHash']
-                capabilities = event['args']['capabilities']
+            for event in events:
+                try:
+                    did_hash = event['args']['didHash']
+                    capabilities = event['args']['capabilities']
 
-                print(f"CapabilitiesUpdated: DID={did_hash.hex()}, Caps={capabilities}")
+                    print(f"CapabilitiesUpdated: DID={did_hash.hex()}, Caps={capabilities}")
 
-                if 'CapabilitiesUpdated' in self.event_handlers:
-                    self.event_handlers['CapabilitiesUpdated'](event)
+                    if 'CapabilitiesUpdated' in self.event_handlers:
+                        self.event_handlers['CapabilitiesUpdated'](event)
 
-            except Exception as e:
-                print(f"Error processing CapabilitiesUpdated event: {e}")
+                except Exception as e:
+                    print(f"Error processing CapabilitiesUpdated event: {e}")
+        except Exception as e:
+            # Silently skip if event is not available (e.g., ABI doesn't include events)
+            pass
+
+    def _process_identity_registered_events(self, from_block: int, to_block: int):
+        """Process IdentityRegistry Registered events"""
+        try:
+            if not hasattr(self.identity_registry.events, 'Registered'):
+                # Event not defined in ABI, skip silently
+                return
+            
+            event_filter = self.identity_registry.events.Registered.create_filter(
+                fromBlock=from_block,
+                toBlock=to_block
+            )
+
+            events = event_filter.get_all_entries()
+
+            for event in events:
+                try:
+                    agent_id = event['args']['agentId']
+                    token_uri = event['args']['tokenURI']
+                    owner = event['args']['owner']
+                    block_number = event['blockNumber']
+                    tx_hash = event['transactionHash'].hex()
+
+                    print(f"📝 IdentityRegistry Registered: AgentId={agent_id}, Owner={owner}, TokenURI={token_uri}")
+
+                    # Call custom handler if registered
+                    if 'IdentityRegistered' in self.event_handlers:
+                        self.event_handlers['IdentityRegistered'](event)
+
+                except Exception as e:
+                    print(f"Error processing IdentityRegistry Registered event: {e}")
+        except Exception as e:
+            # Silently skip if event is not available (e.g., ABI doesn't include events)
+            pass
 
     def _verify_and_replicate(self, did_hash: str, agent_card_uri: str, did_doc_uri: str):
         """
@@ -195,11 +269,13 @@ class EthereumNeoFSIndexer:
 
     def get_indexer_status(self) -> Dict:
         """Get current indexer status"""
+        latest_block = self.w3.eth.block_number
         return {
             "running": self.running,
-            "current_block": self.from_block,
-            "latest_block": self.w3.eth.block_number,
-            "sync_lag": self.w3.eth.block_number - self.from_block
+            "current_block": self.current_block,
+            "latest_block": latest_block,
+            "sync_lag": latest_block - self.current_block,
+            "blocks_processed": self.current_block - self.from_block
         }
 
 

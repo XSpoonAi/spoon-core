@@ -41,17 +41,25 @@ def _connect_w3(rpc_url: str, chain_id: int) -> Web3:
 def fetch_agent_info(registry_addr: str, agent_id: int, rpc_url: str, chain_id: int) -> Dict[str, Any]:
     client = ERC8004Client(
         rpc_url=rpc_url,
-        agent_registry_address=os.getenv("NEOX_AGENT_REGISTRY") or "0x0000000000000000000000000000000000000000",
+        agent_registry_address=os.getenv("NEOX_AGENT_REGISTRY") or "0x2B11c9C19fdAeE8dB3f63b54fbb3077Fb455C683",
         identity_registry_address=registry_addr,
-        reputation_registry_address=os.getenv("NEOX_REPUTATION_REGISTRY") or "0x0000000000000000000000000000000000000000",
-        validation_registry_address=os.getenv("NEOX_VALIDATION_REGISTRY") or "0x0000000000000000000000000000000000000000",
+        reputation_registry_address=os.getenv("NEOX_REPUTATION_REGISTRY") or "0x8bb086D12659D6e2c7220b07152255d10b2fB049",
+        validation_registry_address=os.getenv("NEOX_VALIDATION_REGISTRY") or "0x18A9240c99c7283d9332B738f9C6972b5B59aEc2",
         private_key=None,
     )
 
     # Direct web3 call for totalAgents (no private key needed)
     w3 = _connect_w3(rpc_url, chain_id)
     contract = w3.eth.contract(address=Web3.to_checksum_address(registry_addr), abi=IDENTITY_ABI_MIN)
-    total = contract.functions.totalAgents().call()
+
+    # Some public RPC endpoints may lag briefly after writes; retry a few times.
+    total = 0
+    for _ in range(10):
+        total = contract.functions.totalAgents().call()
+        if total > 0 and agent_id <= total:
+            break
+        time.sleep(1)
+
     if total == 0:
         raise ValueError("registry has no agents (totalAgents=0)")
     if agent_id > total:
@@ -59,11 +67,13 @@ def fetch_agent_info(registry_addr: str, agent_id: int, rpc_url: str, chain_id: 
 
     token_uri = client.identity_registry.functions.tokenURI(agent_id).call()
     did_uri_bytes = client.identity_registry.functions.getMetadata(agent_id, "did_uri").call()
+    did_doc_uri_bytes = client.identity_registry.functions.getMetadata(agent_id, "did_doc_uri").call()
     card_uri_bytes = client.identity_registry.functions.getMetadata(agent_id, "card_uri").call()
     return {
         "agent_id": agent_id,
         "token_uri": token_uri,
         "did_uri": did_uri_bytes.decode(errors="ignore") if did_uri_bytes else "",
+        "did_doc_uri": did_doc_uri_bytes.decode(errors="ignore") if did_doc_uri_bytes else "",
         "card_uri": card_uri_bytes.decode(errors="ignore") if card_uri_bytes else "",
     }
 

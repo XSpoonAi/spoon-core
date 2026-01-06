@@ -87,6 +87,11 @@ class AnthropicProvider(LLMProviderInterface):
 
         elif isinstance(block, ImageContent):
             # Anthropic's native base64 image format
+            # Validate base64 format
+            import re
+            if not re.match(r'^[A-Za-z0-9+/]*={0,2}$', block.source.data):
+                raise ValueError(f"Invalid base64 format for image data")
+            
             return {
                 "type": "image",
                 "source": {
@@ -102,18 +107,26 @@ class AnthropicProvider(LLMProviderInterface):
             # Check if it's a data URL (base64)
             if url.startswith("data:"):
                 # Parse data URL: data:image/png;base64,<data>
+                # More robust regex: case-insensitive, validates base64 characters
                 import re
-                match = re.match(r"data:([^;]+);base64,(.+)", url)
-                if match:
-                    media_type, data = match.groups()
-                    return {
-                        "type": "image",
-                        "source": {
-                            "type": "base64",
-                            "media_type": media_type,
-                            "data": data
-                        }
+                match = re.match(r"data:([^;]+);base64,([A-Za-z0-9+/=]+)", url, re.IGNORECASE)
+                if not match:
+                    raise ValueError(f"Invalid data URL format: {url[:100]}...")
+                media_type, data = match.groups()
+                # Strip whitespace from base64 data
+                data = data.strip()
+                # Validate base64 format
+                if not re.match(r'^[A-Za-z0-9+/]*={0,2}$', data):
+                    raise ValueError(f"Invalid base64 data in data URL")
+                
+                return {
+                    "type": "image",
+                    "source": {
+                        "type": "base64",
+                        "media_type": media_type,
+                        "data": data
                     }
+                }
             # Otherwise, use URL source (Anthropic supports URLs)
             return {
                 "type": "image",
@@ -124,16 +137,43 @@ class AnthropicProvider(LLMProviderInterface):
             }
 
         elif isinstance(block, DocumentContent):
-            # Anthropic native PDF/document support
+            # Anthropic only supports PDF documents natively
             # https://docs.anthropic.com/en/docs/build-with-claude/pdf-support
-            return {
-                "type": "document",
-                "source": {
-                    "type": "base64",
-                    "media_type": block.source.media_type,
-                    "data": block.source.data
+            if block.source.media_type == "application/pdf":
+                # Use native PDF support
+                return {
+                    "type": "document",
+                    "source": {
+                        "type": "base64",
+                        "media_type": block.source.media_type,
+                        "data": block.source.data
+                    }
                 }
-            }
+            else:
+                # For non-PDF documents (text/plain, application/json, etc.),
+                # decode the base64 content and include as text
+                import base64
+                try:
+                    decoded_bytes = base64.b64decode(block.source.data)
+                    # Try to decode as UTF-8 text
+                    try:
+                        text_content = decoded_bytes.decode("utf-8")
+                    except UnicodeDecodeError:
+                        # If not valid UTF-8, return as base64 representation
+                        text_content = f"[Binary document: {block.source.media_type}, size: {len(decoded_bytes)} bytes]"
+                    
+                    # Include filename in text if available
+                    if block.filename:
+                        text_content = f"[Document: {block.filename} ({block.source.media_type})]\n\n{text_content}"
+                    
+                    logger.debug(f"Converting non-PDF document ({block.source.media_type}) to text content for Anthropic")
+                    return {"type": "text", "text": text_content}
+                except Exception as e:
+                    logger.warning(f"Failed to decode document content: {e}, converting to text placeholder")
+                    return {
+                        "type": "text",
+                        "text": f"[Document: {block.filename or 'unknown'} ({block.source.media_type}) - Failed to decode]"
+                    }
 
         elif isinstance(block, FileContent):
             # File content - include as text (Anthropic doesn't support files directly)
@@ -696,7 +736,9 @@ class AnthropicProvider(LLMProviderInterface):
             raise RateLimitError("anthropic", context={"original_error": str(error)})
         elif "model" in error_str and "not found" in error_str:
             raise ModelNotFoundError("anthropic", self.model, context={"original_error": str(error)})
-        elif "timeout" in error_str or "connection" in error_str:
-            raise NetworkError("anthropic", "Network error", original_error=error)
+        elif "timeout" in error_str or "connection" in error_str or "network" in error_str:
+            # Provide more helpful error message for network errors
+            error_msg = f"Network error: {str(error)}. This may be a temporary issue. Please try again."
+            raise NetworkError("anthropic", error_msg, original_error=error)
         else:
             raise ProviderError("anthropic", f"Request failed: {str(error)}", original_error=error)

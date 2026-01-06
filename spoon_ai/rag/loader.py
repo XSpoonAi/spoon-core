@@ -26,18 +26,18 @@ def _strip_html(html: str) -> str:
 
 
 def _try_convert_github_url(url: str) -> str:
-    """Convert GitHub blob URLs to raw URLs to fetch clean content.
-
-    Example:
-        https://github.com/user/repo/blob/main/README.md
-        -> https://raw.githubusercontent.com/user/repo/main/README.md
     """
+    Convert GitHub blob URLs to raw URLs to extract clean content without HTML UI.
+    Example: https://github.com/user/repo/blob/main/README.md 
+    -> https://raw.githubusercontent.com/user/repo/main/README.md
+    """
+    # Pattern matches: github.com/{user}/{repo}/blob/{branch}/{path}
     pattern = r"^https?://github\.com/([^/]+)/([^/]+)/blob/([^/]+)/(.*)$"
     match = re.match(pattern, url)
-    if not match:
-        return url
-    user, repo, branch, path = match.groups()
-    return f"https://raw.githubusercontent.com/{user}/{repo}/{branch}/{path}"
+    if match:
+        user, repo, branch, path = match.groups()
+        return f"https://raw.githubusercontent.com/{user}/{repo}/{branch}/{path}"
+    return url
 
 
 def _load_file(path: Path) -> Optional[LoadedDoc]:
@@ -67,15 +67,53 @@ def _load_file(path: Path) -> Optional[LoadedDoc]:
 
 def _load_url(url: str) -> Optional[LoadedDoc]:
     try:
+        # 1. GitHub Conversion: Try to convert GitHub Blob URL to Raw URL for improved content extraction
         target_url = _try_convert_github_url(url)
+        
+        # 2. Strategy Decision: 
+        # If it is a Github Raw link or a common pure text/code file suffix, direct download is more efficient and accurate.
+        # Otherwise (general webpage), try to use Jina Reader to convert HTML into high-quality Markdown.
+        
+        # Common pure text/code suffixes, do not need LLM Reader for cleaning
+        raw_extensions = (
+            ".txt", ".md", ".json", ".yaml", ".yml", ".csv", ".xml", ".ini", ".conf",
+            ".py", ".js", ".ts", ".go", ".rs", ".java", ".c", ".cpp", ".h", ".cs", ".php", ".rb", ".sh"
+        )
+        
+        is_github_raw = "raw.githubusercontent.com" in target_url
+        is_pure_text = target_url.lower().endswith(raw_extensions)
+        
+        should_use_jina = not (is_github_raw or is_pure_text)
+
+        if should_use_jina:
+            # 3. Try Jina Reader (https://jina.ai/reader)
+            # It can convert cluttered webpages into clean Markdown, which is very suitable for RAG
+            jina_api_key = os.getenv("JINA_API_KEY")
+            headers = {"X-Retain-Images": "none"}
+            if jina_api_key:
+                headers["Authorization"] = f"Bearer {jina_api_key}"
+            
+            try:
+                jina_url = f"https://r.jina.ai/{target_url}"
+                r_jina = requests.get(jina_url, headers=headers, timeout=20)
+                if r_jina.status_code == 200:
+                    return LoadedDoc(id=url, text=r_jina.text, source=url)
+            except Exception:
+                # If Jina service times out or fails, silently fallback to normal download
+                pass
+
+        # 4. Fallback/Default Path: Directly request the target URL
+        # Applies when Jina fails, or for direct download paths (GitHub Raw/Text files)
         r = requests.get(target_url, timeout=20)
         r.raise_for_status()
+        
         content_type = r.headers.get("content-type", "").lower()
-        text: str
         if "html" in content_type:
+            # Use simple method to strip tags as a fallback
             text = _strip_html(r.text)
         else:
             text = r.text
+            
         return LoadedDoc(id=url, text=text, source=url)
     except Exception:
         return None

@@ -169,6 +169,8 @@ def _register_on_chain_if_requested(
     )
     try:
         metadata = []
+        if agent_card_uri:
+            metadata.append(("card_uri", agent_card_uri.encode()))
         if did_uri:
             metadata.append(("did_uri", did_uri.encode()))
         if did_doc_uri:

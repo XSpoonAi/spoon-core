@@ -139,8 +139,48 @@ class ToolCallAgent(ReActAgent):
             unique_tools[tool_name] = tool
         unique_tools_list = list(unique_tools.values())
 
+        # Check if messages contain images or documents (multimodal content)
+        # Images and documents require more processing time, so increase timeout
+        has_images = False
+        has_documents = False
+        try:
+            for msg in self.memory.messages:
+                # Check for images using Message.has_images property
+                if hasattr(msg, 'has_images') and msg.has_images:
+                    has_images = True
+                # Check for documents using Message.has_documents property
+                if hasattr(msg, 'has_documents') and msg.has_documents:
+                    has_documents = True
+                # Fallback: check for data URLs in string content (for Data URL method)
+                if hasattr(msg, 'content') and isinstance(msg.content, str):
+                    if "data:image" in msg.content:
+                        has_images = True
+                    if "data:application/pdf" in msg.content or "application/pdf" in str(msg.content):
+                        has_documents = True
+                # Early exit if both found
+                if has_images and has_documents:
+                    break
+        except Exception:
+            pass  # If check fails, use default timeout
+
         # Bound LLM tool selection time to avoid step-level timeouts
-        llm_timeout = max(20.0, min(60.0, getattr(self, '_default_timeout', 30.0) - 5.0))
+        # Increase timeout for image/document processing (especially Data URLs and PDFs which can be slower)
+        base_timeout = max(20.0, min(60.0, getattr(self, '_default_timeout', 30.0) - 5.0))
+        if has_images or has_documents:
+            # Increase timeout for image/document processing
+            # Documents (especially PDFs) can be large and require more processing time
+            # Large PDFs (4MB+) may need up to 180 seconds (3 minutes) for processing
+            if has_documents:
+                llm_timeout = 180.0  # 3 minutes for large PDF processing
+            elif has_images:
+                llm_timeout = min(120.0, base_timeout * 2)  # 2 minutes for images
+            else:
+                llm_timeout = min(60.0, base_timeout * 2)
+            
+            content_type = "images and documents" if (has_images and has_documents) else ("images" if has_images else "documents")
+            logger.debug(f"Detected {content_type}, increased timeout to {llm_timeout}s for processing")
+        else:
+            llm_timeout = base_timeout
         try:
             if hasattr(self, '_middleware_pipeline') and self._middleware_pipeline:
                 response = await self._call_llm_with_middleware(
@@ -282,6 +322,37 @@ class ToolCallAgent(ReActAgent):
                         pass
                     if has_mcp_tools:
                         step_timeout = max(step_timeout, 120.0)  # 2 minutes for MCP tools
+
+                    # Check if messages contain images or documents (multimodal content)
+                    # These require more processing time, so increase step timeout
+                    has_images = False
+                    has_documents = False
+                    try:
+                        for msg in self.memory.messages:
+                            if hasattr(msg, 'has_images') and msg.has_images:
+                                has_images = True
+                            if hasattr(msg, 'has_documents') and msg.has_documents:
+                                has_documents = True
+                            if hasattr(msg, 'content') and isinstance(msg.content, str):
+                                if "data:image" in msg.content:
+                                    has_images = True
+                                if "data:application/pdf" in msg.content or "application/pdf" in str(msg.content):
+                                    has_documents = True
+                            if has_images and has_documents:
+                                break
+                    except Exception:
+                        pass
+
+                    if has_images or has_documents:
+                        # Increase step timeout significantly for image/document processing
+                        # Documents (especially PDFs) can be large and require more processing time
+                        # Large PDFs (4MB+) may need up to 180 seconds (3 minutes) for upload + processing
+                        if has_documents:
+                            step_timeout = max(step_timeout, 180.0)  # 3 minutes for large PDF processing
+                        else:
+                            step_timeout = max(step_timeout, 120.0)  # 2 minutes for images
+                        content_type = "images and documents" if (has_images and has_documents) else ("images" if has_images else "documents")
+                        logger.debug(f"Detected {content_type}, increased step timeout to {step_timeout}s for processing")
 
                     # Check for subagent middleware - subagents need much more time
                     if hasattr(self, 'middleware') and self.middleware:
