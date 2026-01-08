@@ -6,8 +6,7 @@ import datetime
 from pathlib import Path
 from abc import ABC
 from contextlib import asynccontextmanager
-from typing import Literal, Optional, List, Union, Dict, Any, cast
-import threading
+from typing import Literal, Optional, List,  Dict, Any
 import time
 
 from spoon_ai.schema import (
@@ -25,19 +24,12 @@ from spoon_ai.callbacks.manager import CallbackManager
 logger = logging.getLogger(__name__)
 DEBUG = False
 
-# Import middleware support (optional for backward compatibility)
-try:
-    from spoon_ai.middleware import (
-        AgentMiddleware,
-        MiddlewarePipeline,
-        AgentRuntime,
-        AgentPhase,
-        create_middleware_pipeline
-    )
-    MIDDLEWARE_AVAILABLE = True
-except ImportError:
-    MIDDLEWARE_AVAILABLE = False
-    logger.warning("Middleware system not available. Install spoon_ai.middleware for deep agent features.")
+# Import middleware support
+from spoon_ai.middleware import (
+    AgentRuntime,
+    AgentPhase,
+    create_middleware_pipeline
+)
 
 def debug_log(message):
     if DEBUG:
@@ -188,30 +180,27 @@ class BaseAgent(BaseModel, ABC):
 
     def _initialize_middleware(self) -> None:
         """Initialize middleware pipeline if middleware is configured."""
-        if not MIDDLEWARE_AVAILABLE:
-            if self.middleware:
-                logger.warning(f"Agent {self.name} has middleware configured but middleware system is not available")
+        if not self.middleware:
             return
 
-        if self.middleware:
-            try:
-                self._middleware_pipeline = create_middleware_pipeline(self.middleware)
-                logger.info(f"Agent {self.name} initialized with {len(self.middleware)} middleware")
+        try:
+            self._middleware_pipeline = create_middleware_pipeline(self.middleware)
+            logger.info(f"Agent {self.name} initialized with {len(self.middleware)} middleware")
 
-                # Inject middleware tools
-                middleware_tools = self._middleware_pipeline.collect_tools()
-                if middleware_tools and hasattr(self, 'available_tools'):
-                    for tool in middleware_tools:
-                        self.available_tools.add_tool(tool)
-                    logger.info(f"Injected {len(middleware_tools)} middleware tools into agent {self.name}")
+            # Inject middleware tools
+            middleware_tools = self._middleware_pipeline.collect_tools()
+            if middleware_tools and hasattr(self, 'available_tools'):
+                for tool in middleware_tools:
+                    self.available_tools.add_tool(tool)
+                logger.info(f"Injected {len(middleware_tools)} middleware tools into agent {self.name}")
 
-                # Extend system prompt with middleware prompts
-                if self.system_prompt:
-                    self.system_prompt = self._middleware_pipeline.build_system_prompt(self.system_prompt)
+            # Extend system prompt with middleware prompts
+            if self.system_prompt:
+                self.system_prompt = self._middleware_pipeline.build_system_prompt(self.system_prompt)
 
-            except Exception as e:
-                logger.error(f"Failed to initialize middleware for agent {self.name}: {e}")
-                self._middleware_pipeline = None
+        except Exception as e:
+            logger.error(f"Failed to initialize middleware for agent {self.name}: {e}")
+            self._middleware_pipeline = None
 
     async def add_message(
         self,
@@ -827,20 +816,15 @@ class BaseAgent(BaseModel, ABC):
                     if self.current_step >= self.max_steps:
                         results.append(f"Step {self.current_step}: Reached maximum steps. Stopping.")
 
-                    # FINAL REFLECTION: Ensure reflection happens at least once before finishing
-                    # Trigger if we have content but haven't reflected yet
-                    if self.enable_reflect_phase and self.current_step > 0:
-                        current_tokens = self.estimate_token_count()
-                        if self._last_reflect_token_count == 0 and current_tokens > 0:
-                            logger.info(f"Agent {self.name} performing final reflection before completion")
-                            await self._execute_reflect_phase(runtime, {
-                                "current_step": self.current_step,
-                                "step_result": "Final step completed",
-                                "results": results,
-                                "is_final_reflection": True,
-                                "token_count": current_tokens,
-                            })
-                            self._on_reflection_complete()
+                    # FINAL REFLECTION: Trigger if enabled and haven't reflected yet
+                    if self.enable_reflect_phase and self._last_reflect_token_count == 0:
+                        await self._execute_reflect_phase(runtime, {
+                            "current_step": self.current_step,
+                            "step_result": "Final step completed",
+                            "results": results,
+                            "is_final_reflection": True,
+                        })
+                        self._on_reflection_complete()
 
                     # FINISH PHASE: Final middleware hooks
                     if self._middleware_pipeline:
@@ -1225,14 +1209,8 @@ class BaseAgent(BaseModel, ABC):
     # Deep Agent Support - Plan-Act-Reflect Phases
     # ========================================================================
 
-    def _create_runtime_context(self, run_id: Optional[uuid.UUID] = None) -> Any:
-        """Create runtime context for middleware.
-
-        Returns AgentRuntime if middleware is available, None otherwise.
-        """
-        if not MIDDLEWARE_AVAILABLE:
-            return None
-
+    def _create_runtime_context(self, run_id: Optional[uuid.UUID] = None) -> AgentRuntime:
+        """Create runtime context for middleware."""
         messages = self.memory.get_messages() if hasattr(self.memory, 'get_messages') else []
 
         runtime = AgentRuntime(
@@ -1248,56 +1226,42 @@ class BaseAgent(BaseModel, ABC):
             metadata={}
         )
 
-        # CRITICAL FIX: Add agent instance reference for SubAgentMiddleware
-        # This allows middleware to access the parent agent for delegation
+        # Add agent instance reference for SubAgentMiddleware
         setattr(runtime, '_agent_instance', self)
-
         return runtime
 
-    async def _execute_plan_phase(self, runtime: Any) -> None:
-        """Execute PLAN phase hooks from middleware.
-
-        This is called BEFORE the action loop starts, allowing middleware
-        to generate an initial plan based on the user's request.
-        """
-        if not self._middleware_pipeline or not runtime:
+    async def _execute_plan_phase(self, runtime: AgentRuntime) -> None:
+        """Execute PLAN phase hooks from middleware."""
+        if not self._middleware_pipeline:
             return
 
         try:
-            runtime.current_phase = AgentPhase.PLAN if MIDDLEWARE_AVAILABLE else None
+            runtime.current_phase = AgentPhase.PLAN
             logger.info(f"Agent {self.name} entering PLAN phase")
 
             phase_data = {
-                "user_request": runtime.get_last_message(Role.USER) if MIDDLEWARE_AVAILABLE else None,
+                "user_request": runtime.get_last_message(Role.USER),
                 "existing_plan": self._agent_state.get("plan"),
             }
 
             state_updates = self._middleware_pipeline.execute_phase_hook(
-                AgentPhase.PLAN,
-                runtime,
-                phase_data
+                AgentPhase.PLAN, runtime, phase_data
             )
-
             if state_updates:
-                logger.info(f"Agent {self.name} plan created/updated: {list(state_updates.keys())}")
+                logger.info(f"Agent {self.name} plan created/updated")
 
         except Exception as e:
             logger.error(f"Error in PLAN phase for agent {self.name}: {e}")
 
-    async def _execute_reflect_phase(self, runtime: Any, phase_data: Dict[str, Any]) -> None:
-        """Execute REFLECT phase hooks from middleware.
-
-        This is called periodically during the action loop (every N steps)
-        to allow middleware to evaluate progress and potentially revise the plan.
-        """
-        if not self._middleware_pipeline or not runtime:
+    async def _execute_reflect_phase(self, runtime: AgentRuntime, phase_data: Dict[str, Any]) -> None:
+        """Execute REFLECT phase hooks from middleware."""
+        if not self._middleware_pipeline:
             return
 
         try:
-            runtime.current_phase = AgentPhase.REFLECT if MIDDLEWARE_AVAILABLE else None
+            runtime.current_phase = AgentPhase.REFLECT
             logger.info(f"Agent {self.name} entering REFLECT phase (step {self.current_step})")
 
-            # Add plan and progress to phase data
             phase_data.update({
                 "plan": self._agent_state.get("plan"),
                 "progress": {
@@ -1307,31 +1271,23 @@ class BaseAgent(BaseModel, ABC):
             })
 
             state_updates = self._middleware_pipeline.execute_phase_hook(
-                AgentPhase.REFLECT,
-                runtime,
-                phase_data
+                AgentPhase.REFLECT, runtime, phase_data
             )
-
             if state_updates:
-                logger.info(f"Agent {self.name} reflection complete: {list(state_updates.keys())}")
+                logger.info(f"Agent {self.name} reflection complete")
 
         except Exception as e:
             logger.error(f"Error in REFLECT phase for agent {self.name}: {e}")
 
-    async def _execute_finish_phase(self, runtime: Any, phase_data: Dict[str, Any]) -> None:
-        """Execute FINISH phase hooks from middleware.
-
-        This is called after the action loop completes, before returning
-        to allow middleware to finalize results and clean up.
-        """
-        if not self._middleware_pipeline or not runtime:
+    async def _execute_finish_phase(self, runtime: AgentRuntime, phase_data: Dict[str, Any]) -> None:
+        """Execute FINISH phase hooks from middleware."""
+        if not self._middleware_pipeline:
             return
 
         try:
-            runtime.current_phase = AgentPhase.FINISH if MIDDLEWARE_AVAILABLE else None
+            runtime.current_phase = AgentPhase.FINISH
             logger.info(f"Agent {self.name} entering FINISH phase")
 
-            # Add final statistics to phase data
             phase_data.update({
                 "plan": self._agent_state.get("plan"),
                 "total_steps": self.current_step,
@@ -1339,13 +1295,10 @@ class BaseAgent(BaseModel, ABC):
             })
 
             state_updates = self._middleware_pipeline.execute_phase_hook(
-                AgentPhase.FINISH,
-                runtime,
-                phase_data
+                AgentPhase.FINISH, runtime, phase_data
             )
-
             if state_updates:
-                logger.info(f"Agent {self.name} finish phase complete: {list(state_updates.keys())}")
+                logger.info(f"Agent {self.name} finish phase complete")
 
         except Exception as e:
             logger.error(f"Error in FINISH phase for agent {self.name}: {e}")
