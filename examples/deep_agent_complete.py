@@ -179,8 +179,6 @@ async def example_full_integration():
     db_path = "integration_demo.db"
 
     # Clean up old checkpoint to ensure fresh demo
-    if os.path.exists(db_path):
-        os.remove(db_path)
 
     checkpointer = SQLiteCheckpointer(db_path)
     deepwiki_tool = MCPTool(
@@ -268,8 +266,6 @@ Make sure to update the todo list as you complete each step."""
     if len(result.split('\n')) > 50:
         print("  ...")
 
-    if os.path.exists(db_path):
-        os.remove(db_path)
 
 async def main():
     # Run HITL demo first (shorter)
