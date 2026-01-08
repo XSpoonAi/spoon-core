@@ -244,6 +244,14 @@ class ToolCallAgent(ReActAgent):
             self.tool_calls = []
             return False
 
+        # Check for HITL interrupt - return it to caller
+        if hasattr(response, 'interrupt') and response.interrupt:
+            logger.info(f" {self.name} HITL interrupt detected")
+            self._pending_interrupt = response.interrupt
+            self.tool_calls = response.tool_calls or []
+            self.state = AgentState.FINISHED
+            return False
+
         self.tool_calls = response.tool_calls
 
         # Check for termination
@@ -313,8 +321,13 @@ class ToolCallAgent(ReActAgent):
             asyncio.create_task(self.add_message("assistant", f"Error: {e}"))
             return False
 
-    async def run(self, request: Optional[str] = None, timeout: Optional[float] = None) -> str:
-        """Execute agent with proper lifecycle management."""
+    async def run(self, request: Optional[str] = None, timeout: Optional[float] = None):
+        """Execute agent with proper lifecycle management.
+
+        Returns:
+            str: Normal completion result
+            dict: If HITL interrupt occurs, returns {"__interrupt__": [...]}
+        """
         timeout = timeout or self._default_timeout
 
         # Acquire run lock
@@ -332,6 +345,7 @@ class ToolCallAgent(ReActAgent):
 
         self._finish_reason_terminated = False
         self._final_response_content = None
+        self._pending_interrupt = None  # Initialize HITL interrupt state
 
         run_id = uuid.uuid4()
         runtime = self._create_runtime_context(run_id)
@@ -348,6 +362,12 @@ class ToolCallAgent(ReActAgent):
 
             # Main loop
             result = await self._run_main_loop(runtime, results)
+
+            # Check for HITL interrupt - return it to caller
+            if self._pending_interrupt:
+                logger.info(f" {self.name} returning HITL interrupt to caller")
+                return self._pending_interrupt
+
             if result is not None:
                 return result
 

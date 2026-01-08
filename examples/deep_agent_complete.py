@@ -5,6 +5,7 @@ import os
 from spoon_ai.tools.mcp_tool import MCPTool
 from spoon_ai.tools.base import BaseTool
 from spoon_ai.agents.toolcall import ToolCallAgent
+from spoon_ai.schema import ToolChoice  # Import ToolChoice
 from spoon_ai.chat import ChatBot
 from spoon_ai.middleware import (
     FilesystemMiddleware,
@@ -92,6 +93,7 @@ async def example_hitl_demo():
     )
 
     # Create agent with HITL middleware
+    # Use tool_choices=REQUIRED to force LLM to call tools
     thread_id = "hitl-demo-thread"
     agent = ToolCallAgent(
         name="hitl-demo-agent",
@@ -100,6 +102,7 @@ async def example_hitl_demo():
         middleware=[hitl_middleware, PatchToolCallsMiddleware()],
         thread_id=thread_id,
         max_steps=5,
+        tool_choices=ToolChoice.REQUIRED,  # Force tool usage
     )
 
     print(f"\n  Agent: {agent.name}")
@@ -108,8 +111,8 @@ async def example_hitl_demo():
     print("  HITL Protected Tools: execute_command")
     print("  Checkpointer: InMemoryCheckpointer")
 
-    # Task that will trigger HITL
-    task = "Please execute the command 'echo Hello World' to test the system."
+    # Task that will trigger HITL - explicit instruction to use the tool
+    task = "Use the execute_command tool to run 'echo Hello World'."
     config = {"configurable": {"thread_id": thread_id}}
 
     print(f"\n[Task] {task}\n")

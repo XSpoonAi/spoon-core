@@ -471,25 +471,38 @@ class HITLManager:
         decisions: List[DecisionInput],
         tool_calls: List[Any],
     ) -> List[Any]:
-        """Apply decisions to tool calls.
+        """Apply decisions to tool calls using tool call id mapping.
 
         Args:
-            decisions: List of decisions from Command(resume=...)
-            tool_calls: Original tool calls
+            decisions: List of decisions from Command(resume=...), ordered to match
+                       pending_actions (not original tool_calls order)
+            tool_calls: Original tool calls (may include non-protected tools)
 
         Returns:
             Modified tool calls with edits applied, rejected calls removed
         """
         from spoon_ai.schema import ToolCall as ToolCallSchema, Function
 
-        result = []
-
-        for i, tool_call in enumerate(tool_calls):
-            tool_name = tool_call.function.name
+        # Build decision map: action_id -> decision
+        # decisions[i] corresponds to pending_actions[i]
+        decision_map: Dict[str, DecisionInput] = {}
+        for i, action_dict in enumerate(self._state.pending_actions):
             if i < len(decisions):
-                decision = decisions[i]
+                action_id = action_dict.get("id")
+                if action_id:
+                    decision_map[action_id] = decisions[i]
+
+        result = []
+        for tool_call in tool_calls:
+            tool_id = tool_call.id
+            tool_name = tool_call.function.name
+
+            # Check if this tool call has a pending decision
+            if tool_id in decision_map:
+                decision = decision_map[tool_id]
+
                 if decision.type == "reject":
-                    logger.info(f"Tool {tool_name} rejected")
+                    logger.info(f"Tool {tool_name} (id={tool_id}) rejected")
                     continue
                 elif decision.type == "edit":
                     # Apply edited arguments - LangChain format
@@ -499,13 +512,14 @@ class HITLManager:
                         new_args = tool_call.function.arguments
 
                     new_function = Function(name=tool_name, arguments=new_args)
-                    modified = ToolCallSchema(id=tool_call.id, type=tool_call.type, function=new_function)
+                    modified = ToolCallSchema(id=tool_id, type=tool_call.type, function=new_function)
                     result.append(modified)
-                    logger.info(f"Tool {tool_name} approved with edits")
+                    logger.info(f"Tool {tool_name} (id={tool_id}) approved with edits")
                 else:  # approve
                     result.append(tool_call)
-                    logger.info(f"Tool {tool_name} approved")
+                    logger.info(f"Tool {tool_name} (id={tool_id}) approved")
             else:
+                # Non-protected tool call, keep as-is
                 result.append(tool_call)
 
         # Clear interrupted state after applying decisions
