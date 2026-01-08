@@ -1,25 +1,3 @@
-"""Anthropic Prompt Caching Middleware.
-
-Adds cache_control markers to system prompts and messages for Anthropic models,
-enabling prompt caching to reduce costs and latency for repeated content.
-
-How Anthropic Prompt Caching Works:
-- Content marked with cache_control: {"type": "ephemeral"} is cached for ~5 minutes
-- Subsequent requests within the cache window reuse the cached content
-- This reduces input token costs and speeds up responses
-- Only works with Claude models (claude-3-*, claude-2-*, etc.)
-
-Compatible with LangChain DeepAgents AnthropicPromptCachingMiddleware interface.
-
-Usage:
-    from spoon_ai.middleware.prompt_caching import AnthropicPromptCachingMiddleware
-
-    agent = ToolCallAgent(
-        middleware=[AnthropicPromptCachingMiddleware()],
-        ...
-    )
-"""
-
 import logging
 from typing import Any, Callable, Dict, List, Literal, Optional
 from copy import deepcopy

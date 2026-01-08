@@ -1,18 +1,3 @@
-"""
-Middleware System for Deep Agents
-
-Provides flexible middleware architecture for:
-- Plan-Act-Reflect execution cycles
-- Model and tool call interception
-- Agent lifecycle hooks
-- Declarative tool and state injection
-- Filesystem operations with 7 built-in tools
-- Todo list task tracking
-- Context summarization
-- Dangling tool call patching
-- Anthropic prompt caching
-"""
-
 from .base import (
     # Core middleware classes
     AgentMiddleware,

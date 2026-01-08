@@ -1,14 +1,3 @@
-"""
-Middleware System for Deep Agents - Plan-Act-Reflect Support
-
-This module provides a flexible middleware architecture that enables:
-1. Plan-Act-Reflect cycles for deep reasoning
-2. Model call interception and modification
-3. Tool call wrapping and result transformation
-4. Agent lifecycle hooks for state management
-5. Declarative tool and state injection
-"""
-
 from abc import ABC, abstractmethod
 from typing import (
     Any, Callable, Dict, List, Optional, Union, TypeVar, Generic,

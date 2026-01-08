@@ -1,20 +1,3 @@
-"""TodoList Middleware - Task Planning and Progress Tracking.
-
-Provides todo list tools to agents for structured task management:
-- write_todos: Create/update todo list with tasks
-- read_todos: Read current todo list state
-
-Compatible with LangChain DeepAgents TodoListMiddleware interface.
-
-Usage:
-    from spoon_ai.middleware.todolist import TodoListMiddleware
-
-    agent = ToolCallAgent(
-        middleware=[TodoListMiddleware()],
-        ...
-    )
-"""
-
 import json
 import logging
 from typing import Any, Callable, Dict, List, Literal, Optional
@@ -261,25 +244,6 @@ You have access to a todo list for tracking progress through complex tasks:
 # ============================================================================
 
 class TodoListMiddleware(AgentMiddleware):
-    """Middleware for providing todo list tools to an agent.
-
-    Provides two tools:
-    - write_todos: Create/update todo list
-    - read_todos: Read current todo list
-
-    Example:
-        ```python
-        from spoon_ai.middleware.todolist import TodoListMiddleware
-
-        middleware = TodoListMiddleware()
-
-        agent = ToolCallAgent(
-            middleware=[middleware],
-            ...
-        )
-        ```
-    """
-
     def __init__(
         self,
         system_prompt: Optional[str] = None,

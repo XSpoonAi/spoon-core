@@ -1,21 +1,3 @@
-"""PatchToolCalls Middleware - Fix Dangling Tool Calls.
-
-Patches message history to handle dangling tool calls that occur when:
-- HITL (Human-in-the-Loop) interrupts tool execution
-- Errors cause tool execution to be skipped
-- Agent is resumed from a checkpoint mid-execution
-
-Compatible with LangChain DeepAgents PatchToolCallsMiddleware interface.
-
-Usage:
-    from spoon_ai.middleware.patch_tool_calls import PatchToolCallsMiddleware
-
-    agent = ToolCallAgent(
-        middleware=[PatchToolCallsMiddleware()],
-        ...
-    )
-"""
-
 import logging
 from typing import Any, Callable, Dict, List, Optional, Set
 

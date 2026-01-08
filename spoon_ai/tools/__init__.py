@@ -5,11 +5,12 @@ from .hitl import (
     HITLMiddleware,  # Alias for backward compatibility
     InterruptOnConfig,
     ApprovalDecision,
-    HITLInterrupt,
     ActionRequest,
     ReviewConfig,
     InterruptValue,
     InterruptInfo,
+    DecisionInput,
+    HITLState,
     create_hitl_middleware,
 )
 
@@ -21,10 +22,11 @@ __all__ = [
     "HITLMiddleware",
     "InterruptOnConfig",
     "ApprovalDecision",
-    "HITLInterrupt",
     "ActionRequest",
     "ReviewConfig",
     "InterruptValue",
     "InterruptInfo",
+    "DecisionInput",
+    "HITLState",
     "create_hitl_middleware",
 ]

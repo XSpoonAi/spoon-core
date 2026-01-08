@@ -864,43 +864,6 @@ class StateGraph(Generic[State]):
         checkpointer: Optional[Any] = None,
         cache: Optional[BaseCache] = None,
     ) -> "CompiledGraph":
-        """Compile the graph for execution.
-
-        Args:
-            checkpointer: Optional checkpointer for session persistence.
-                If not provided, uses the graph's default checkpointer.
-            cache: Optional cache for node-level caching.
-                When provided, node outputs are cached based on their inputs,
-                allowing repeated calls with the same inputs to skip execution.
-
-        Returns:
-            CompiledGraph ready for execution.
-
-        Raises:
-            GraphConfigurationError: If graph configuration is invalid.
-
-        Example:
-            ```python
-            from spoon_ai.graph import StateGraph, InMemoryCache, InMemoryCheckpointer
-
-            graph = StateGraph(MyState)
-            graph.add_node("process", process_node)
-            graph.add_edge(START, "process")
-            graph.add_edge("process", END)
-
-            # Compile with both checkpointer and cache
-            compiled = graph.compile(
-                checkpointer=InMemoryCheckpointer(),
-                cache=InMemoryCache(max_entries=100),
-            )
-
-            # First call - executes node
-            result1 = await compiled.ainvoke({"input": "hello"})
-
-            # Second call with same input - uses cache
-            result2 = await compiled.ainvoke({"input": "hello"})
-            ```
-        """
         errors: List[str] = []
 
         if not self._entry_point:
@@ -932,14 +895,6 @@ class StateGraph(Generic[State]):
 
 
 class CompiledGraph(Generic[State]):
-    """Compiled graph for execution.
-
-    Supports:
-    - Async and sync execution via ainvoke/invoke
-    - Session persistence via checkpointer
-    - Node-level caching via cache
-    - Interrupt/resume for human-in-the-loop workflows
-    """
 
     def __init__(
         self,
@@ -947,13 +902,6 @@ class CompiledGraph(Generic[State]):
         checkpointer: Optional[Any] = None,
         cache: Optional[BaseCache] = None,
     ):
-        """Initialize compiled graph.
-
-        Args:
-            graph: The StateGraph to execute
-            checkpointer: Optional checkpointer for session persistence
-            cache: Optional cache for node-level caching
-        """
         self.graph = graph
         self.checkpointer = checkpointer or graph.checkpointer
         self.cache = cache
@@ -1217,19 +1165,6 @@ class CompiledGraph(Generic[State]):
         return initial_state
 
     async def _execute_node(self, node_name: str, state: State, config: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
-        """Execute a node and return its result.
-
-        If cache is configured, checks for cached result before execution
-        and stores result in cache after execution.
-
-        Args:
-            node_name: Name of the node to execute
-            state: Current graph state
-            config: Optional execution configuration
-
-        Returns:
-            Node execution result as a dictionary
-        """
         node = self.graph.nodes.get(node_name)
         if not node:
             raise GraphExecutionError(f"Node '{node_name}' not found")
@@ -1417,20 +1352,6 @@ class CompiledGraph(Generic[State]):
         }
 
     def get_cache_stats(self) -> Dict[str, Any]:
-        """Get cache statistics.
-
-        Returns:
-            Dictionary with cache hit/miss counts and hit rate.
-            Returns empty stats if no cache is configured.
-
-        Example:
-            ```python
-            compiled = graph.compile(cache=InMemoryCache())
-            result = await compiled.ainvoke({"input": "hello"})
-            stats = compiled.get_cache_stats()
-            print(f"Cache hit rate: {stats['hit_rate']:.1%}")
-            ```
-        """
         if self.cache is None:
             return {
                 "enabled": False,

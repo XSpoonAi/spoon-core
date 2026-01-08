@@ -1,29 +1,3 @@
-"""Filesystem Middleware - 7 Built-in Tools for File Operations.
-
-Provides filesystem tools to agents:
-1. ls - List files in directory
-2. read_file - Read file content
-3. write_file - Write new file
-4. edit_file - Edit existing file (string replacement)
-5. glob - Find files by pattern
-6. grep - Search content in files
-7. execute - Run shell commands (if backend supports)
-
-Compatible with LangChain DeepAgents filesystem middleware interface.
-
-Usage:
-    from spoon_ai.middleware.filesystem import FilesystemMiddleware
-    from spoon_ai.backends import create_state_backend
-
-    backend, runtime = create_state_backend()
-    middleware = FilesystemMiddleware(backend=backend)
-
-    agent = ToolCallAgent(
-        middleware=[middleware],
-        ...
-    )
-"""
-
 import os
 import re
 import asyncio

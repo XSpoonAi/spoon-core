@@ -1,24 +1,3 @@
-"""Summarization Middleware - Context Compression for Long Conversations.
-
-Automatically summarizes conversation history when token limits are approached,
-preserving recent messages and maintaining context continuity by ensuring
-AI/Tool message pairs remain together.
-
-Compatible with LangChain DeepAgents SummarizationMiddleware interface.
-
-Usage:
-    from spoon_ai.middleware.summarization import SummarizationMiddleware
-
-    agent = ToolCallAgent(
-        middleware=[SummarizationMiddleware(
-            model=llm,
-            trigger=("fraction", 0.85),  # Trigger at 85% of max tokens
-            keep=("messages", 20),       # Keep last 20 messages
-        )],
-        ...
-    )
-"""
-
 import logging
 import uuid
 import warnings
