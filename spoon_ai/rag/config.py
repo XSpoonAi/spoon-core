@@ -33,6 +33,9 @@ class RagConfig:
     #       Use DeepSeek as LLM for QA generation, and other models for embeddings.
     embeddings_provider: Optional[str] = None
     embeddings_model: str = "text-embedding-3-small"  # Generic model name for all embedding providers
+    # Reranking
+    rerank_provider: Optional[str] = None
+    rerank_model: Optional[str] = None
     # Storage paths
     rag_dir: str = ".rag_store"
     
@@ -62,6 +65,11 @@ def get_default_config() -> RagConfig:
     embeddings_model = os.getenv("RAG_EMBEDDINGS_MODEL", "").strip()
 
 
+    rerank_provider = os.getenv("RAG_RERANK_PROVIDER")
+    if rerank_provider:
+        rerank_provider = rerank_provider.strip().lower()
+    rerank_model = os.getenv("RAG_RERANK_MODEL")
+
     return RagConfig(
         backend=backend,
         collection=collection,
@@ -71,5 +79,7 @@ def get_default_config() -> RagConfig:
         min_similarity=min_similarity,
         embeddings_provider=embeddings_provider,
         embeddings_model=embeddings_model,
+        rerank_provider=rerank_provider,
+        rerank_model=rerank_model,
         rag_dir=rag_dir,
     )
