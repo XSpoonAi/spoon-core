@@ -34,6 +34,7 @@ from .reducers import (
 )
 from .decorators import node_decorator
 from .checkpointer import InMemoryCheckpointer
+from .cache import BaseCache, compute_cache_key
 from spoon_ai.schema import (
     Message, MessageContent, ContentBlock,
     TextContent, ImageContent, ImageUrlContent, ImageSource, ImageUrlSource,
@@ -858,8 +859,11 @@ class StateGraph(Generic[State]):
         self.set_llm_router()
         return self
 
-    def compile(self, checkpointer: Optional[Any] = None) -> "CompiledGraph":
-        """Compile the graph"""
+    def compile(
+        self,
+        checkpointer: Optional[Any] = None,
+        cache: Optional[BaseCache] = None,
+    ) -> "CompiledGraph":
         errors: List[str] = []
 
         if not self._entry_point:
@@ -876,7 +880,7 @@ class StateGraph(Generic[State]):
             )
 
         self._compiled = True
-        return CompiledGraph(self, checkpointer)
+        return CompiledGraph(self, checkpointer, cache)
 
     def get_graph(self) -> Dict[str, Any]:
         """Get graph structure for visualization/debugging"""
@@ -891,11 +895,16 @@ class StateGraph(Generic[State]):
 
 
 class CompiledGraph(Generic[State]):
-    """Compiled graph for execution"""
 
-    def __init__(self, graph: StateGraph[State], checkpointer: Optional[Any] = None):
+    def __init__(
+        self,
+        graph: StateGraph[State],
+        checkpointer: Optional[Any] = None,
+        cache: Optional[BaseCache] = None,
+    ):
         self.graph = graph
         self.checkpointer = checkpointer or graph.checkpointer
+        self.cache = cache
 
         # Execution state
         self.execution_history: List[Dict[str, Any]] = []
@@ -904,6 +913,10 @@ class CompiledGraph(Generic[State]):
         # Resume functionality
         self._resume_thread_id: Optional[str] = None
         self._resume_checkpoint_id: Optional[str] = None
+
+        # Cache statistics
+        self._cache_hits = 0
+        self._cache_misses = 0
 
         # Current execution context
         self._current_node: Optional[str] = None
@@ -1152,10 +1165,24 @@ class CompiledGraph(Generic[State]):
         return initial_state
 
     async def _execute_node(self, node_name: str, state: State, config: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
-        """Execute a node and return its result"""
         node = self.graph.nodes.get(node_name)
         if not node:
             raise GraphExecutionError(f"Node '{node_name}' not found")
+
+        # Check cache if available
+        cache_key = None
+        if self.cache is not None:
+            try:
+                # Compute cache key from node name and state
+                cache_key = compute_cache_key(node_name, dict(state), config)
+                cached_result = self.cache.get(cache_key)
+                if cached_result is not None:
+                    self._cache_hits += 1
+                    logger.debug(f"Cache hit for node '{node_name}' (key: {cache_key[:16]}...)")
+                    return cached_result
+                self._cache_misses += 1
+            except Exception as e:
+                logger.warning(f"Cache lookup failed for node '{node_name}': {e}")
 
         try:
             start_dt = datetime.now()
@@ -1169,12 +1196,25 @@ class CompiledGraph(Generic[State]):
                 # Fallback for old-style nodes
                 result = await node(state)
             end_dt = datetime.now()
-            # record metrics
+
+            # Normalize result to dict
+            result = result if isinstance(result, dict) else {"result": result}
+
+            # Store in cache if available
+            if self.cache is not None and cache_key is not None:
+                try:
+                    self.cache.set(cache_key, result, node_name=node_name)
+                    logger.debug(f"Cached result for node '{node_name}' (key: {cache_key[:16]}...)")
+                except Exception as e:
+                    logger.warning(f"Cache store failed for node '{node_name}': {e}")
+
+            # Record metrics
             try:
                 self._record_execution_metrics(node_name, start_dt, end_dt, True, metadata={})
             except Exception:
                 pass
-            return result if isinstance(result, dict) else {"result": result}
+
+            return result
         except InterruptError:
             # Human-in-the-loop: allow interrupts to propagate to the graph engine.
             # Let InterruptError propagate to be handled in invoke()
@@ -1309,6 +1349,26 @@ class CompiledGraph(Generic[State]):
             "avg_execution_time": total_time / total,
             "success_rate": successful / total,
             "node_stats": node_stats
+        }
+
+    def get_cache_stats(self) -> Dict[str, Any]:
+        if self.cache is None:
+            return {
+                "enabled": False,
+                "hits": 0,
+                "misses": 0,
+                "hit_rate": 0.0,
+            }
+
+        total = self._cache_hits + self._cache_misses
+        hit_rate = self._cache_hits / total if total > 0 else 0.0
+
+        return {
+            "enabled": True,
+            "hits": self._cache_hits,
+            "misses": self._cache_misses,
+            "hit_rate": hit_rate,
+            "cache_type": self.cache.__class__.__name__,
         }
 
     async def _execute_parallel_group(self, group_name: str, state: Dict[str, Any]) -> None:
