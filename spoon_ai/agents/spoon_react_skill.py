@@ -1,0 +1,151 @@
+"""
+Skill-enabled production agent.
+
+Combines SpoonReactAI with full skill system support.
+"""
+
+import logging
+from typing import Optional, List
+
+from pydantic import Field
+
+from spoon_ai.agents.spoon_react import SpoonReactAI
+from spoon_ai.agents.skill_mixin import SkillEnabledMixin
+from spoon_ai.skills.manager import SkillManager
+
+logger = logging.getLogger(__name__)
+
+
+class SpoonReactSkill(SkillEnabledMixin, SpoonReactAI):
+    """
+    Production agent with full skill system support.
+
+    Combines:
+    - SpoonReactAI: Tool calling, MCP integration, x402 payment
+    - SkillEnabledMixin: Skill activation, context injection, auto-trigger
+
+    Usage:
+        agent = SpoonReactSkill(name="my_agent")
+
+        # Manual skill activation
+        await agent.activate_skill("trading-analysis", {"asset": "BTC"})
+
+        # Run with auto-trigger
+        result = await agent.run("Analyze ETH trading signals")
+        # -> Automatically activates matching skills
+
+        # List skills
+        print(agent.list_skills())
+        print(agent.list_active_skills())
+
+        # Deactivate
+        await agent.deactivate_skill("trading-analysis")
+    """
+
+    name: str = Field(default="spoon_react_skill", description="Agent name")
+    description: str = Field(
+        default="AI agent with skill system support",
+        description="Agent description"
+    )
+
+    # Additional skill configuration (mixin provides skill_manager, auto_trigger_skills, max_auto_skills)
+    skill_paths: Optional[List[str]] = Field(
+        default=None,
+        description="Additional paths to search for skills"
+    )
+
+    def __init__(self, **kwargs):
+        """
+        Initialize SpoonReactSkill agent.
+
+        Initializes both SpoonReactAI and skill system components.
+        """
+        # Extract skill-specific kwargs before parent init
+        skill_paths = kwargs.pop('skill_paths', None)
+
+        # Initialize SpoonReactAI
+        super().__init__(**kwargs)
+
+        # Store original system prompt before skill injection
+        self._original_system_prompt = self.system_prompt
+        self._skill_manager_initialized = False
+
+        # Initialize skill manager with agent's LLM
+        if self.skill_manager is None:
+            llm_manager = None
+            if hasattr(self, 'llm') and self.llm:
+                try:
+                    from spoon_ai.llm.manager import LLMManager
+                    if hasattr(self.llm, '_llm_manager'):
+                        llm_manager = self.llm._llm_manager
+                except ImportError:
+                    pass
+
+            self.skill_manager = SkillManager(
+                skill_paths=skill_paths,
+                llm=llm_manager,
+                auto_discover=True
+            )
+
+        self._skill_manager_initialized = True
+
+    async def run(self, request: Optional[str] = None) -> str:
+        """
+        Execute agent with skill auto-activation.
+
+        Flow:
+        1. Auto-detect and activate relevant skills (if enabled)
+        2. Inject skill context into system prompt
+        3. Execute parent SpoonReactAI.run()
+
+        Args:
+            request: User request/message
+
+        Returns:
+            Agent response
+        """
+        # Auto-activate matching skills
+        if request and self.auto_trigger_skills:
+            activated = await self.auto_activate_skills(request)
+            if activated:
+                names = [s.metadata.name for s in activated]
+                logger.debug(f"Auto-activated skills for request: {names}")
+
+        # Refresh prompts with active skills
+        self._refresh_prompts_with_skills()
+
+        # Execute parent run
+        return await super().run(request)
+
+    async def initialize(self, __context=None):
+        """
+        Initialize async components.
+
+        Extends SpoonReactAI.initialize() to also initialize skill system.
+        """
+        await super().initialize(__context)
+
+        # Log skill system status
+        stats = self.get_skill_stats()
+        logger.info(
+            f"Skill system initialized: {stats['total_skills']} skills available, "
+            f"{len(stats['intent_categories'])} intent categories"
+        )
+
+    def add_skill_path(self, path: str) -> None:
+        """
+        Add a path to search for skills.
+
+        Args:
+            path: Directory path to add
+        """
+        self._ensure_skill_manager().add_skill_path(path)
+
+    def discover_skills(self) -> int:
+        """
+        Re-discover skills from all configured paths.
+
+        Returns:
+            Number of skills discovered
+        """
+        return self._ensure_skill_manager().discover()

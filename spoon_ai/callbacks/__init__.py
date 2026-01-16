@@ -24,25 +24,35 @@ from spoon_ai.callbacks.streaming_stdout import (
 )
 from spoon_ai.callbacks.stream_event import StreamEventCallbackHandler
 from spoon_ai.callbacks.statistics import StreamingStatisticsCallback
+from spoon_ai.callbacks.skill_callback import (
+    SkillCallbackHandler,
+    LoggingSkillCallback,
+    MetricsSkillCallback,
+)
 
 __all__ = [
     # Base handlers
     "BaseCallbackHandler",
     "AsyncCallbackHandler",
-    
+
     # Mixins
     "LLMManagerMixin",
     "ChainManagerMixin",
     "ToolManagerMixin",
     "RetrieverManagerMixin",
     "PromptManagerMixin",
-    
+
     # Managers
     "CallbackManager",
     "AsyncCallbackManager",
-    
+
     # Built-in handlers
     "StreamingStdOutCallbackHandler",
     "StreamEventCallbackHandler",
     "StreamingStatisticsCallback",
+
+    # Skill handlers
+    "SkillCallbackHandler",
+    "LoggingSkillCallback",
+    "MetricsSkillCallback",
 ]
