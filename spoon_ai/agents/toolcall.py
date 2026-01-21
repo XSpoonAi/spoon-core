@@ -43,6 +43,9 @@ class ToolCallAgent(ReActAgent):
     # Track last tool error for higher-level fallbacks
     last_tool_error: Optional[str] = Field(default=None, exclude=True)
 
+    # Reduced default timeout as per user request (blockchain operations will focus on submission)
+    _default_timeout: float = 120.0
+
     # MCP Tools Caching
     mcp_tools_cache: Optional[List[MCPTool]] = Field(default=None, exclude=True)
     mcp_tools_cache_timestamp: Optional[float] = Field(default=None, exclude=True)
@@ -163,18 +166,16 @@ class ToolCallAgent(ReActAgent):
             pass  # If check fails, use default timeout
 
         # Bound LLM tool selection time to avoid step-level timeouts
-        # Increase timeout for image/document processing (especially Data URLs and PDFs which can be slower)
-        base_timeout = max(20.0, min(60.0, getattr(self, '_default_timeout', 30.0) - 5.0))
+        # Increase timeout for image/document processing
+        base_timeout = max(30.0, min(120.0, getattr(self, '_default_timeout', 60.0) - 5.0))
         if has_images or has_documents:
             # Increase timeout for image/document processing
-            # Documents (especially PDFs) can be large and require more processing time
-            # Large PDFs (4MB+) may need up to 180 seconds (3 minutes) for processing
             if has_documents:
                 llm_timeout = 180.0  # 3 minutes for large PDF processing
             elif has_images:
-                llm_timeout = min(120.0, base_timeout * 2)  # 2 minutes for images
+                llm_timeout = max(120.0, base_timeout * 2)  # 2 minutes for images
             else:
-                llm_timeout = min(60.0, base_timeout * 2)
+                llm_timeout = max(60.0, base_timeout * 2)
             
             content_type = "images and documents" if (has_images and has_documents) else ("images" if has_images else "documents")
             logger.debug(f"Detected {content_type}, increased timeout to {llm_timeout}s for processing")
@@ -247,10 +248,19 @@ class ToolCallAgent(ReActAgent):
 
     async def run(self, request: Optional[str] = None) -> str:
         """Override run method to handle finish_reason termination specially."""
-        if self.state != AgentState.IDLE:
-            raise RuntimeError(f"Agent {self.name} is not in the IDLE state")
-
-        self.state = AgentState.RUNNING
+        # Use run lock to prevent multiple concurrent run() calls (thread-safe)
+        try:
+            async with asyncio.timeout(1.0):  # Quick timeout for run lock
+                async with self._run_lock:
+                    # Double-check state after acquiring lock
+                    if self.state != AgentState.IDLE:
+                        raise RuntimeError(
+                            f"Agent {self.name} is not in the IDLE state (currently: {self.state})"
+                        )
+                    # Set running state atomically
+                    self.state = AgentState.RUNNING
+        except asyncio.TimeoutError:
+            raise RuntimeError(f"Agent {self.name} is busy - another run() operation is in progress")
 
         if request is not None:
             await self.add_message("user", request)

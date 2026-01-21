@@ -44,13 +44,18 @@ parameters:
     type: list
     required: false
     description: Preferred sources to use for research
-prerequisites:
-  tools:
-    - tavily_search
-  env_vars: []
-  skills: []
 composable: true
 persist_state: true
+
+scripts:
+  enabled: true
+  working_directory: ./scripts
+  definitions:
+    - name: tavily_search
+      description: Search the web for general information using Tavily API
+      type: python
+      file: tavily_search.py
+      timeout: 30
 ---
 
 # Research Skill
