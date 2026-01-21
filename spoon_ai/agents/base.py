@@ -112,9 +112,9 @@ class BaseAgent(BaseModel, ABC):
         self._max_history = 100
 
         # Timeout configurations
-        self._default_timeout = 30.0
-        self._state_transition_timeout = 5.0
-        self._memory_operation_timeout = 10.0
+        self._default_timeout = kwargs.get("_default_timeout", 30.0)
+        self._state_transition_timeout = kwargs.get("_state_transition_timeout", 5.0)
+        self._memory_operation_timeout = kwargs.get("_memory_operation_timeout", 10.0)
 
         # Concurrency control
         self._active_operations = set()
