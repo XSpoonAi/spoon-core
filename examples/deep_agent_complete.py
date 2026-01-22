@@ -1,7 +1,7 @@
 """
-Complete Deep Agent Example - Demonstrating All 6 Core Capabilities
+Deep Agent Complete Example - Demonstrating All 6 Core Capabilities
 
-This example demonstrates how to use spoon-core's Deep Agent system to implement:
+This example demonstrates how to use spoon-core's Deep Agent system with:
 1. Agent Harness: Explicit Plan-Act-Reflect loop
 2. Backends: Unified LLM provider abstraction
 3. Subagents: Hierarchical agent delegation
@@ -15,24 +15,23 @@ Run the example:
 
 import asyncio
 import logging
-import os
-from typing import Optional, Any
+from typing import Optional, Any, Dict
+
 # Configure logging
 logging.basicConfig(
     level=logging.INFO,
     format='%(asctime)s - %(name)s - %(levelname)s - %(message)s'
 )
+
 from spoon_ai.agents.toolcall import ToolCallAgent
 from spoon_ai.chat import ChatBot
 from spoon_ai.tools.base import BaseTool
 from spoon_ai.tools import ToolManager
-from spoon_ai.tools.mcp_tool import MCPTool
 
 # Import middleware system
 from spoon_ai.middleware import (
     AgentMiddleware,
     AgentRuntime,
-    AgentPhase,
     ModelRequest,
     ModelResponse,
     ToolCallRequest,
@@ -46,69 +45,121 @@ from spoon_ai.memory.checkpointer import SQLiteCheckpointer, CheckpointMiddlewar
 
 
 # ============================================================================
-# MCP Tool Creation - Lightweight External Tool Integration
+# Simple Built-in Tools (No MCP dependency)
 # ============================================================================
 
-async def create_deepwiki_tool() -> MCPTool:
-    """Create DeepWiki repository analysis tool using MCP SSE server.
+class CalculatorTool(BaseTool):
+    """Simple calculator tool for arithmetic operations."""
 
-    No API key required - uses public DeepWiki MCP service.
+    name: str = "calculator"
+    description: str = "Perform arithmetic calculations. Input: expression (e.g., '2 + 3 * 4')"
+    parameters: dict = {
+        "type": "object",
+        "properties": {
+            "expression": {"type": "string", "description": "Math expression to evaluate (e.g., '2 + 3 * 4')"}
+        },
+        "required": ["expression"]
+    }
 
-    Available tools:
-    - ask_question: Ask any question about a GitHub repository
-    - read_wiki_structure: Get documentation topics
-    - read_wiki_contents: View documentation
-    """
-    tool = MCPTool(
-        name="ask_question",  # Auto-updated from MCP server
-        description="Ask questions about GitHub repositories via DeepWiki",
-        mcp_config={
-            "url": "https://mcp.deepwiki.com/sse",
-            "transport": "sse",
-            "timeout": 60,
-            "headers": {
-                "User-Agent": "Spoon-Deep-Agent/1.0",
-                "Accept": "text/event-stream"
-            }
+    async def execute(self, expression: str = "", **kwargs) -> str:
+        try:
+            expr = expression or kwargs.get("input", "")
+            # Safe eval for simple math expressions
+            allowed = set("0123456789+-*/(). ")
+            if not all(c in allowed for c in expr):
+                return f"Error: Invalid characters in expression"
+            result = eval(expr)
+            return f"Result: {expr} = {result}"
+        except Exception as e:
+            return f"Error: {str(e)}"
+
+
+class SearchTool(BaseTool):
+    """Mock search tool that simulates web search."""
+
+    name: str = "search"
+    description: str = "Search for information. Input: query string"
+    parameters: dict = {
+        "type": "object",
+        "properties": {
+            "query": {"type": "string", "description": "Search query string"}
+        },
+        "required": ["query"]
+    }
+
+    async def execute(self, query: str = "", **kwargs) -> str:
+        q = query or kwargs.get("input", "")
+        # Simulated search results
+        results = {
+            "python": "Python is a high-level programming language known for its simplicity and readability.",
+            "ai": "Artificial Intelligence (AI) is the simulation of human intelligence by machines.",
+            "agent": "An AI agent is a system that perceives its environment and takes actions to achieve goals.",
+            "llm": "Large Language Models (LLMs) are neural networks trained on vast text data for language tasks.",
         }
-    )
-    # CRITICAL FIX: Load parameters before returning so LLM gets correct schema
-    await tool.ensure_parameters_loaded()
-    return tool
 
-async def create_filesystem_tool() -> MCPTool:
-    """Create filesystem tool using MCP filesystem server.
+        query_lower = q.lower()
+        for key, value in results.items():
+            if key in query_lower:
+                return f"Search result for '{q}': {value}"
 
-    No API key required - runs locally via npx.
-    """
-    tool = MCPTool(
-        name="read_file",
-        description="Read and analyze files via MCP filesystem server",
-        mcp_config={
-            "command": "npx",
-            "args": ["-y", "@modelcontextprotocol/server-filesystem", "/tmp"],
-        }
-    )
-    # CRITICAL FIX: Load parameters before returning so LLM gets correct schema
-    await tool.ensure_parameters_loaded()
-    return tool
+        return f"Search result for '{q}': No specific results found. This is a demonstration tool."
 
-async def create_memory_tool() -> MCPTool:
-    """Create memory tool using MCP memory server.
 
-    No API key required - runs locally via npx.
-    """
-    tool = MCPTool(
-        name="create_entities",
-        description="Store and manage data via MCP memory server",
-        mcp_config={
-            "command": "npx",
-            "args": ["-y", "@modelcontextprotocol/server-memory"],
-        }
-    )
-    # CRITICAL FIX: Load parameters before returning so LLM gets correct schema
-    await tool.ensure_parameters_loaded()
-    return tool
+class NoteTool(BaseTool):
+    """Tool to save and retrieve notes."""
+
+    name: str = "note"
+    description: str = "Save or retrieve notes. Input: 'save:<content>' or 'get:<key>' or 'list'"
+    parameters: dict = {
+        "type": "object",
+        "properties": {
+            "command": {"type": "string", "description": "Command: 'save:<content>' or 'get:<key>' or 'list'"}
+        },
+        "required": ["command"]
+    }
+
+    _notes: Dict[str, str] = {}
+
+    async def execute(self, command: str = "", **kwargs) -> str:
+        cmd = command or kwargs.get("input", "")
+        if cmd.startswith("save:"):
+            content = cmd[5:].strip()
+            key = f"note_{len(self._notes) + 1}"
+            self._notes[key] = content
+            return f"Saved note as '{key}': {content}"
+        elif cmd.startswith("get:"):
+            key = cmd[4:].strip()
+            if key in self._notes:
+                return f"Note '{key}': {self._notes[key]}"
+            return f"Note '{key}' not found"
+        elif cmd == "list":
+            if not self._notes:
+                return "No notes saved"
+            return "Notes: " + ", ".join(f"{k}: {v[:30]}..." for k, v in self._notes.items())
+        else:
+            return "Usage: 'save:<content>' or 'get:<key>' or 'list'"
+
+
+class AnalysisTool(BaseTool):
+    """Tool for text analysis."""
+
+    name: str = "analyze"
+    description: str = "Analyze text. Input: text to analyze"
+    parameters: dict = {
+        "type": "object",
+        "properties": {
+            "text": {"type": "string", "description": "Text to analyze"}
+        },
+        "required": ["text"]
+    }
+
+    async def execute(self, text: str = "", **kwargs) -> str:
+        t = text or kwargs.get("input", "")
+        word_count = len(t.split())
+        char_count = len(t)
+        sentence_count = t.count('.') + t.count('!') + t.count('?')
+
+        return f"Analysis: {word_count} words, {char_count} characters, {sentence_count} sentences"
 
 
 # ============================================================================
@@ -127,446 +178,195 @@ class ObservabilityMiddleware(AgentMiddleware):
         self.phase_transitions = []
 
     async def awrap_model_call(self, request: ModelRequest, handler) -> ModelResponse:
-        """Intercept and log LLM calls - demonstrates AgentPhase usage"""
+        """Intercept and log LLM calls"""
         self.call_count += 1
         print(f"\n📊 [Observability] LLM Call #{self.call_count}")
 
-        # ✅ USE AgentPhase: Show which phase the LLM call is happening in
         if request.phase:
-            phase_name = request.phase.value
-            print(f"   Phase: {phase_name} (AgentPhase.{request.phase.name})")
-
-            # Different logging based on phase
-            if request.phase == AgentPhase.PLAN:
-                print(f"   🎯 Planning phase - Creating execution strategy")
-            elif request.phase == AgentPhase.THINK:
-                print(f"   🤔 Thinking phase - Selecting next action")
-            elif request.phase == AgentPhase.REFLECT:
-                print(f"   💭 Reflection phase - Evaluating progress")
-        else:
-            print(f"   Phase: unknown")
-
-        print(f"   Messages: {len(request.messages)}")
-
-        # ✅ USE AgentRuntime: Access runtime context if available
+            print(f"   Phase: {request.phase.value}")
         if request.runtime:
-            runtime = request.runtime
-            print(f"   Agent: {runtime.agent_name}")
-            print(f"   Step: {runtime.current_step}/{runtime.max_steps}")
-            if runtime.run_id:
-                print(f"   Run ID: {str(runtime.run_id)[:8]}...")
+            print(f"   Agent: {request.runtime.agent_name}, Step: {request.runtime.current_step}/{request.runtime.max_steps}")
 
-        # CRITICAL: await the async handler
         response = await handler(request)
-        print(f"   Response length: {len(response.content)} chars")
+        print(f"   Response: {len(response.content)} chars")
         return response
 
     async def awrap_tool_call(self, request: ToolCallRequest, handler) -> ToolCallResult:
-        """Intercept and log tool calls - demonstrates AgentRuntime usage"""
+        """Intercept and log tool calls"""
         self.tool_count += 1
-        print(f"\n🔧 [Observability] Tool Call #{self.tool_count}: {request.tool_name}")
-        print(f"   Arguments: {request.arguments}")
+        print(f"\n🔧 [Observability] Tool #{self.tool_count}: {request.tool_name}")
 
-        # ✅ USE AgentRuntime: Access runtime context
-        if request.runtime:
-            runtime = request.runtime
-            print(f"   Agent: {runtime.agent_name}")
-            print(f"   Current Phase: {runtime.current_phase.value if runtime.current_phase else 'N/A'}")
-            print(f"   Step: {runtime.current_step}/{runtime.max_steps}")
-
-        # CRITICAL: await the async handler
         result = await handler(request)
         print(f"   Success: {result.success}")
         return result
 
     def on_plan_phase(self, runtime: AgentRuntime, phase_data: dict[str, Any]) -> Optional[dict[str, Any]]:
-        """Track PLAN phase - demonstrates AgentPhase hook"""
-        print(f"\n🎯 [Observability] PLAN Phase Started")
-        print(f"   Agent: {runtime.agent_name}")
-        print(f"   Phase: {AgentPhase.PLAN.value}")
-
-        self.phase_transitions.append({
-            "phase": AgentPhase.PLAN.value,
-            "agent": runtime.agent_name,
-            "step": runtime.current_step
-        })
+        print(f"\n🎯 [PLAN Phase] Agent: {runtime.agent_name}")
+        self.phase_transitions.append(("PLAN", runtime.current_step))
         return None
 
     def on_reflect_phase(self, runtime: AgentRuntime, phase_data: dict[str, Any]) -> Optional[dict[str, Any]]:
-        """Track REFLECT phase - demonstrates AgentPhase hook"""
-        print(f"\n💭 [Observability] REFLECT Phase Started")
-        print(f"   Agent: {runtime.agent_name}")
-        print(f"   Phase: {AgentPhase.REFLECT.value}")
-        print(f"   Current Step: {runtime.current_step}/{runtime.max_steps}")
-
-        self.phase_transitions.append({
-            "phase": AgentPhase.REFLECT.value,
-            "agent": runtime.agent_name,
-            "step": runtime.current_step
-        })
+        print(f"\n💭 [REFLECT Phase] Agent: {runtime.agent_name}, Step: {runtime.current_step}")
+        self.phase_transitions.append(("REFLECT", runtime.current_step))
         return None
 
     def on_finish_phase(self, runtime: AgentRuntime, phase_data: dict[str, Any]) -> Optional[dict[str, Any]]:
-        """Track FINISH phase - demonstrates AgentPhase hook"""
-        print(f"\n🏁 [Observability] FINISH Phase Started")
-        print(f"   Agent: {runtime.agent_name}")
-        print(f"   Phase: {AgentPhase.FINISH.value}")
-        print(f"   Total Steps: {runtime.current_step}")
-
-        self.phase_transitions.append({
-            "phase": AgentPhase.FINISH.value,
-            "agent": runtime.agent_name,
-            "step": runtime.current_step
-        })
-
-        # Print phase transition summary
-        if self.phase_transitions:
-            print(f"\n   📊 Phase Transition Summary:")
-            for i, transition in enumerate(self.phase_transitions, 1):
-                print(f"      {i}. {transition['phase']} (step {transition['step']})")
-
+        print(f"\n🏁 [FINISH Phase] Agent: {runtime.agent_name}")
+        print(f"   Phase transitions: {self.phase_transitions}")
         return None
 
 
 # ============================================================================
-# Example 1: Basic Planning with Middleware
+# Full Integration Example - All 6 Core Capabilities
 # ============================================================================
 
-async def example_1_basic_planning():
-    """Example 1: Basic Plan-Act-Reflect loop"""
+async def run_deep_agent():
+    """Complete Deep Agent demonstrating all 6 core capabilities:
+
+    1. Agent Harness: Plan-Act-Reflect loop (enable_plan_phase, enable_reflect_phase)
+    2. Backends: Unified LLM abstraction (ChatBot with any provider)
+    3. Subagents: Hierarchical delegation (SubAgentMiddleware)
+    4. HITL: Human approval workflow (HITLMiddleware)
+    5. Memory: Session persistence (CheckpointMiddleware + SQLiteCheckpointer)
+    6. Middleware: Pluggable hooks (ObservabilityMiddleware, PlanningMiddleware)
+    """
     print("\n" + "="*80)
-    print("Example 1: Basic Plan-Act-Reflect Loop")
+    print("Deep Agent - 6 Core Capabilities Demo")
     print("="*80)
+    print("\n1. Agent Harness: Plan-Act-Reflect loop")
+    print("2. Backends: Unified LLM abstraction")
+    print("3. Subagents: Hierarchical delegation")
+    print("4. HITL: Human approval workflow")
+    print("5. Memory: Session persistence")
+    print("6. Middleware: Pluggable hooks")
+    print("="*80 + "\n")
 
-    llm = ChatBot(
-        provider="openai",
-        model="gpt-4o-mini",
-        temperature=0.3
-    )
-
-    agent = ToolCallAgent(
-        name="planning-agent",
-        llm=llm,
-        system_prompt="You are an AI assistant who follows the Plan-Act-Reflect methodology.",
-
-        # Add middleware
-        middleware=[
-            ObservabilityMiddleware(),          # Observability
-            PlanningMiddleware(auto_plan=True), # Auto planning
-        ],
-
-        # Enable Plan-Act-Reflect
-        enable_plan_phase=True,
-        enable_reflect_phase=True,
-        reflect_interval=2,  # Reflect every 2 steps
-
-        max_steps=15
-    )
-
-    result = await agent.run("Explain the concept of 'Plan-Act-Reflect' in AI agents and how it improves agent reasoning")
-
-    print(f"\n✅ Final Result:\n{result}")
-
-    # View agent state
-    diagnostics = agent.get_diagnostics()
-    print(f"\n📈 Agent Diagnostics:")
-    print(f"   - Execution steps: {diagnostics['current_step']}/{diagnostics['max_steps']}")
-    print(f"   - Middleware count: {diagnostics.get('middleware_count', 0)}")
-    print(f"   - State keys: {diagnostics.get('agent_state_keys', [])}")
-
-
-# ============================================================================
-# Example 2: HITL (Human-in-the-Loop)
-# ============================================================================
-
-async def example_2_hitl():
-    """Example 2: Human-in-the-Loop approval flow"""
-    print("\n" + "="*80)
-    print("Example 2: HITL - Human Approval for Critical Operations")
-    print("="*80)
-
-    # Create auto-approval callback (simulating user decision)
-    def auto_approver(request):
-        print(f"\n❓ [Approval Request] Tool: {request.tool_name}")
-        print(f"   Arguments: {request.arguments}")
-        print(f"   Decision: Auto-approved (demo)")
-        return ApprovalDecision.APPROVE
-
-    llm = ChatBot(provider="openai", model="gpt-4o-mini")
-
-    # Create tool manager with MCP tools
-    tool_manager = ToolManager(tools=[])
-    tool_manager.add_tool(await create_deepwiki_tool())
-    tool_manager.add_tool(await create_memory_tool())
-
-    agent = ToolCallAgent(
-        name="hitl-agent",
-        llm=llm,
-        available_tools=tool_manager,
-
-        # HITL middleware
-        middleware=[
-            HITLMiddleware(
-                interrupt_on={
-                    "create_entities": True  # Memory operations require approval
-                },
-                approval_callback=auto_approver  # Auto-approval (demo)
-            )
-        ],
-
-        max_steps=3
-    )
-
-    result = await agent.run("Analyze the GitHub repository 'XSpoonAi/spoon-core', then store the key insights in memory")
-
-    print(f"\n✅ Final Result:\n{result}")
-
-
-# ============================================================================
-# Example 3: Subagent Orchestration
-# ============================================================================
-
-async def example_3_subagents():
-    """Example 3: Hierarchical subagent delegation"""
-    print("\n" + "="*80)
-    print("Example 3: Subagent Orchestration - Specialized Division of Labor")
-    print("="*80)
-
-    llm = ChatBot(provider="openai", model="gpt-4o")
-
-    # Create MCP tools first (async)
-    deepwiki_tool = await create_deepwiki_tool()
-    filesystem_tool = await create_filesystem_tool()
-
-    # Define specialized subagents with MCP tools
-    research_agent = SubAgentSpec(
-        name="researcher",
-        description="Specialized agent for GitHub repository analysis and research",
-        system_prompt="""You are a professional GitHub repository analyst.
-
-Your responsibilities:
-- Analyze GitHub repositories using DeepWiki
-- Gather project insights, architecture, and documentation
-- Summarize key findings about repositories
-
-Execution style: Systematic, comprehensive, accurate.""",
-        tools=[deepwiki_tool],
-        max_steps=5
-    )
-
-    analyst_agent = SubAgentSpec(
-        name="analyst",
-        description="Specialized agent for file and data analysis",
-        system_prompt="""You are a data analysis expert.
-
-Your responsibilities:
-- Analyze files and data
-- Extract key insights and patterns
-- Provide actionable recommendations
-
-Execution style: Logically rigorous, deeply insightful.""",
-        tools=[filesystem_tool],
-        max_steps=5
-    )
-
-    # Create orchestrator agent
-    agent = ToolCallAgent(
-        name="orchestrator",
-        llm=llm,
-        system_prompt="You are an orchestrator skilled at delegating complex tasks to specialized subagents.",
-
-        # Subagent middleware
-        middleware=[
-            SubAgentMiddleware(subagents=[research_agent, analyst_agent])
-        ],
-
-        max_steps=20
-    )
-
-    result = await agent.run("""
-    Complete the following tasks:
-    1. Analyze the GitHub repository "XSpoonAi/spoon-core" (delegate to researcher)
-    2. Extract and summarize the project's architecture and key features (delegate to analyst)
-
-    Please use subagents to complete specialized work.
-    """)
-
-    print(f"\n✅ Final Result:\n{result}")
-
-
-# ============================================================================
-# Example 4: Checkpointing and Persistence
-# ============================================================================
-
-async def example_4_checkpointing():
-    """Example 4: Session persistence and restoration"""
-    print("\n" + "="*80)
-    print("Example 4: Checkpointing - Session Persistence")
-    print("="*80)
-
-    # Create checkpointer
-    checkpointer = SQLiteCheckpointer("demo_agent.db")
-
-    llm = ChatBot(provider="openai", model="gpt-4o-mini")
-
-    # First run
-    print("\n[First Run] Creating new session...")
-    agent1 = ToolCallAgent(
-        name="persistent-agent",
-        llm=llm,
-        thread_id="demo-session-123",  # Session ID
-
-        middleware=[
-            CheckpointMiddleware(checkpointer, save_frequency=1)
-        ],
-
-        max_steps=3
-    )
-
-    result1 = await agent1.run("My name is Alice and I'm studying AI agent development and LLM orchestration patterns")
-    print(f"Result 1: {result1}")
-
-    # Second run (restore session)
-    print("\n[Second Run] Restoring session...")
-    agent2 = ToolCallAgent(
-        name="persistent-agent-2",
-        llm=llm,
-        thread_id="demo-session-123",  # Same session ID
-
-        middleware=[
-            CheckpointMiddleware(checkpointer, auto_restore=True)
-        ],
-
-        max_steps=3
-    )
-
-    result2 = await agent2.run("What is my name and what am I studying?")  # Should remember from session
-    print(f"Result 2: {result2}")
-
-    # View checkpoint history
-    history = checkpointer.get_history("demo-session-123", limit=5)
-    print(f"\n📜 Checkpoint history: {len(history)} records")
-
-
-# ============================================================================
-# Example 5: Full Integration - All Features Combined
-# ============================================================================
-
-async def example_5_full_integration():
-    """Example 5: Complete Deep Agent - All features integrated"""
-    print("\n" + "="*80)
-    print("Example 5: Complete Deep Agent System - 6 Core Capabilities")
-    print("="*80)
-
-    # Auto-approval callback
+    # Auto-approval callback (for demo)
     def smart_approver(request):
-        # Can make intelligent decisions based on tool and arguments
-        print(f"\n🤔 [Smart Approval] Evaluating tool: {request.tool_name}")
+        print(f"\n🤔 [HITL] Auto-approving tool: {request.tool_name}")
         return ApprovalDecision.APPROVE
 
-    # Checkpointer
-    checkpointer = SQLiteCheckpointer("full_demo.db")
+    # [5. Memory] Checkpointer for session persistence
+    checkpointer = SQLiteCheckpointer("deep_agent_demo.db")
 
-    # LLM
-    llm = ChatBot(provider="openai", model="gpt-4o")
+    # [2. Backends] LLM provider abstraction
+    llm = ChatBot()
 
-    # Create MCP tools first (async)
-    deepwiki_tool = await create_deepwiki_tool()
-    filesystem_tool = await create_filesystem_tool()
-    memory_tool = await create_memory_tool()
+    # Create simple tools
+    calculator = CalculatorTool()
+    search = SearchTool()
+    note = NoteTool()
+    analyze = AnalysisTool()
 
-    # Subagents with MCP tools
+    # [3. Subagents] Specialized agents for delegation
     subagents = [
         SubAgentSpec(
             name="researcher",
-            description="GitHub repository analysis expert",
-            system_prompt="You are a research expert focused on analyzing GitHub repositories using DeepWiki.",
-            tools=[deepwiki_tool],
+            description="Research and information gathering specialist. Use this for searching information.",
+            system_prompt="You are a research expert. Always use the search tool to find information before answering.",
+            tools=[search],
             max_steps=5
         ),
         SubAgentSpec(
             name="analyst",
-            description="File and data analysis expert",
-            system_prompt="You are a data analyst expert focused on extracting insights from files.",
-            tools=[filesystem_tool],
+            description="Data analysis and calculation specialist. Use this for math and text analysis.",
+            system_prompt="You are an analysis expert. Always use the calculator for math and analyze tool for text.",
+            tools=[calculator, analyze],
             max_steps=5
         )
     ]
 
-    # Create tool manager with MCP tools
-    tool_manager = ToolManager(tools=[])
-    tool_manager.add_tool(deepwiki_tool)
-    tool_manager.add_tool(filesystem_tool)
-    tool_manager.add_tool(memory_tool)
+    # Tool manager with all tools
+    tool_manager = ToolManager(tools=[calculator, search, note, analyze])
 
-    # Assemble complete Deep Agent
+    # Assemble complete Deep Agent with all 6 capabilities
     agent = ToolCallAgent(
         name="deep-agent",
         llm=llm,
-        thread_id="full-demo-session",
+        thread_id="demo-session-v2",  # New session to avoid stale checkpoints
         available_tools=tool_manager,
+        system_prompt="""You are a Deep Agent that demonstrates all 6 core capabilities.
+You MUST use tools to answer questions - never answer from memory alone.
+Available tools: search, calculator, analyze, note.
+For each task, call the appropriate tool and report its output.""",
 
-        # Complete middleware stack
+        # [6. Middleware] Complete middleware stack
         middleware=[
-            ObservabilityMiddleware(),                           # 1. Observability
-            CheckpointMiddleware(checkpointer),                  # 2. Persistence
-            PlanningMiddleware(auto_plan=True),                  # 3. Planning
-            SubAgentMiddleware(subagents=subagents),             # 4. Subagent
-            HITLMiddleware(                                      # 5. Human approval
-                interrupt_on={"create_entities": True},  # Memory operations need approval
+            ObservabilityMiddleware(),                           # Custom observability
+            CheckpointMiddleware(checkpointer),                  # [5] Persistence
+            PlanningMiddleware(auto_plan=True),                  # [1] Planning
+            SubAgentMiddleware(subagents=subagents),             # [3] Subagents
+            HITLMiddleware(                                      # [4] Human approval
+                interrupt_on={"note": True},                     # Note operations need approval
                 approval_callback=smart_approver
             ),
         ],
 
-        # Enable all advanced features
-        enable_plan_phase=True,       # Plan phase
-        enable_reflect_phase=True,    # Reflect phase
-        reflect_interval=3,           # Reflect every 3 steps
+        # [1. Agent Harness] Enable Plan-Act-Reflect loop
+        enable_plan_phase=True,
+        enable_reflect_phase=True,
+        reflect_interval=3,
 
-        max_steps=10
+        max_steps=15  # Increased for complex multi-phase task
     )
 
-    # Execute complex task
-    result = await agent.run("""
-    Execute the following complex task:
+    # Execute a complex multi-step task that requires tool usage
+    print("🚀 Starting multi-phase AI research task...\n")
 
-    1. Analyze the GitHub repository "XSpoonAi/spoon-core" using DeepWiki (can delegate to researcher)
-    2. Extract key architectural patterns and features (can delegate to analyst)
-    3. Store the findings in memory
-    4. Compile a concise report
+    # Track execution for debugging
+    start_time = asyncio.get_event_loop().time()
 
-    Note: This is a demonstration showcasing all Deep Agent capabilities with MCP tools.
-    """)
+    try:
+        result = await agent.run("""
+        IMPORTANT: You MUST use the available tools to complete this task. Do NOT answer from memory.
 
-    print(f"\n✅ Final Report:\n{result}")
+        Complete these tasks step by step, using the appropriate tools for each:
+
+        STEP 1 - Use the search tool directly:
+        - Search for "AI agents"
+        - Search for "LLM"
+
+        STEP 2 - Use the calculator tool:
+        - Calculate: (100 * 1.25) + (50 * 0.8) - 15
+        - Calculate: 256 * 4 + 128
+
+        STEP 3 - Use the analyze tool:
+        - Analyze this text: "AI agents are autonomous systems that perceive their environment and take actions to achieve goals."
+
+        STEP 4 - Use the note tool (requires HITL approval):
+        - Save a note with key findings: "save:Research completed - AI agents use LLMs for reasoning"
+        - Save another note: "save:Calculations verified - growth projections computed"
+
+        STEP 5 - Provide final summary combining all tool outputs.
+
+        You MUST call each tool explicitly. Show me the results from each tool call.
+        """)
+    except Exception as e:
+        print(f"❌ Error during agent.run(): {e}")
+        import traceback
+        traceback.print_exc()
+        result = f"Error: {e}"
+
+    elapsed = asyncio.get_event_loop().time() - start_time
+    print(f"\n⏱️ Execution time: {elapsed:.2f}s")
+
+    print(f"\n{'='*80}")
+    print("Final Result:")
+    print("="*80)
+    print(result)
+
+    # Show result statistics
+    print(f"\n📈 Result Statistics:")
+    print(f"   - Result length: {len(result)} chars")
+    print(f"   - Lines: {result.count(chr(10)) + 1}")
 
     # Diagnostic information
+    # Note: current_step is reset to 0 after run() completes (this is expected)
     diagnostics = agent.get_diagnostics()
-    print(f"\n📊 System Diagnostics:")
-    print(f"   - Middleware count: {diagnostics.get('middleware_count', 0)}")
-    print(f"   - Execution steps: {diagnostics['current_step']}/{diagnostics['max_steps']} (Note: resets to 0 after run)")
-    print(f"   - Internal state: {diagnostics.get('agent_state_keys', [])}")
-    print(f"   - Message count: {diagnostics.get('memory_messages', 0)}")
-
-    # Additional diagnostics: check actual agent state
-    if hasattr(agent, '_agent_state'):
-        print(f"\n🔍 Detailed State Check:")
-        print(f"   - _agent_state content: {agent._agent_state}")
-        if agent._middleware_pipeline:
-            print(f"   - Middleware pipeline exists: ✓")
-            # Check planning middleware state
-            for mw in agent.middleware:
-                mw_name = mw.__class__.__name__
-                print(f"   - {mw_name}: ", end="")
-                if hasattr(mw, '_current_plan'):
-                    if mw._current_plan:
-                        print(f"Plan created (goal: {mw._current_plan.goal[:50]}...)")
-                    else:
-                        print("No plan")
-                else:
-                    print("Active")
-        else:
-            print(f"   - Middleware pipeline: ✗")
+    print(f"\n📊 Diagnostics (after reset):")
+    print(f"   - Middleware: {diagnostics.get('middleware_count', 0)}")
+    print(f"   - Max steps: {diagnostics['max_steps']}")
+    print(f"   - Memory messages: {diagnostics.get('memory_messages', 0)}")
 
 
 # ============================================================================
@@ -574,36 +374,31 @@ async def example_5_full_integration():
 # ============================================================================
 
 async def main():
-    """Run all examples"""
-    print("\n🚀 Deep Agent Complete Example - spoon-core v2.0\n")
-    print("Demonstrating 6 core capabilities:")
-    print("1. ✅ Agent Harness: Plan-Act-Reflect loop")
-    print("2. ✅ Backends: Unified LLM abstraction (OpenAI/Anthropic/Gemini etc.)")
-    print("3. ✅ Subagents: Hierarchical agent delegation")
-    print("4. ✅ HITL: Human approval for critical operations")
-    print("5. ✅ Memory: Session persistence")
-    print("6. ✅ Middleware: Pluggable hook system")
-    print("\n" + "="*80 + "\n")
+    """Run the Deep Agent example"""
+    print("\n🚀 Deep Agent Example - spoon-core\n")
+    print("This demo showcases all 6 core capabilities:")
+    print("  • Agent Harness (Plan-Act-Reflect)")
+    print("  • Backends (LLM abstraction)")
+    print("  • Subagents (hierarchical delegation)")
+    print("  • HITL (human approval)")
+    print("  • Memory (checkpointing)")
+    print("  • Middleware (pluggable hooks)")
+    print()
 
-    # Select examples to run (uncomment as needed)
-
-    # Example 1: Basic Planning
-    await example_1_basic_planning()
-
-    # Example 2: HITL approval
-    await example_2_hitl()
-
-    # Example 3: Subagent orchestration
-    await example_3_subagents()
-
-    # Example 4: Checkpointing
-    await example_4_checkpointing()
-
-    # Example 5: Full integration (recommended)
-    await example_5_full_integration()
-
-    print("\n✅ All examples completed!\n")
+    try:
+        await run_deep_agent()
+        print("\n✅ Demo Complete!\n")
+    except Exception as e:
+        print(f"\n❌ Error: {e}")
+        import traceback
+        traceback.print_exc()
 
 
 if __name__ == "__main__":
+    # Clean up old checkpoint if it exists (for fresh demo)
+    import os
+    if os.path.exists("deep_agent_demo.db"):
+        os.remove("deep_agent_demo.db")
+        print("🗑️ Removed old checkpoint database for fresh demo")
+
     asyncio.run(main())

@@ -89,6 +89,37 @@ Runtime = Any
 DescriptionFunction = Callable[[ToolCall, AgentState, Runtime], str]
 
 
+def _get_tool_attr(tool_call: Any, key: str, default: Any = None) -> Any:
+    """Safely get attribute from tool_call (dict or Pydantic object).
+
+    Args:
+        tool_call: Tool call object (dict or Pydantic model)
+        key: Attribute name to get
+        default: Default value if attribute not found
+
+    Returns:
+        The attribute value or default
+    """
+    # Try dict-style access first
+    if isinstance(tool_call, dict):
+        return tool_call.get(key, default)
+
+    # Try Pydantic/object attribute access
+    if hasattr(tool_call, key):
+        value = getattr(tool_call, key, default)
+        return value if value is not None else default
+
+    # Try model_dump for Pydantic v2
+    if hasattr(tool_call, 'model_dump'):
+        return tool_call.model_dump().get(key, default)
+
+    # Try dict() for Pydantic v1
+    if hasattr(tool_call, 'dict'):
+        return tool_call.dict().get(key, default)
+
+    return default
+
+
 class InterruptOnConfig(TypedDict, total=False):
     """Configuration for tool interruption.
 
@@ -178,6 +209,27 @@ class ActionRequest:
             "args": self.args,
             "id": self.id,
         }
+
+
+@dataclass
+class ApprovalRequest:
+    """Request object passed to approval_callback.
+
+    Provides a simple interface for approval callbacks.
+    """
+
+    tool_name: str
+    arguments: Dict[str, Any]
+    tool_call_id: str
+
+    @classmethod
+    def from_action_request(cls, action: ActionRequest) -> "ApprovalRequest":
+        """Create from ActionRequest."""
+        return cls(
+            tool_name=action.name,
+            arguments=action.args,
+            tool_call_id=action.id,
+        )
 
 
 @dataclass
@@ -404,13 +456,13 @@ class HITLManager:
         """Add a pending action for batch interrupt.
 
         Args:
-            tool_call: The tool call dict with name, args, id
+            tool_call: The tool call dict or Pydantic object with name, args, id
             state: Current agent state
             runtime: Agent runtime
         """
-        tool_name = tool_call.get("name", "")
-        tool_id = tool_call.get("id", str(uuid.uuid4()))
-        args = tool_call.get("args", {})
+        tool_name = _get_tool_attr(tool_call, "name", "")
+        tool_id = _get_tool_attr(tool_call, "id", str(uuid.uuid4()))
+        args = _get_tool_attr(tool_call, "args", {})
 
         config = self.tool_configs.get(tool_name)
         if not config:
@@ -479,19 +531,24 @@ class HITLManager:
         result = []
 
         for i, (decision, tool_call) in enumerate(zip(decisions, tool_calls)):
+            tool_name = _get_tool_attr(tool_call, 'name', 'unknown')
             if decision.type == "reject":
-                logger.info(f"Tool {tool_call.get('name')} rejected: {decision.reason}")
+                logger.info(f"Tool {tool_name} rejected: {decision.reason}")
                 continue
             elif decision.type == "edit":
                 # Apply edited arguments
                 modified = deepcopy(tool_call)
                 if decision.args:
-                    modified["args"] = decision.args
+                    # Handle both dict and Pydantic objects
+                    if isinstance(modified, dict):
+                        modified["args"] = decision.args
+                    elif hasattr(modified, 'args'):
+                        modified.args = decision.args
                 result.append(modified)
-                logger.info(f"Tool {tool_call.get('name')} approved with edits")
+                logger.info(f"Tool {tool_name} approved with edits")
             else:  # approve
                 result.append(tool_call)
-                logger.info(f"Tool {tool_call.get('name')} approved")
+                logger.info(f"Tool {tool_name} approved")
 
         return result
 
@@ -583,6 +640,7 @@ Be prepared for tool calls to be rejected or modified.
     def __init__(
         self,
         interrupt_on: Dict[str, Union[bool, InterruptOnConfig]],
+        approval_callback: Optional[Callable[["ApprovalRequest"], ApprovalDecision]] = None,
     ):
         """Initialize HITL middleware.
 
@@ -594,9 +652,17 @@ Be prepared for tool calls to be rejected or modified.
                 - InterruptOnConfig dict with:
                     - allowed_decisions: List of ["approve", "edit", "reject"]
                     - description: Static string or callable for dynamic description
+            approval_callback: Optional callback function for automatic approval.
+                If provided, this callback is called instead of raising HITLInterrupt.
+                The callback receives an ApprovalRequest and returns an ApprovalDecision.
+                Example:
+                    def auto_approve(request):
+                        print(f"Approving {request.tool_name}")
+                        return ApprovalDecision.APPROVE
         """
         super().__init__()
         self.interrupt_on = interrupt_on
+        self.approval_callback = approval_callback
         self.manager = HITLManager(interrupt_on)
 
         # Track pending resume data
@@ -662,12 +728,16 @@ Be prepared for tool calls to be rejected or modified.
                     decision = decisions[i]
                     if decision.type == "reject":
                         rejection_messages.append(
-                            f"Tool '{tool_call.get('name')}' was rejected: {decision.reason or 'User rejected'}"
+                            f"Tool '{_get_tool_attr(tool_call, 'name')}' was rejected: {decision.reason or 'User rejected'}"
                         )
                     elif decision.type == "edit":
                         modified = deepcopy(tool_call)
                         if decision.args:
-                            modified["args"] = decision.args
+                            # Handle both dict and Pydantic objects
+                            if isinstance(modified, dict):
+                                modified["args"] = decision.args
+                            elif hasattr(modified, 'args'):
+                                modified.args = decision.args
                         approved_calls.append(modified)
                     else:
                         approved_calls.append(tool_call)
@@ -688,7 +758,7 @@ Be prepared for tool calls to be rejected or modified.
         tools_not_requiring_approval = []
 
         for tool_call in response.tool_calls:
-            tool_name = tool_call.get("name", "")
+            tool_name = _get_tool_attr(tool_call, "name", "")
             if self.manager.should_interrupt(tool_name):
                 tools_requiring_approval.append(tool_call)
                 self.manager.add_pending_action(
@@ -699,8 +769,46 @@ Be prepared for tool calls to be rejected or modified.
             else:
                 tools_not_requiring_approval.append(tool_call)
 
-        # If there are tools requiring approval, raise interrupt
+        # If there are tools requiring approval
         if self.manager.has_pending_actions():
+            # If approval_callback is provided, use it for automatic decisions
+            if self.approval_callback:
+                approved_calls = []
+                rejection_messages = []
+
+                for tool_call in tools_requiring_approval:
+                    # Create approval request
+                    approval_request = ApprovalRequest(
+                        tool_name=_get_tool_attr(tool_call, "name", ""),
+                        arguments=_get_tool_attr(tool_call, "args", {}),
+                        tool_call_id=_get_tool_attr(tool_call, "id", ""),
+                    )
+
+                    # Call the callback
+                    decision = self.approval_callback(approval_request)
+
+                    if decision == ApprovalDecision.APPROVE:
+                        approved_calls.append(tool_call)
+                    elif decision == ApprovalDecision.REJECT:
+                        rejection_messages.append(
+                            f"Tool '{approval_request.tool_name}' was rejected by approval callback"
+                        )
+                    # EDIT not supported in callback mode (would need modified args)
+
+                # Add tools that don't require approval
+                approved_calls.extend(tools_not_requiring_approval)
+
+                # Update response with approved calls
+                response.tool_calls = approved_calls
+
+                # Log rejections
+                for msg in rejection_messages:
+                    logger.info(msg)
+
+                self.manager.clear_pending()
+                return response
+
+            # Otherwise, raise interrupt for manual approval
             interrupt_info = self.manager.create_interrupt()
             self.manager.clear_pending()
             raise HITLInterrupt(interrupt_info)
@@ -773,8 +881,8 @@ def format_tool_call_description(
 
     Can be used as a base for custom description functions.
     """
-    name = tool_call.get("name", "unknown")
-    args = tool_call.get("args", {})
+    name = _get_tool_attr(tool_call, "name", "unknown")
+    args = _get_tool_attr(tool_call, "args", {})
 
     # Format arguments
     args_str = ", ".join(f"{k}={v!r}" for k, v in args.items())

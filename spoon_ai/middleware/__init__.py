@@ -88,6 +88,13 @@ from .prompt_caching import (
     create_prompt_caching_middleware,
 )
 
+from .planning import (
+    PlanningMiddleware,
+    create_planning_middleware,
+    Plan,
+    PlanStep,
+)
+
 __all__ = [
     # Core classes
     "AgentMiddleware",
@@ -149,4 +156,10 @@ __all__ = [
     # PromptCaching
     "AnthropicPromptCachingMiddleware",
     "create_prompt_caching_middleware",
+
+    # Planning
+    "PlanningMiddleware",
+    "create_planning_middleware",
+    "Plan",
+    "PlanStep",
 ]

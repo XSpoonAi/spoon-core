@@ -1,30 +1,11 @@
 from .tool_manager import ToolManager
 from .base import BaseTool
-from .hitl import (
-    HumanInTheLoopMiddleware,
-    HITLMiddleware,  # Alias for backward compatibility
-    InterruptOnConfig,
-    ApprovalDecision,
-    HITLInterrupt,
-    ActionRequest,
-    ReviewConfig,
-    InterruptValue,
-    InterruptInfo,
-    create_hitl_middleware,
-)
 
 __all__ = [
     "ToolManager",
     "BaseTool",
-    # HITL exports
-    "HumanInTheLoopMiddleware",
-    "HITLMiddleware",
-    "InterruptOnConfig",
-    "ApprovalDecision",
-    "HITLInterrupt",
-    "ActionRequest",
-    "ReviewConfig",
-    "InterruptValue",
-    "InterruptInfo",
-    "create_hitl_middleware",
 ]
+
+# Note: HITL classes should be imported directly from spoon_ai.tools.hitl
+# to avoid circular imports with middleware.base
+# Example: from spoon_ai.tools.hitl import HITLMiddleware, ApprovalDecision
