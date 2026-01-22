@@ -365,12 +365,15 @@ class ToolCallAgent(ReActAgent):
                     logger.error(f"Step {self.current_step} timed out for agent {self.name}")
                     break
 
-                if self.enable_reflect_phase and self.current_step % self.reflect_interval == 0:
+                # REFLECT PHASE: Token-based or step-based reflection (Deep Agent feature)
+                if self.should_trigger_reflection():
                     await self._execute_reflect_phase(runtime, {
                         "current_step": self.current_step,
                         "step_result": step_result,
                         "results": results,
+                        "token_count": self.estimate_token_count(),
                     })
+                    self._on_reflection_complete()
 
                 # Check if terminated by finish_reason
                 if hasattr(self, '_finish_reason_terminated') and self._finish_reason_terminated:

@@ -2,113 +2,352 @@
 Human-in-the-Loop (HITL) System
 
 Provides approval workflows for critical tool executions:
-- Tool-level approval configuration
+- Tool-level approval configuration with dynamic descriptions
 - Multiple approval strategies (approve, edit, reject)
-- State preservation for pause/resume
+- Batch interrupt/resume support for parallel tool calls
+- State preservation for pause/resume via Command pattern
 - Integration with checkpointing
 
+Compatible with LangChain DeepAgents HumanInTheLoopMiddleware interface.
+
 Usage:
+    from spoon_ai.tools.hitl import HumanInTheLoopMiddleware, InterruptOnConfig
+
+    # Simple configuration
     agent = ToolCallAgent(
         tools=[dangerous_tool],
-        middleware=[HITLMiddleware(interrupt_on={
+        middleware=[HumanInTheLoopMiddleware(interrupt_on={
             "delete_file": True,
             "send_email": {"allowed_decisions": ["approve", "reject"]}
         })]
     )
+
+    # With dynamic description function
+    def format_delete_description(tool_call, state, runtime):
+        return f"Delete file: {tool_call['args'].get('path', 'unknown')}"
+
+    middleware = HumanInTheLoopMiddleware(interrupt_on={
+        "delete_file": {
+            "allowed_decisions": ["approve", "reject"],
+            "description": format_delete_description,
+        }
+    })
+
+    # Resume after interrupt
+    result = agent.invoke(Command(resume={"decisions": [
+        {"type": "approve"},
+        {"type": "edit", "args": {"path": "/new/path"}},
+    ]}), config=config)
 """
 
 import asyncio
 import logging
-from typing import Dict, Any, Optional, List, Literal, Callable
+import time
+import uuid
+from typing import (
+    Dict,
+    Any,
+    Optional,
+    List,
+    Literal,
+    Callable,
+    Union,
+    TypedDict,
+    Sequence,
+)
 from dataclasses import dataclass, field
 from enum import Enum
-import uuid
+from copy import deepcopy
 
 from spoon_ai.middleware.base import (
     AgentMiddleware,
+    AgentRuntime,
     ToolCallRequest,
     ToolCallResult,
-    AgentRuntime
+    ModelRequest,
+    ModelResponse,
 )
+from spoon_ai.schema import Message, Role
 
 logger = logging.getLogger(__name__)
 
 
 # ============================================================================
-# HITL Configuration Types
+# Type Definitions - Compatible with LangChain
+# ============================================================================
+
+# Type alias for tool call dict (compatible with LangChain ToolCall)
+ToolCall = Dict[str, Any]
+
+# Type alias for agent state
+AgentState = Dict[str, Any]
+
+# Type alias for runtime
+Runtime = Any
+
+# Description function signature: (tool_call, state, runtime) -> str
+DescriptionFunction = Callable[[ToolCall, AgentState, Runtime], str]
+
+
+class InterruptOnConfig(TypedDict, total=False):
+    """Configuration for tool interruption.
+
+    Compatible with LangChain DeepAgents InterruptOnConfig.
+
+    Attributes:
+        allowed_decisions: List of allowed approval decisions.
+            Defaults to ["approve", "edit", "reject"].
+        description: Either a static string or a callable that generates
+            a dynamic description based on the tool call context.
+            Signature: (tool_call: ToolCall, state: AgentState, runtime: Runtime) -> str
+
+    Example:
+        # Static description
+        config: InterruptOnConfig = {
+            "allowed_decisions": ["approve", "reject"],
+            "description": "This action will delete files permanently.",
+        }
+
+        # Dynamic description
+        def format_description(tool_call, state, runtime):
+            path = tool_call["args"].get("path", "unknown")
+            return f"Delete file: {path}"
+
+        config: InterruptOnConfig = {
+            "allowed_decisions": ["approve", "reject"],
+            "description": format_description,
+        }
+    """
+
+    allowed_decisions: List[Literal["approve", "edit", "reject"]]
+    description: Union[str, DescriptionFunction]
+
+
+# ============================================================================
+# Approval Decision Types
 # ============================================================================
 
 class ApprovalDecision(str, Enum):
     """Possible approval decisions."""
+
     APPROVE = "approve"
     EDIT = "edit"
     REJECT = "reject"
 
 
 @dataclass
-class InterruptConfig:
-    """Configuration for tool interruption."""
-    allowed_decisions: List[ApprovalDecision] = field(default_factory=lambda: [
-        ApprovalDecision.APPROVE,
-        ApprovalDecision.EDIT,
-        ApprovalDecision.REJECT
-    ])
-    approval_message: Optional[str] = None
-    auto_approve_after: Optional[int] = None  # Seconds before auto-approval
+class DecisionInput:
+    """Input for a single approval decision.
+
+    Used in Command(resume={"decisions": [...]}) pattern.
+    """
+
+    type: Literal["approve", "edit", "reject"]
+    args: Optional[Dict[str, Any]] = None  # For edit decision
+    reason: Optional[str] = None  # For reject decision
+
+    @classmethod
+    def from_dict(cls, data: Dict[str, Any]) -> "DecisionInput":
+        """Create from dictionary."""
+        return cls(
+            type=data.get("type", "approve"),
+            args=data.get("args"),
+            reason=data.get("reason"),
+        )
+
+
+# ============================================================================
+# Action Request Types (LangChain Compatible)
+# ============================================================================
+
+@dataclass
+class ActionRequest:
+    """A pending action request.
+
+    Compatible with LangChain's action_request format.
+    """
+
+    name: str  # Tool name
+    args: Dict[str, Any]  # Tool arguments
+    id: str  # Tool call ID
+
+    def to_dict(self) -> Dict[str, Any]:
+        """Convert to dictionary for serialization."""
+        return {
+            "name": self.name,
+            "args": self.args,
+            "id": self.id,
+        }
 
 
 @dataclass
-class ToolApprovalRequest:
-    """A pending tool approval request."""
-    # Tool identification
-    tool_call_id: str
-    tool_name: str
-    arguments: Dict[str, Any]
+class ReviewConfig:
+    """Review configuration for a pending action.
 
-    # Configuration
-    config: InterruptConfig
-
-    # Status
-    decision: Optional[ApprovalDecision] = None
-    edited_arguments: Optional[Dict[str, Any]] = None
-    rejection_reason: Optional[str] = None
-
-    # Metadata
-    created_at: float = field(default_factory=lambda: __import__('time').time())
-
-    def is_approved(self) -> bool:
-        """Check if request is approved."""
-        return self.decision == ApprovalDecision.APPROVE
-
-    def is_rejected(self) -> bool:
-        """Check if request is rejected."""
-        return self.decision == ApprovalDecision.REJECT
-
-    def is_edited(self) -> bool:
-        """Check if request has edits."""
-        return self.decision == ApprovalDecision.EDIT
-
-    def get_final_arguments(self) -> Dict[str, Any]:
-        """Get final arguments (original or edited)."""
-        if self.is_edited() and self.edited_arguments:
-            return self.edited_arguments
-        return self.arguments
-
-
-# ============================================================================
-# HITL Exception
-# ============================================================================
-
-class ToolApprovalRequired(Exception):
-    """Exception raised when tool execution requires approval.
-
-    This signals to the agent that execution should pause and wait
-    for user approval before proceeding.
+    Compatible with LangChain's review_config format.
     """
 
-    def __init__(self, approval_request: ToolApprovalRequest):
-        self.approval_request = approval_request
-        super().__init__(f"Tool '{approval_request.tool_name}' requires approval")
+    action_name: str
+    action_id: str
+    allowed_decisions: List[str]
+    description: Optional[str] = None
+
+    def to_dict(self) -> Dict[str, Any]:
+        """Convert to dictionary for serialization."""
+        result = {
+            "action_name": self.action_name,
+            "action_id": self.action_id,
+            "allowed_decisions": self.allowed_decisions,
+        }
+        if self.description:
+            result["description"] = self.description
+        return result
+
+
+@dataclass
+class InterruptValue:
+    """Value returned in __interrupt__ for batch interrupts.
+
+    Compatible with LangChain's interrupt value format.
+    Contains both action_requests and review_configs.
+    """
+
+    action_requests: List[ActionRequest]
+    review_configs: List[ReviewConfig]
+
+    def __len__(self) -> int:
+        """Return number of pending actions (for compatibility)."""
+        return 2  # action_requests and review_configs
+
+    def __iter__(self):
+        """Iterate over keys (for compatibility)."""
+        yield "action_requests"
+        yield "review_configs"
+
+    def __getitem__(self, key: str) -> Any:
+        """Get item by key (for compatibility)."""
+        if key == "action_requests":
+            return [r.to_dict() for r in self.action_requests]
+        elif key == "review_configs":
+            return [c.to_dict() for c in self.review_configs]
+        raise KeyError(key)
+
+    def to_dict(self) -> Dict[str, Any]:
+        """Convert to dictionary for serialization."""
+        return {
+            "action_requests": [r.to_dict() for r in self.action_requests],
+            "review_configs": [c.to_dict() for c in self.review_configs],
+        }
+
+
+@dataclass
+class InterruptInfo:
+    """Wrapper for interrupt information.
+
+    Compatible with LangChain's __interrupt__[0] format.
+    """
+
+    value: InterruptValue
+    interrupt_id: str = field(default_factory=lambda: str(uuid.uuid4()))
+
+    def to_dict(self) -> Dict[str, Any]:
+        """Convert to dictionary."""
+        return {
+            "value": self.value.to_dict(),
+            "interrupt_id": self.interrupt_id,
+        }
+
+
+# ============================================================================
+# Command Class for Resume
+# ============================================================================
+
+@dataclass
+class ResumeData:
+    """Data for resuming from an interrupt.
+
+    Compatible with LangChain Command(resume=...) pattern.
+    """
+
+    decisions: List[DecisionInput]
+
+    @classmethod
+    def from_dict(cls, data: Dict[str, Any]) -> "ResumeData":
+        """Create from dictionary."""
+        decisions = [
+            DecisionInput.from_dict(d) if isinstance(d, dict) else d
+            for d in data.get("decisions", [])
+        ]
+        return cls(decisions=decisions)
+
+
+# ============================================================================
+# HITL Interrupt Exception
+# ============================================================================
+
+class HITLInterrupt(Exception):
+    """Exception raised when tool execution requires batch approval.
+
+    This signals to the agent that execution should pause and return
+    an __interrupt__ with action_requests and review_configs.
+    """
+
+    def __init__(self, interrupt_info: InterruptInfo):
+        self.interrupt_info = interrupt_info
+        self.value = interrupt_info.value
+        super().__init__(f"HITL interrupt: {len(interrupt_info.value.action_requests)} actions pending")
+
+
+# ============================================================================
+# Parsed Config Helper
+# ============================================================================
+
+@dataclass
+class ParsedInterruptConfig:
+    """Parsed and normalized interrupt configuration."""
+
+    allowed_decisions: List[ApprovalDecision]
+    description: Optional[Union[str, DescriptionFunction]] = None
+
+    @classmethod
+    def from_config(cls, config: Union[bool, InterruptOnConfig]) -> Optional["ParsedInterruptConfig"]:
+        """Parse configuration from various formats."""
+        if isinstance(config, bool):
+            if config:
+                return cls(
+                    allowed_decisions=[
+                        ApprovalDecision.APPROVE,
+                        ApprovalDecision.EDIT,
+                        ApprovalDecision.REJECT,
+                    ]
+                )
+            return None
+
+        if isinstance(config, dict):
+            allowed = config.get("allowed_decisions", ["approve", "edit", "reject"])
+            return cls(
+                allowed_decisions=[ApprovalDecision(d) for d in allowed],
+                description=config.get("description"),
+            )
+
+        return None
+
+    def get_description(
+        self,
+        tool_call: ToolCall,
+        state: AgentState,
+        runtime: Runtime,
+    ) -> Optional[str]:
+        """Get description, calling function if needed."""
+        if self.description is None:
+            return None
+        if callable(self.description):
+            try:
+                return self.description(tool_call, state, runtime)
+            except Exception as e:
+                logger.warning(f"Description function failed: {e}")
+                return None
+        return str(self.description)
 
 
 # ============================================================================
@@ -116,342 +355,379 @@ class ToolApprovalRequired(Exception):
 # ============================================================================
 
 class HITLManager:
-    """Manages human-in-the-loop approval workflows."""
+    """Manages human-in-the-loop approval workflows.
+
+    Supports batch interrupts for parallel tool calls.
+    """
 
     def __init__(
         self,
-        interrupt_on: Dict[str, Any],
-        approval_callback: Optional[Callable[[ToolApprovalRequest], ApprovalDecision]] = None
+        interrupt_on: Dict[str, Union[bool, InterruptOnConfig]],
     ):
         """Initialize HITL manager.
 
         Args:
-            interrupt_on: Tool interruption configuration
+            interrupt_on: Tool interruption configuration.
                 - Dict[str, bool]: Simple approval (True = require approval)
-                - Dict[str, InterruptConfig]: Detailed configuration
-            approval_callback: Optional callback for programmatic approval
+                - Dict[str, InterruptOnConfig]: Detailed configuration with
+                  allowed_decisions and description
         """
         self.interrupt_on = interrupt_on
-        self.approval_callback = approval_callback
 
-        # Parse configuration
-        self.tool_configs: Dict[str, InterruptConfig] = {}
+        # Parse configurations
+        self.tool_configs: Dict[str, ParsedInterruptConfig] = {}
         for tool_name, config in interrupt_on.items():
-            if isinstance(config, bool):
-                if config:
-                    self.tool_configs[tool_name] = InterruptConfig()
-            elif isinstance(config, dict):
-                self.tool_configs[tool_name] = InterruptConfig(**config)
-            elif isinstance(config, InterruptConfig):
-                self.tool_configs[tool_name] = config
+            parsed = ParsedInterruptConfig.from_config(config)
+            if parsed:
+                self.tool_configs[tool_name] = parsed
 
-        # Pending approvals
-        self.pending_approvals: List[ToolApprovalRequest] = []
-        self._approval_event = asyncio.Event()
+        # Pending actions for batch interrupt
+        self._pending_actions: List[ActionRequest] = []
+        self._pending_configs: List[ReviewConfig] = []
 
         logger.info(f"HITL Manager initialized with {len(self.tool_configs)} tool configurations")
 
     def should_interrupt(self, tool_name: str) -> bool:
-        """Check if tool requires approval.
-
-        Args:
-            tool_name: Name of the tool
-
-        Returns:
-            True if tool requires approval
-        """
+        """Check if tool requires approval."""
         return tool_name in self.tool_configs
 
-    def create_approval_request(
+    def get_config(self, tool_name: str) -> Optional[ParsedInterruptConfig]:
+        """Get parsed configuration for a tool."""
+        return self.tool_configs.get(tool_name)
+
+    def add_pending_action(
         self,
-        tool_name: str,
-        arguments: Dict[str, Any],
-        tool_call_id: str
-    ) -> ToolApprovalRequest:
-        """Create an approval request for a tool call.
+        tool_call: ToolCall,
+        state: AgentState,
+        runtime: Runtime,
+    ) -> None:
+        """Add a pending action for batch interrupt.
 
         Args:
-            tool_name: Name of the tool
-            arguments: Tool arguments
-            tool_call_id: Unique tool call ID
+            tool_call: The tool call dict with name, args, id
+            state: Current agent state
+            runtime: Agent runtime
+        """
+        tool_name = tool_call.get("name", "")
+        tool_id = tool_call.get("id", str(uuid.uuid4()))
+        args = tool_call.get("args", {})
+
+        config = self.tool_configs.get(tool_name)
+        if not config:
+            return
+
+        # Create action request
+        action = ActionRequest(
+            name=tool_name,
+            args=args,
+            id=tool_id,
+        )
+        self._pending_actions.append(action)
+
+        # Create review config with dynamic description
+        description = config.get_description(tool_call, state, runtime)
+        review = ReviewConfig(
+            action_name=tool_name,
+            action_id=tool_id,
+            allowed_decisions=[d.value for d in config.allowed_decisions],
+            description=description,
+        )
+        self._pending_configs.append(review)
+
+        logger.debug(f"Added pending action: {tool_name} (ID: {tool_id})")
+
+    def has_pending_actions(self) -> bool:
+        """Check if there are pending actions."""
+        return len(self._pending_actions) > 0
+
+    def create_interrupt(self) -> InterruptInfo:
+        """Create an interrupt with all pending actions.
 
         Returns:
-            ToolApprovalRequest instance
+            InterruptInfo with action_requests and review_configs
         """
-        config = self.tool_configs.get(tool_name, InterruptConfig())
-
-        request = ToolApprovalRequest(
-            tool_call_id=tool_call_id,
-            tool_name=tool_name,
-            arguments=arguments,
-            config=config
+        interrupt_value = InterruptValue(
+            action_requests=self._pending_actions.copy(),
+            review_configs=self._pending_configs.copy(),
         )
 
-        self.pending_approvals.append(request)
-        logger.info(f"Created approval request for tool '{tool_name}' (ID: {tool_call_id})")
+        interrupt_info = InterruptInfo(value=interrupt_value)
 
-        return request
+        logger.info(f"Created HITL interrupt with {len(self._pending_actions)} actions")
 
-    async def wait_for_approval(
-        self,
-        request: ToolApprovalRequest,
-        timeout: Optional[float] = None
-    ) -> ToolApprovalRequest:
-        """Wait for user approval of a tool call.
-
-        Args:
-            request: The approval request
-            timeout: Optional timeout in seconds
-
-        Returns:
-            Updated approval request with decision
-
-        Raises:
-            asyncio.TimeoutError: If timeout is reached
-        """
-        # Check for approval callback
-        if self.approval_callback:
-            decision = self.approval_callback(request)
-            request.decision = decision
-            logger.info(f"Tool '{request.tool_name}' decision via callback: {decision.value}")
-            return request
-
-        # Wait for manual approval
-        logger.info(f"Waiting for approval of tool '{request.tool_name}'...")
-
-        # Set event when decision is made
-        try:
-            if timeout:
-                await asyncio.wait_for(self._approval_event.wait(), timeout=timeout)
-            else:
-                await self._approval_event.wait()
-        except asyncio.TimeoutError:
-            logger.warning(f"Approval timeout for tool '{request.tool_name}'")
-            raise
-
-        return request
-
-    def approve_request(
-        self,
-        tool_call_id: str,
-        decision: ApprovalDecision,
-        edited_arguments: Optional[Dict[str, Any]] = None,
-        rejection_reason: Optional[str] = None
-    ) -> bool:
-        """Approve, edit, or reject a pending request.
-
-        Args:
-            tool_call_id: ID of the tool call
-            decision: Approval decision
-            edited_arguments: Modified arguments (for EDIT decision)
-            rejection_reason: Reason for rejection (for REJECT decision)
-
-        Returns:
-            True if request was found and updated
-        """
-        for request in self.pending_approvals:
-            if request.tool_call_id == tool_call_id:
-                request.decision = decision
-                request.edited_arguments = edited_arguments
-                request.rejection_reason = rejection_reason
-
-                logger.info(f"Tool '{request.tool_name}' approved with decision: {decision.value}")
-
-                # Signal approval event
-                self._approval_event.set()
-                return True
-
-        logger.warning(f"No pending approval found for tool call ID: {tool_call_id}")
-        return False
-
-    def get_pending_approvals(self) -> List[ToolApprovalRequest]:
-        """Get all pending approval requests.
-
-        Returns:
-            List of pending approval requests
-        """
-        return [r for r in self.pending_approvals if r.decision is None]
+        return interrupt_info
 
     def clear_pending(self) -> None:
-        """Clear all pending approvals."""
-        self.pending_approvals.clear()
-        self._approval_event.clear()
+        """Clear all pending actions."""
+        self._pending_actions.clear()
+        self._pending_configs.clear()
+
+    def apply_decisions(
+        self,
+        decisions: List[DecisionInput],
+        tool_calls: List[ToolCall],
+    ) -> List[ToolCall]:
+        """Apply decisions to tool calls.
+
+        Args:
+            decisions: List of decisions from Command(resume=...)
+            tool_calls: Original tool calls
+
+        Returns:
+            Modified tool calls with edits applied, rejected calls removed
+        """
+        result = []
+
+        for i, (decision, tool_call) in enumerate(zip(decisions, tool_calls)):
+            if decision.type == "reject":
+                logger.info(f"Tool {tool_call.get('name')} rejected: {decision.reason}")
+                continue
+            elif decision.type == "edit":
+                # Apply edited arguments
+                modified = deepcopy(tool_call)
+                if decision.args:
+                    modified["args"] = decision.args
+                result.append(modified)
+                logger.info(f"Tool {tool_call.get('name')} approved with edits")
+            else:  # approve
+                result.append(tool_call)
+                logger.info(f"Tool {tool_call.get('name')} approved")
+
+        return result
 
 
 # ============================================================================
-# HITL Middleware
+# Human-in-the-Loop Middleware (LangChain Compatible Name)
 # ============================================================================
 
-class HITLMiddleware(AgentMiddleware):
+class HumanInTheLoopMiddleware(AgentMiddleware):
     """Middleware that implements Human-in-the-Loop approval workflows.
 
-    This middleware intercepts tool calls that require approval and pauses
-    execution until the user provides a decision (approve, edit, reject).
+    Compatible with LangChain DeepAgents HumanInTheLoopMiddleware.
+
+    This middleware intercepts tool calls that require approval and creates
+    an __interrupt__ with action_requests and review_configs for batch approval.
 
     Features:
     - Per-tool approval configuration
-    - Multiple approval strategies
-    - Programmatic approval callbacks
-    - State preservation for pause/resume
+    - Dynamic description functions
+    - Batch interrupt/resume for parallel tool calls
+    - Command(resume=...) pattern for resuming
 
     Usage:
-        # Simple approval (approve/edit/reject)
-        middleware = HITLMiddleware(interrupt_on={
+        # Simple approval
+        middleware = HumanInTheLoopMiddleware(interrupt_on={
             "delete_file": True,
             "send_email": True
         })
 
-        # Custom configuration
-        middleware = HITLMiddleware(interrupt_on={
-            "dangerous_tool": {
-                "allowed_decisions": ["approve", "reject"],  # No edit
-                "approval_message": "This tool is dangerous!"
-            }
+        # With dynamic description
+        def format_shell_description(tool_call, state, runtime):
+            command = tool_call["args"].get("command", "N/A")
+            return f"Execute Command: {command}"
+
+        middleware = HumanInTheLoopMiddleware(interrupt_on={
+            "shell": {
+                "allowed_decisions": ["approve", "reject"],
+                "description": format_shell_description,
+            },
+            "write_file": {
+                "allowed_decisions": ["approve", "edit", "reject"],
+            },
         })
 
-        # Programmatic approval
-        def auto_approver(request):
-            if request.tool_name == "safe_tool":
-                return ApprovalDecision.APPROVE
-            return ApprovalDecision.REJECT
-
-        middleware = HITLMiddleware(
-            interrupt_on={"dangerous_tool": True},
-            approval_callback=auto_approver
+        # Resume from interrupt
+        result = agent.invoke(
+            Command(resume={"decisions": [
+                {"type": "approve"},
+                {"type": "edit", "args": {"path": "/new/path"}},
+            ]}),
+            config=config
         )
+
+    Interrupt Format (returned in result["__interrupt__"]):
+        [
+            {
+                "value": {
+                    "action_requests": [
+                        {"name": "shell", "args": {"command": "rm -rf"}, "id": "..."},
+                    ],
+                    "review_configs": [
+                        {
+                            "action_name": "shell",
+                            "action_id": "...",
+                            "allowed_decisions": ["approve", "reject"],
+                            "description": "Execute Command: rm -rf",
+                        },
+                    ],
+                },
+                "interrupt_id": "...",
+            }
+        ]
     """
 
     system_prompt = """# Human-in-the-Loop Approval
 
 Some tools require human approval before execution. When you attempt to use
-these tools, execution will pause until approval is granted.
+these tools, execution will pause and return an interrupt with pending actions.
 
 Approval workflow:
-1. Tool call is intercepted
-2. User is prompted for approval
-3. User can: approve, edit arguments, or reject
-4. Execution resumes based on decision
+1. Tool calls are collected
+2. Interrupt is raised with action_requests and review_configs
+3. User provides decisions (approve/edit/reject) for each action
+4. Execution resumes with Command(resume={"decisions": [...]})
 
 Be prepared for tool calls to be rejected or modified.
 """
 
     def __init__(
         self,
-        interrupt_on: Dict[str, Any],
-        approval_callback: Optional[Callable[[ToolApprovalRequest], ApprovalDecision]] = None,
-        approval_timeout: Optional[float] = None
+        interrupt_on: Dict[str, Union[bool, InterruptOnConfig]],
     ):
         """Initialize HITL middleware.
 
         Args:
-            interrupt_on: Tool interruption configuration
-            approval_callback: Optional callback for programmatic approval
-            approval_timeout: Timeout for approval requests (seconds)
+            interrupt_on: Tool interruption configuration.
+                Keys are tool names, values can be:
+                - True: Require approval with default allowed_decisions
+                - False: No approval needed (tool is skipped)
+                - InterruptOnConfig dict with:
+                    - allowed_decisions: List of ["approve", "edit", "reject"]
+                    - description: Static string or callable for dynamic description
         """
         super().__init__()
-        self.manager = HITLManager(interrupt_on, approval_callback)
-        self.approval_timeout = approval_timeout
+        self.interrupt_on = interrupt_on
+        self.manager = HITLManager(interrupt_on)
 
-        logger.info(f"HITL Middleware initialized for {len(self.manager.tool_configs)} tools")
+        # Track pending resume data
+        self._resume_data: Optional[ResumeData] = None
 
-    async def awrap_tool_call(
+        logger.info(f"HumanInTheLoopMiddleware initialized for {len(self.manager.tool_configs)} tools")
+
+    def set_resume_data(self, resume: Dict[str, Any]) -> None:
+        """Set resume data from Command(resume=...).
+
+        Called by the agent when resuming from interrupt.
+        """
+        self._resume_data = ResumeData.from_dict(resume)
+        logger.info(f"Resume data set with {len(self._resume_data.decisions)} decisions")
+
+    def before_agent(
         self,
-        request: ToolCallRequest,
-        handler: Callable[[ToolCallRequest], ToolCallResult]
-    ) -> ToolCallResult:
-        """Intercept tool calls and require approval if configured.
+        state: Dict[str, Any],
+        runtime: AgentRuntime,
+    ) -> Optional[Dict[str, Any]]:
+        """Initialize state for HITL tracking."""
+        # Clear any previous pending actions
+        self.manager.clear_pending()
+        return None
 
-        Args:
-            request: Tool call request
-            handler: Next handler in chain
-
-        Returns:
-            Tool call result (or rejection message)
-        """
-        # Check if this tool requires approval
-        if not self.manager.should_interrupt(request.tool_name):
-            # No approval needed, execute normally
-            return await handler(request)
-
-        logger.info(f"Tool '{request.tool_name}' requires approval")
-
-        # Create approval request
-        approval_request = self.manager.create_approval_request(
-            tool_name=request.tool_name,
-            arguments=request.arguments,
-            tool_call_id=request.tool_call_id
-        )
-
-        # Wait for approval
-        try:
-            approved_request = await self.manager.wait_for_approval(
-                approval_request,
-                timeout=self.approval_timeout
-            )
-        except asyncio.TimeoutError:
-            return ToolCallResult.from_error(
-                f"Tool '{request.tool_name}' approval timed out after {self.approval_timeout}s"
-            )
-
-        # Handle decision
-        if approved_request.is_rejected():
-            reason = approved_request.rejection_reason or "User rejected tool call"
-            logger.info(f"Tool '{request.tool_name}' rejected: {reason}")
-            return ToolCallResult.from_error(f"Tool call rejected: {reason}")
-
-        if approved_request.is_edited():
-            logger.info(f"Tool '{request.tool_name}' approved with edits")
-            # Update request with edited arguments
-            request.arguments = approved_request.get_final_arguments()
-        else:
-            logger.info(f"Tool '{request.tool_name}' approved")
-
-        # Execute with final arguments
-        return await handler(request)
-
-    def get_pending_approvals(self) -> List[Dict[str, Any]]:
-        """Get pending approval requests (for UI/CLI).
-
-        Returns:
-            List of pending approval dicts
-        """
-        pending = self.manager.get_pending_approvals()
-        return [
-            {
-                "tool_call_id": req.tool_call_id,
-                "tool_name": req.tool_name,
-                "arguments": req.arguments,
-                "allowed_decisions": [d.value for d in req.config.allowed_decisions],
-                "message": req.config.approval_message
-            }
-            for req in pending
-        ]
-
-    def approve(
+    async def awrap_model_call(
         self,
-        tool_call_id: str,
-        decision: Literal["approve", "edit", "reject"],
-        edited_arguments: Optional[Dict[str, Any]] = None,
-        rejection_reason: Optional[str] = None
-    ) -> bool:
-        """Approve a pending tool call.
+        request: ModelRequest,
+        handler: Callable[[ModelRequest], ModelResponse],
+    ) -> ModelResponse:
+        """Intercept model response to collect tool calls requiring approval.
 
-        Args:
-            tool_call_id: ID of the tool call
-            decision: Approval decision
-            edited_arguments: Modified arguments (for edit)
-            rejection_reason: Reason for rejection
+        This processes the model response and identifies tool calls that
+        need approval, then raises an HITLInterrupt if any are found.
+        """
+        # Call the model
+        response = await handler(request)
+
+        # Check if there are tool calls requiring approval
+        if not response.tool_calls:
+            return response
+
+        # Get state and runtime for description functions
+        state = {}
+        runtime_instance = request.runtime
+        if runtime_instance and hasattr(runtime_instance, '_agent_instance'):
+            agent = runtime_instance._agent_instance
+            if hasattr(agent, '_agent_state'):
+                state = agent._agent_state
+
+        # Check if we're resuming from interrupt
+        if self._resume_data:
+            # Apply decisions to tool calls
+            decisions = self._resume_data.decisions
+            self._resume_data = None
+
+            # Filter and modify tool calls based on decisions
+            approved_calls = []
+            rejection_messages = []
+
+            for i, tool_call in enumerate(response.tool_calls):
+                if i < len(decisions):
+                    decision = decisions[i]
+                    if decision.type == "reject":
+                        rejection_messages.append(
+                            f"Tool '{tool_call.get('name')}' was rejected: {decision.reason or 'User rejected'}"
+                        )
+                    elif decision.type == "edit":
+                        modified = deepcopy(tool_call)
+                        if decision.args:
+                            modified["args"] = decision.args
+                        approved_calls.append(modified)
+                    else:
+                        approved_calls.append(tool_call)
+                else:
+                    approved_calls.append(tool_call)
+
+            # Update response with approved calls
+            response.tool_calls = approved_calls
+
+            # Log rejections
+            for msg in rejection_messages:
+                logger.info(msg)
+
+            return response
+
+        # Collect tool calls requiring approval
+        tools_requiring_approval = []
+        tools_not_requiring_approval = []
+
+        for tool_call in response.tool_calls:
+            tool_name = tool_call.get("name", "")
+            if self.manager.should_interrupt(tool_name):
+                tools_requiring_approval.append(tool_call)
+                self.manager.add_pending_action(
+                    tool_call,
+                    state,
+                    runtime_instance,
+                )
+            else:
+                tools_not_requiring_approval.append(tool_call)
+
+        # If there are tools requiring approval, raise interrupt
+        if self.manager.has_pending_actions():
+            interrupt_info = self.manager.create_interrupt()
+            self.manager.clear_pending()
+            raise HITLInterrupt(interrupt_info)
+
+        return response
+
+    def get_interrupt_config(self, tool_name: str) -> Optional[Dict[str, Any]]:
+        """Get interrupt configuration for a tool.
 
         Returns:
-            True if successful
+            Dict with allowed_decisions, or None if tool doesn't require approval
         """
-        decision_enum = ApprovalDecision(decision)
-        return self.manager.approve_request(
-            tool_call_id,
-            decision_enum,
-            edited_arguments,
-            rejection_reason
-        )
+        config = self.manager.get_config(tool_name)
+        if not config:
+            return None
+
+        return {
+            "allowed_decisions": [d.value for d in config.allowed_decisions],
+        }
+
+
+# ============================================================================
+# Legacy Alias for Backward Compatibility
+# ============================================================================
+
+# Alias for backward compatibility with existing code
+HITLMiddleware = HumanInTheLoopMiddleware
 
 
 # ============================================================================
@@ -460,23 +736,47 @@ Be prepared for tool calls to be rejected or modified.
 
 def create_hitl_middleware(
     *tool_names: str,
-    approval_callback: Optional[Callable] = None
-) -> HITLMiddleware:
+    allowed_decisions: Optional[List[str]] = None,
+) -> HumanInTheLoopMiddleware:
     """Create HITL middleware for specified tools.
 
     Args:
         *tool_names: Names of tools that require approval
-        approval_callback: Optional approval callback
+        allowed_decisions: Allowed decisions for all tools
 
     Returns:
-        Configured HITLMiddleware
+        Configured HumanInTheLoopMiddleware
 
     Example:
         middleware = create_hitl_middleware(
             "delete_file",
             "send_email",
-            "shutdown_server"
+            "shutdown_server",
+            allowed_decisions=["approve", "reject"]
         )
     """
-    interrupt_on = {name: True for name in tool_names}
-    return HITLMiddleware(interrupt_on, approval_callback)
+    if allowed_decisions:
+        config: InterruptOnConfig = {"allowed_decisions": allowed_decisions}
+        interrupt_on = {name: config for name in tool_names}
+    else:
+        interrupt_on = {name: True for name in tool_names}
+
+    return HumanInTheLoopMiddleware(interrupt_on=interrupt_on)
+
+
+def format_tool_call_description(
+    tool_call: ToolCall,
+    state: AgentState,
+    runtime: Runtime,
+) -> str:
+    """Default description formatter for tool calls.
+
+    Can be used as a base for custom description functions.
+    """
+    name = tool_call.get("name", "unknown")
+    args = tool_call.get("args", {})
+
+    # Format arguments
+    args_str = ", ".join(f"{k}={v!r}" for k, v in args.items())
+
+    return f"{name}({args_str})"

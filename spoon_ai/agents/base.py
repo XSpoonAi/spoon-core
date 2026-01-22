@@ -109,8 +109,20 @@ class BaseAgent(BaseModel, ABC):
     # Middleware system (Deep Agent support)
     middleware: List[Any] = Field(default_factory=list, description="Middleware for Plan-Act-Reflect and hooks")
     enable_plan_phase: bool = Field(default=False, description="Enable explicit planning phase before action loop")
-    enable_reflect_phase: bool = Field(default=False, description="Enable reflection phase after N steps")
-    reflect_interval: int = Field(default=5, description="Steps between reflection phases")
+    enable_reflect_phase: bool = Field(default=False, description="Enable reflection phase based on token threshold")
+
+    # Reflection trigger configuration (token-based, LangChain-style)
+    reflect_token_threshold: float = Field(
+        default=0.85,
+        description="Token usage threshold to trigger reflection (0.0-1.0, default 0.85 = 85%)"
+    )
+    max_context_tokens: int = Field(
+        default=200000,
+        description="Maximum context tokens for the model (used for threshold calculation)"
+    )
+
+    # Track last reflection for token-based mode
+    _last_reflect_token_count: int = 0
 
     # Thread ID for conversation isolation
     thread_id: Optional[str] = Field(default=None, description="Thread ID for conversation isolation")
@@ -169,6 +181,9 @@ class BaseAgent(BaseModel, ABC):
 
         # Initialize agent state dict
         self._agent_state = {}
+
+        # Initialize token tracking for reflection
+        self._last_reflect_token_count = 0
 
     def _initialize_middleware(self) -> None:
         """Initialize middleware pipeline if middleware is configured."""
@@ -790,14 +805,15 @@ class BaseAgent(BaseModel, ABC):
                             step_result = f"Step {self.current_step} timed out"
                             logger.warning(f"Agent {self.name} step {self.current_step} timed out")
 
-                        # REFLECT PHASE: Periodic reflection (Deep Agent feature)
-                        if (self.enable_reflect_phase and
-                            self.current_step % self.reflect_interval == 0):
+                        # REFLECT PHASE: Token-based or step-based reflection (Deep Agent feature)
+                        if self.should_trigger_reflection():
                             await self._execute_reflect_phase(runtime, {
                                 "current_step": self.current_step,
                                 "step_result": step_result,
-                                "results": results
+                                "results": results,
+                                "token_count": self.estimate_token_count(),
                             })
+                            self._on_reflection_complete()
 
                         if await self.is_stuck():
                             await self.handle_stuck_state()
@@ -809,21 +825,19 @@ class BaseAgent(BaseModel, ABC):
                         results.append(f"Step {self.current_step}: Reached maximum steps. Stopping.")
 
                     # FINAL REFLECTION: Ensure reflection happens at least once before finishing
-                    # This fixes the issue where agents finish before reaching reflect_interval
+                    # Trigger if we have content but haven't reflected yet
                     if self.enable_reflect_phase and self.current_step > 0:
-                        # Calculate if we've done reflection recently
-                        last_reflection_step = (self.current_step // self.reflect_interval) * self.reflect_interval
-                        steps_since_reflection = self.current_step - last_reflection_step
-
-                        # If we haven't reflected recently (or at all), do it now
-                        if steps_since_reflection > 0 or last_reflection_step == 0:
+                        current_tokens = self.estimate_token_count()
+                        if self._last_reflect_token_count == 0 and current_tokens > 0:
                             logger.info(f"Agent {self.name} performing final reflection before completion")
                             await self._execute_reflect_phase(runtime, {
                                 "current_step": self.current_step,
                                 "step_result": "Final step completed",
                                 "results": results,
-                                "is_final_reflection": True
+                                "is_final_reflection": True,
+                                "token_count": current_tokens,
                             })
+                            self._on_reflection_complete()
 
                     # FINISH PHASE: Final middleware hooks
                     if self._middleware_pipeline:
@@ -912,6 +926,76 @@ class BaseAgent(BaseModel, ABC):
             self.next_step_prompt = stuck_prompt
 
         logger.warning(f"Added stuck prompt: {stuck_prompt}")
+
+    def estimate_token_count(self) -> int:
+        """Estimate the token count of current conversation context.
+
+        Uses a simple heuristic: ~4 characters per token (conservative estimate).
+        For more accurate counting, override this method with tiktoken or
+        model-specific tokenizers.
+
+        Returns:
+            Estimated token count of all messages
+        """
+        messages = self.memory.get_messages() if hasattr(self.memory, 'get_messages') else []
+        total_chars = 0
+
+        for msg in messages:
+            # Handle text content
+            content = msg.text_content or ""
+            total_chars += len(content)
+
+            # Count tool calls if present
+            if hasattr(msg, 'tool_calls') and msg.tool_calls:
+                for tc in msg.tool_calls:
+                    if isinstance(tc, dict):
+                        total_chars += len(json.dumps(tc))
+                    else:
+                        total_chars += len(str(tc))
+
+        # Add system prompt
+        if self.system_prompt:
+            total_chars += len(self.system_prompt)
+
+        # Conservative estimate: ~4 chars per token
+        return total_chars // 4
+
+    def should_trigger_reflection(self) -> bool:
+        """Determine if reflection should be triggered based on token threshold.
+
+        LangChain-style token-based trigger:
+            Triggers when context tokens exceed reflect_token_threshold (default 85%)
+            of max_context_tokens.
+
+        Returns:
+            True if reflection should be triggered
+        """
+        if not self.enable_reflect_phase:
+            return False
+
+        # Token-based trigger (LangChain-style 85% threshold)
+        current_tokens = self.estimate_token_count()
+        threshold_tokens = int(self.max_context_tokens * self.reflect_token_threshold)
+
+        # Only trigger if we've added significant tokens since last reflection
+        # This prevents triggering on every step once threshold is crossed
+        token_increase = current_tokens - self._last_reflect_token_count
+        min_token_increase = int(self.max_context_tokens * 0.05)  # At least 5% increase
+
+        if current_tokens >= threshold_tokens and token_increase >= min_token_increase:
+            logger.info(
+                f"Agent {self.name} reflection triggered: "
+                f"{current_tokens}/{self.max_context_tokens} tokens "
+                f"({current_tokens * 100 // self.max_context_tokens}% >= "
+                f"{int(self.reflect_token_threshold * 100)}% threshold)"
+            )
+            return True
+        return False
+
+    def _on_reflection_complete(self) -> None:
+        """Called after reflection completes to update tracking state."""
+        self._last_reflect_token_count = self.estimate_token_count()
+
     # Basic retrieval compatibility: allow loading documents even if agent doesn't use RAG
     def add_documents(self, documents) -> None:
         """Store documents on the agent so CLI load-docs works without RAG mixin.
