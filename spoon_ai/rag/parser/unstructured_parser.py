@@ -18,6 +18,9 @@ from typing import Iterable, List, Optional
 import requests
 from unstructured.partition.auto import partition
 from unstructured.partition.html import partition_html
+from unstructured.partition.md import partition_md
+from unstructured.partition.text import partition_text
+from unstructured.documents.elements import Text
 
 # Default directories to ignore when loading files
 IGNORE_DIRS = {
@@ -124,8 +127,14 @@ class UnstructuredParser:
                 # Parse HTML with unstructured
                 elements = partition_html(text=r.text)
             else:
-                # Plain text - create simple element list
-                elements = []
+                # Determine file type from URL extension
+                url_lower = target_url.lower()
+                if url_lower.endswith(".md"):
+                    # Parse markdown with structure
+                    elements = partition_md(text=r.text)
+                else:
+                    # Parse as plain text with structure
+                    elements = partition_text(text=r.text)
 
             url_filename = url.rstrip('/').split('/')[-1] or 'index.html'
             return ParsedDocument(
