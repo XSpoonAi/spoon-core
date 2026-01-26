@@ -6,7 +6,8 @@ from typing import Dict, Iterable, List, Optional
 
 from .config import RagConfig
 from .embeddings import EmbeddingClient
-from .loader import load_inputs, chunk_text
+from .parser import UnstructuredParser
+from .chunk import chunk_text
 from .vectorstores import VectorStore
 import pickle
 import os
@@ -32,16 +33,27 @@ class RagIndex:
         self.embeddings = embeddings
 
     def ingest(self, inputs: Iterable[str], *, collection: Optional[str] = None) -> int:
-        docs = load_inputs(inputs)
+        # Use UnstructuredParser for document parsing
+        parser = UnstructuredParser()
+        docs = parser.parse(inputs)
         records: List[IndexedRecord] = []
-        for d in docs:
-            print(f"Indexing document: {d.source}")
-            chunks = chunk_text(d.text, self.config.chunk_size, self.config.chunk_overlap)
+        for doc in docs:
+            print(f"Indexing document: {doc.filepath}")
+
+            # Use recursive chunking directly on elements
+            chunks = chunk_text(
+                text='',  # Not used when elements provided
+                chunk_size=self.config.chunk_size,
+                overlap=self.config.chunk_overlap,
+                chunk_method='recursive',
+                elements=doc.elements
+            )
+
             for i, ch in enumerate(chunks):
                 rec_id = str(uuid.uuid4())
                 md = {
-                    "source": d.source,
-                    "doc_id": d.id,
+                    "source": doc.filepath,
+                    "doc_id": doc.filename,
                     "chunk_index": i,
                 }
                 records.append(IndexedRecord(id=rec_id, text=ch, metadata=md))
