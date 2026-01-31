@@ -18,4 +18,5 @@ history.txt
 
 .venv/
 .DS_Store
-CLAUDE.md
+CLAUDE.mdexamples/out/
+.pytest_cache/
