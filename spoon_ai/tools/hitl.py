@@ -167,6 +167,102 @@ class ApprovalDecision(str, Enum):
 
 
 @dataclass
+class ApprovalResponse:
+    """Response from approval_callback, supporting EDIT with modified arguments.
+    
+    Usage:
+        # Simple approve/reject
+        return ApprovalDecision.APPROVE
+        
+        # Edit with modified arguments
+        return ApprovalResponse(
+            decision=ApprovalDecision.EDIT,
+            modified_arguments={"path": "/new/path", "mode": "read"}
+        )
+    """
+    decision: ApprovalDecision
+    modified_arguments: Optional[Dict[str, Any]] = None
+    
+    def __post_init__(self):
+        """Validate that EDIT decisions include modified_arguments."""
+        if self.decision == ApprovalDecision.EDIT and self.modified_arguments is None:
+            raise ValueError(
+                "EDIT decision requires modified_arguments. "
+                "Provide modified_arguments or use APPROVE/REJECT instead."
+            )
+
+
+def normalize_decision(decision: Union[ApprovalDecision, str, Any]) -> tuple[ApprovalDecision, Optional[Dict[str, Any]]]:
+    """Normalize approval decision from various input types.
+    
+    Args:
+        decision: Can be:
+            - ApprovalDecision enum
+            - str ("approve", "edit", "reject")
+            - Duck-typed ApprovalResponse object (with decision and optional modified_arguments attributes)
+              This allows cross-module compatibility without requiring exact class match.
+    
+    Returns:
+        Tuple of (ApprovalDecision, modified_arguments)
+        - modified_arguments is None unless decision is EDIT and provided in ApprovalResponse
+    
+    Examples:
+        >>> normalize_decision(ApprovalDecision.APPROVE)
+        (ApprovalDecision.APPROVE, None)
+        
+        >>> normalize_decision("approve")
+        (ApprovalDecision.APPROVE, None)
+        
+        >>> normalize_decision(ApprovalResponse(decision=ApprovalDecision.EDIT, modified_arguments={"x": 1}))
+        (ApprovalDecision.EDIT, {"x": 1})
+        
+        >>> # Duck-typed object (cross-module compatibility)
+        >>> class CustomResponse:
+        ...     decision = ApprovalDecision.EDIT
+        ...     modified_arguments = {"x": 1}
+        >>> normalize_decision(CustomResponse())
+        (ApprovalDecision.EDIT, {"x": 1})
+    """
+    # Handle duck-typed ApprovalResponse (check for decision and modified_arguments attributes)
+    # This avoids cross-module class mismatch issues
+    if hasattr(decision, 'decision') and hasattr(decision, 'modified_arguments'):
+        try:
+            decision_attr = getattr(decision, 'decision')
+            modified_arguments = getattr(decision, 'modified_arguments')
+            # Validate that decision attribute is an ApprovalDecision
+            if isinstance(decision_attr, ApprovalDecision):
+                return (decision_attr, modified_arguments)
+            # If it's a string, try to convert it
+            elif isinstance(decision_attr, str):
+                enum_decision = ApprovalDecision(decision_attr.lower())
+                return (enum_decision, modified_arguments)
+        except (AttributeError, ValueError):
+            # If accessing attributes fails or conversion fails, fall through to other handlers
+            pass
+    
+    # Handle ApprovalDecision enum
+    if isinstance(decision, ApprovalDecision):
+        return (decision, None)
+    
+    # Handle string
+    if isinstance(decision, str):
+        try:
+            enum_decision = ApprovalDecision(decision.lower())
+            return (enum_decision, None)
+        except ValueError:
+            raise ValueError(
+                f"Invalid approval decision string: {decision}. "
+                f"Must be one of: {[d.value for d in ApprovalDecision]}"
+            )
+    
+    # Unknown type
+    raise TypeError(
+        f"Invalid approval decision type: {type(decision)}. "
+        f"Must be ApprovalDecision, str, or ApprovalResponse"
+    )
+
+
+@dataclass
 class DecisionInput:
     """Input for a single approval decision.
 
@@ -362,8 +458,26 @@ class ParsedInterruptConfig:
     description: Optional[Union[str, DescriptionFunction]] = None
 
     @classmethod
-    def from_config(cls, config: Union[bool, InterruptOnConfig]) -> Optional["ParsedInterruptConfig"]:
-        """Parse configuration from various formats."""
+    def from_config(
+        cls, 
+        config: Union[bool, InterruptOnConfig],
+        tool_name: Optional[str] = None,
+        strict: bool = True
+    ) -> Optional["ParsedInterruptConfig"]:
+        """Parse configuration from various formats.
+        
+        Args:
+            config: Configuration (bool or InterruptOnConfig dict)
+            tool_name: Optional tool name for error messages
+            strict: If True, raise ValueError on invalid allowed_decisions.
+                   If False, log warning and use defaults for invalid values.
+        
+        Returns:
+            ParsedInterruptConfig or None if config is False/None
+        
+        Raises:
+            ValueError: If strict=True and allowed_decisions contains invalid values
+        """
         if isinstance(config, bool):
             if config:
                 return cls(
@@ -377,8 +491,62 @@ class ParsedInterruptConfig:
 
         if isinstance(config, dict):
             allowed = config.get("allowed_decisions", ["approve", "edit", "reject"])
+            
+            # Validate and normalize allowed_decisions (case-insensitive)
+            valid_decisions = []
+            invalid_values = []
+            valid_decision_values = {d.value.lower(): d for d in ApprovalDecision}
+            
+            for decision_str in allowed:
+                if isinstance(decision_str, ApprovalDecision):
+                    # Already an enum, use directly
+                    valid_decisions.append(decision_str)
+                elif isinstance(decision_str, str):
+                    # Case-insensitive lookup
+                    normalized = decision_str.lower()
+                    if normalized in valid_decision_values:
+                        valid_decisions.append(valid_decision_values[normalized])
+                    else:
+                        invalid_values.append(decision_str)
+                else:
+                    invalid_values.append(str(decision_str))
+            
+            # If there are invalid values, handle based on strict mode
+            if invalid_values:
+                tool_context = f" for tool '{tool_name}'" if tool_name else ""
+                valid_options = ", ".join([d.value for d in ApprovalDecision])
+                error_msg = (
+                    f"Invalid allowed_decisions{tool_context}: {invalid_values}. "
+                    f"Valid options are: {valid_options} (case-insensitive)"
+                )
+                
+                if strict:
+                    raise ValueError(error_msg)
+                else:
+                    # Non-strict: log warning and continue with valid decisions
+                    logger.warning(
+                        f"{error_msg}. Using valid decisions: {[d.value for d in valid_decisions]}"
+                    )
+                valid_decisions = [
+                ApprovalDecision.APPROVE,
+                ApprovalDecision.EDIT,
+                ApprovalDecision.REJECT,
+            ]
+            
+            # If no valid decisions, use defaults
+            if not valid_decisions:
+                logger.warning(
+                    f"No valid allowed_decisions found{tool_name and f' for tool {tool_name}' or ''}, "
+                    f"using defaults: approve, edit, reject"
+                )
+                valid_decisions = [
+                    ApprovalDecision.APPROVE,
+                    ApprovalDecision.EDIT,
+                    ApprovalDecision.REJECT,
+                ]
+            
             return cls(
-                allowed_decisions=[ApprovalDecision(d) for d in allowed],
+                allowed_decisions=valid_decisions,
                 description=config.get("description"),
             )
 
@@ -415,6 +583,7 @@ class HITLManager:
     def __init__(
         self,
         interrupt_on: Dict[str, Union[bool, InterruptOnConfig]],
+        strict: bool = True,
     ):
         """Initialize HITL manager.
 
@@ -423,13 +592,15 @@ class HITLManager:
                 - Dict[str, bool]: Simple approval (True = require approval)
                 - Dict[str, InterruptOnConfig]: Detailed configuration with
                   allowed_decisions and description
+            strict: If True, raise ValueError on invalid allowed_decisions.
+                   If False, log warning and use defaults for invalid values.
         """
         self.interrupt_on = interrupt_on
 
         # Parse configurations
         self.tool_configs: Dict[str, ParsedInterruptConfig] = {}
         for tool_name, config in interrupt_on.items():
-            parsed = ParsedInterruptConfig.from_config(config)
+            parsed = ParsedInterruptConfig.from_config(config, tool_name=tool_name, strict=strict)
             if parsed:
                 self.tool_configs[tool_name] = parsed
 
@@ -640,7 +811,8 @@ Be prepared for tool calls to be rejected or modified.
     def __init__(
         self,
         interrupt_on: Dict[str, Union[bool, InterruptOnConfig]],
-        approval_callback: Optional[Callable[["ApprovalRequest"], ApprovalDecision]] = None,
+        approval_callback: Optional[Callable[["ApprovalRequest"], Union[ApprovalDecision, "ApprovalResponse"]]] = None,
+        strict: bool = True,
     ):
         """Initialize HITL middleware.
 
@@ -654,19 +826,40 @@ Be prepared for tool calls to be rejected or modified.
                     - description: Static string or callable for dynamic description
             approval_callback: Optional callback function for automatic approval.
                 If provided, this callback is called instead of raising HITLInterrupt.
-                The callback receives an ApprovalRequest and returns an ApprovalDecision.
-                Example:
+                The callback receives an ApprovalRequest and returns:
+                - ApprovalDecision (APPROVE/REJECT)
+                - ApprovalResponse (for EDIT with modified arguments)
+                
+                Examples:
+                    # Simple approve/reject
                     def auto_approve(request):
-                        print(f"Approving {request.tool_name}")
+                        if request.tool_name == "dangerous_tool":
+                            return ApprovalDecision.REJECT
                         return ApprovalDecision.APPROVE
+                    
+                    # Edit with modified arguments
+                    def auto_edit(request):
+                        if request.tool_name == "file_write":
+                            return ApprovalResponse(
+                                decision=ApprovalDecision.EDIT,
+                                modified_arguments={"path": "/safe/path", **request.arguments}
+                            )
+                        return ApprovalDecision.APPROVE
+            strict: If True, raise ValueError on invalid allowed_decisions.
+                   If False, log warning and use defaults for invalid values.
+                   Defaults to True for strict validation.
         """
         super().__init__()
         self.interrupt_on = interrupt_on
         self.approval_callback = approval_callback
-        self.manager = HITLManager(interrupt_on)
+        self.manager = HITLManager(interrupt_on, strict=strict)
 
         # Track pending resume data
         self._resume_data: Optional[ResumeData] = None
+        
+        # Cache approval decisions by tool_call_id for idempotency
+        # This ensures that retries use the same decision without re-calling the callback
+        self._approval_cache: Dict[str, tuple[ApprovalDecision, Optional[Dict[str, Any]]]] = {}
 
         logger.info(f"HumanInTheLoopMiddleware initialized for {len(self.manager.tool_configs)} tools")
 
@@ -747,9 +940,17 @@ Be prepared for tool calls to be rejected or modified.
             # Update response with approved calls
             response.tool_calls = approved_calls
 
-            # Log rejections
-            for msg in rejection_messages:
-                logger.info(msg)
+            # Log rejections and add to response content so agent knows
+            if rejection_messages:
+                rejection_text = "\n".join(rejection_messages)
+                logger.info(f"Tools rejected: {rejection_text}")
+                
+                # Add rejection message to response content so agent is informed
+                current_content = response.content or ""
+                if current_content:
+                    response.content = f"{current_content}\n\n{rejection_text}"
+                else:
+                    response.content = rejection_text
 
             return response
 
@@ -761,59 +962,162 @@ Be prepared for tool calls to be rejected or modified.
             tool_name = _get_tool_attr(tool_call, "name", "")
             if self.manager.should_interrupt(tool_name):
                 tools_requiring_approval.append(tool_call)
-                self.manager.add_pending_action(
-                    tool_call,
-                    state,
-                    runtime_instance,
-                )
+                # Only add to pending queue for manual interrupt/resume (no callback mode)
+                # If approval_callback exists, let awrap_tool_call handle it directly
+                if not self.approval_callback:
+                    self.manager.add_pending_action(
+                        tool_call,
+                        state,
+                        runtime_instance,
+                    )
             else:
                 tools_not_requiring_approval.append(tool_call)
 
         # If there are tools requiring approval
         if self.manager.has_pending_actions():
-            # If approval_callback is provided, use it for automatic decisions
-            if self.approval_callback:
-                approved_calls = []
-                rejection_messages = []
-
-                for tool_call in tools_requiring_approval:
-                    # Create approval request
-                    approval_request = ApprovalRequest(
-                        tool_name=_get_tool_attr(tool_call, "name", ""),
-                        arguments=_get_tool_attr(tool_call, "args", {}),
-                        tool_call_id=_get_tool_attr(tool_call, "id", ""),
-                    )
-
-                    # Call the callback
-                    decision = self.approval_callback(approval_request)
-
-                    if decision == ApprovalDecision.APPROVE:
-                        approved_calls.append(tool_call)
-                    elif decision == ApprovalDecision.REJECT:
-                        rejection_messages.append(
-                            f"Tool '{approval_request.tool_name}' was rejected by approval callback"
-                        )
-                    # EDIT not supported in callback mode (would need modified args)
-
-                # Add tools that don't require approval
-                approved_calls.extend(tools_not_requiring_approval)
-
-                # Update response with approved calls
-                response.tool_calls = approved_calls
-
-                # Log rejections
-                for msg in rejection_messages:
-                    logger.info(msg)
-
-                self.manager.clear_pending()
-                return response
-
-            # Otherwise, raise interrupt for manual approval
+            # NOTE: approval_callback is handled in awrap_tool_call (single authoritative interception point)
+            # This prevents callback from being called twice and ensures consistent decisions.
+            # Only raise interrupt for manual approval (no callback mode)
             interrupt_info = self.manager.create_interrupt()
             self.manager.clear_pending()
             raise HITLInterrupt(interrupt_info)
+        
+        # If approval_callback exists but no pending actions (tools were added above only if no callback),
+        # ensure pending queue is cleared to avoid accumulation
+        if self.approval_callback:
+            self.manager.clear_pending()
 
         return response
+
+    async def awrap_tool_call(
+        self,
+        request: ToolCallRequest,
+        handler: Callable[[ToolCallRequest], ToolCallResult],
+    ) -> ToolCallResult:
+        """Intercept tool execution to enforce approval decisions.
+        
+        This is the PRIMARY interception point for tool execution in ToolCallAgent.
+        Even if a tool call makes it through awrap_model_call, we check here before
+        actual execution.
+        
+        CRITICAL: This method MUST be called before tool execution, and MUST return
+        ToolCallResult(success=False, ...) when rejected to prevent execution.
+        """
+        # Check if this tool requires approval
+        if self.manager.should_interrupt(request.tool_name):
+            # If approval_callback is provided, use it for automatic decisions
+            if self.approval_callback:
+                # Check cache for idempotency (avoid repeated modifications on retries)
+                cache_key = request.tool_call_id
+                if cache_key in self._approval_cache:
+                    # Use cached decision for idempotency
+                    decision, modified_arguments = self._approval_cache[cache_key]
+                    logger.debug(
+                        f"Tool '{request.tool_name}' (ID: {cache_key}) using cached approval decision: {decision.value}"
+                    )
+                else:
+                    # First time: call callback and cache the result
+                    approval_request = ApprovalRequest(
+                        tool_name=request.tool_name,
+                        arguments=request.arguments,
+                        tool_call_id=request.tool_call_id,
+                    )
+                    
+                    callback_result = self.approval_callback(approval_request)
+                    
+                    # Normalize decision (handles ApprovalDecision, str, ApprovalResponse)
+                    # Wrap with try/except for stability
+                    try:
+                        decision, modified_arguments = normalize_decision(callback_result)
+                    except (ValueError, TypeError) as e:
+                        error_msg = f"Tool '{request.tool_name}' approval callback returned invalid decision: {e}"
+                        logger.error(error_msg)
+                        return ToolCallResult.from_error(error_msg)
+                    
+                    # Cache the decision for idempotency
+                    self._approval_cache[cache_key] = (decision, modified_arguments)
+                    logger.debug(
+                        f"Tool '{request.tool_name}' (ID: {cache_key}) approval decision cached: {decision.value}"
+                    )
+                
+                # Enforce allowed_decisions from InterruptOnConfig
+                config = self.manager.get_config(request.tool_name)
+                if config and config.allowed_decisions:
+                    if decision not in config.allowed_decisions:
+                        allowed_str = ", ".join([d.value for d in config.allowed_decisions])
+                        error_msg = (
+                            f"Tool '{request.tool_name}' approval decision '{decision.value}' "
+                            f"is not in allowed_decisions: [{allowed_str}]. "
+                            f"Callback must return one of: {allowed_str}"
+                        )
+                        logger.warning(error_msg)
+                        return ToolCallResult.from_error(error_msg)
+                
+                if decision == ApprovalDecision.REJECT:
+                    # Tool was rejected - return error result to prevent execution
+                    error_msg = f"Tool '{request.tool_name}' was rejected by approval callback"
+                    logger.warning(error_msg)
+                    # Return ToolCallResult with success=False (error set)
+                    return ToolCallResult.from_error(error_msg)
+                elif decision == ApprovalDecision.APPROVE:
+                    # Tool was approved - proceed with execution
+                    logger.debug(f"Tool '{request.tool_name}' approved, proceeding with execution")
+                    return await handler(request)
+                elif decision == ApprovalDecision.EDIT:
+                    # EDIT requires modified arguments
+                    if modified_arguments is None:
+                        error_msg = (
+                            f"Tool '{request.tool_name}' approval decision EDIT requires modified_arguments. "
+                            "Return ApprovalResponse(decision=EDIT, modified_arguments={{...}}) from callback."
+                        )
+                        logger.warning(error_msg)
+                        return ToolCallResult.from_error(error_msg)
+                    
+                    # Create new request with modified arguments (from cache if retry)
+                    # This ensures idempotency: same tool_call_id always uses same modified args
+                    modified_request = ToolCallRequest(
+                        tool_name=request.tool_name,
+                        arguments=modified_arguments,  # Always use cached/modified args
+                        tool_call_id=request.tool_call_id,
+                        runtime=request.runtime,
+                        tool_call=request.tool_call,
+                    )
+                    logger.info(
+                        f"Tool '{request.tool_name}' approved with EDIT (idempotent). "
+                        f"Request args: {request.arguments}, Using modified args: {modified_arguments}"
+                    )
+                    return await handler(modified_request)
+                else:
+                    # Unknown decision type
+                    logger.warning(f"Unknown approval decision: {decision}, rejecting for safety")
+                    return ToolCallResult.from_error(
+                        f"Tool '{request.tool_name}' approval decision invalid: {decision}"
+                    )
+            else:
+                # No callback - should have been handled in awrap_model_call
+                # But if we get here without callback, we need to raise interrupt
+                logger.warning(f"Tool '{request.tool_name}' requires approval but no callback provided, raising interrupt")
+                # Create interrupt for manual approval
+                state = {}
+                runtime = request.runtime
+                if runtime and hasattr(runtime, '_agent_instance'):
+                    agent = runtime._agent_instance
+                    if hasattr(agent, '_agent_state'):
+                        state = agent._agent_state
+                
+                self.manager.add_pending_action(
+                    request.tool_call or {"name": request.tool_name, "args": request.arguments},
+                    state,
+                    runtime,
+                )
+                
+                if self.manager.has_pending_actions():
+                    interrupt_info = self.manager.create_interrupt()
+                    self.manager.clear_pending()
+                    raise HITLInterrupt(interrupt_info)
+        
+        # Tool doesn't require approval - proceed with execution
+        return await handler(request)
 
     def get_interrupt_config(self, tool_name: str) -> Optional[Dict[str, Any]]:
         """Get interrupt configuration for a tool.
