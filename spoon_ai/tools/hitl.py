@@ -527,11 +527,6 @@ class ParsedInterruptConfig:
                     logger.warning(
                         f"{error_msg}. Using valid decisions: {[d.value for d in valid_decisions]}"
                     )
-                valid_decisions = [
-                ApprovalDecision.APPROVE,
-                ApprovalDecision.EDIT,
-                ApprovalDecision.REJECT,
-            ]
             
             # If no valid decisions, use defaults
             if not valid_decisions:

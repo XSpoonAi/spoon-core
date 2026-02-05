@@ -500,6 +500,19 @@ class CheckpointMiddleware(AgentMiddleware):
         if hasattr(runtime, '_agent_instance'):
             agent = runtime._agent_instance
             if hasattr(agent, 'memory'):
+                # Clear existing memory to avoid duplicate restoration
+                cleared_memory = False
+                if hasattr(agent.memory, 'clear') and callable(agent.memory.clear):
+                    try:
+                        agent.memory.clear()
+                        cleared_memory = True
+                    except Exception as e:
+                        logger.warning(f"Failed to clear agent memory via clear(): {e}")
+                elif hasattr(agent.memory, 'messages') and isinstance(agent.memory.messages, list):
+                    agent.memory.messages.clear()
+                    cleared_memory = True
+                if cleared_memory:
+                    logger.info("✅ Cleared existing agent memory before restoring messages")
                 # Try add_message method first (preferred for spoon_ai.chat.Memory)
                 if hasattr(agent.memory, 'add_message'):
                     added_count = 0
