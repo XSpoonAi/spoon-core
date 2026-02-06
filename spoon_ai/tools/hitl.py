@@ -523,15 +523,11 @@ class ParsedInterruptConfig:
                 if strict:
                     raise ValueError(error_msg)
                 else:
-                    # Non-strict: log warning and continue with valid decisions
+                    # Non-strict: log warning and keep only valid decisions
+                    # Only use defaults if there are no valid decisions at all
                     logger.warning(
-                        f"{error_msg}. Using valid decisions: {[d.value for d in valid_decisions]}"
+                        f"{error_msg}. Keeping only valid: {[d.value for d in valid_decisions]}"
                     )
-                valid_decisions = [
-                ApprovalDecision.APPROVE,
-                ApprovalDecision.EDIT,
-                ApprovalDecision.REJECT,
-            ]
             
             # If no valid decisions, use defaults
             if not valid_decisions:
