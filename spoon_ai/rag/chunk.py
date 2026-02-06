@@ -10,22 +10,13 @@ Provides element-aware chunking that:
 
 from __future__ import annotations
 
-from dataclasses import dataclass, field
-from typing import Any, Dict, List, Optional
+from typing import List, Optional
 
 # Element types that should not be split (keep intact)
 ATOMIC_TYPES = {'Table', 'FigureCaption', 'Image', 'Formula', 'CodeSnippet'}
 
 # Title types that mark the beginning of a new section
 TITLE_TYPES = {'Title', 'Header'}
-
-
-@dataclass
-class Chunk:
-    """Represents a text chunk with metadata."""
-    text: str
-    chunk_type: str  # 'composite', 'section', 'atomic', 'text_segment'
-    metadata: Dict[str, Any] = field(default_factory=dict)
 
 
 def _is_code_block(el) -> bool:

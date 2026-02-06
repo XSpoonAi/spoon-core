@@ -70,7 +70,7 @@ class RagRetriever:
 
         # Process BM25 Results
         for rank, chunk in enumerate(bm25_results, 1):
-            fused_scores[chunk.id] = fused_scores.get(chunk.id, 0) +bm25_weight*(1.0 / (k + rank))
+            fused_scores[chunk.id] = fused_scores.get(chunk.id, 0) + bm25_weight * (1.0 / (k + rank))
             if chunk.id not in chunk_map:
                 chunk_map[chunk.id] = chunk
 
@@ -143,7 +143,6 @@ class RagRetriever:
             chunks = self._reciprocal_rank_fusion(vector_chunks, bm25_chunks)
             
         else:
-            print("you may not install bm25")  #pip install rank-bm25
             chunks = vector_chunks
             
         # Lightweight dedup by text

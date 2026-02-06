@@ -53,13 +53,7 @@ def get_default_config() -> RagConfig:
     if embeddings_provider is not None:
         embeddings_provider = embeddings_provider.strip().lower() or None
     
-    # Don't set a default model here. Each provider handles None/empty appropriately:
-    # - OpenAI: uses OpenAIEmbeddingClient's default "text-embedding-3-small"
-    # - Gemini: uses "models/embedding-001" (see embeddings.py line 339)
-    # - OpenRouter: uses _derive_openrouter_embedding_model
-    # - Ollama: raises error (requires explicit model)
-    # - Hash: ignores model (not needed)
-    embeddings_model = os.getenv("RAG_EMBEDDINGS_MODEL", "").strip()
+    embeddings_model = os.getenv("RAG_EMBEDDINGS_MODEL", "text-embedding-3-small").strip()
 
 
     return RagConfig(
