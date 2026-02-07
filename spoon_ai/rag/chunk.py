@@ -47,17 +47,26 @@ def _is_code_block(el) -> bool:
 
 
 def _get_overlap_text(text: str, overlap: int) -> str:
-    """Get overlap text from the tail of text, trying to cut at word boundaries."""
+    """Get overlap text from the tail of text, trying to cut at a natural boundary.
+
+    Supports CJK by looking for punctuation boundaries in addition to spaces.
+    Uses rfind so we cut at the *last* (rightmost) boundary inside the overlap
+    window, keeping as much context as possible.
+    """
     if len(text) <= overlap:
         return text
 
     overlap_text = text[-overlap:]
-    # Try to cut at space or newline
-    space_idx = overlap_text.find(' ')
-    newline_idx = overlap_text.find('\n')
-    cut_idx = max(space_idx, newline_idx)
-    if 0 < cut_idx < len(overlap_text) - 10:
-        overlap_text = overlap_text[cut_idx + 1:]
+
+    # Look for the last natural break point (space, newline, or CJK punctuation)
+    best = -1
+    for ch in (' ', '\n', '。', '，', '！', '？', '；', '、', '.', ',', '!', '?', ';'):
+        idx = overlap_text.rfind(ch)
+        if idx > best:
+            best = idx
+
+    if 0 < best < len(overlap_text) - 10:
+        overlap_text = overlap_text[best + 1:]
     return overlap_text.strip()
 
 
@@ -136,14 +145,16 @@ def recursive_chunk(
             current_texts = [el_text]
             current_len = len(el_text)
 
-        # Atomic or code: keep intact
+        # Atomic or code: keep intact when possible
         elif el_type in ATOMIC_TYPES or _is_code_block(el):
             if current_len + len(el_text) > chunk_size and current_texts:
                 _flush()
 
             if len(el_text) > chunk_size:
                 _flush()
-                raw_chunks.append(el_text)
+                # Fallback: split oversized atomic elements so they don't
+                # exceed embedding model token limits.
+                raw_chunks.extend(_split_by_paragraph(el_text, chunk_size))
             else:
                 current_texts.append(el_text)
                 current_len += len(el_text) + 2

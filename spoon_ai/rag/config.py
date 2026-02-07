@@ -2,14 +2,25 @@ import os
 from dataclasses import dataclass
 from typing import Optional
 
-# Try to import python-dotenv
-try:
-    from dotenv import load_dotenv
-    # Load .env immediately if available, but don't override existing env vars
-    # This allows command-line env vars to override .env file values
-    load_dotenv(override=False)
-except ImportError:
-    pass
+_dotenv_loaded = False
+
+
+def ensure_dotenv() -> None:
+    """Load .env file once if python-dotenv is available.
+
+    Does NOT override existing environment variables (e.g. those injected by
+    CI/CD).  Call this explicitly before reading env-based config rather than
+    relying on import-time side effects.
+    """
+    global _dotenv_loaded
+    if _dotenv_loaded:
+        return
+    _dotenv_loaded = True
+    try:
+        from dotenv import load_dotenv
+        load_dotenv(override=False)
+    except ImportError:
+        pass
 
 
 @dataclass
@@ -17,8 +28,8 @@ class RagConfig:
     backend: str = "faiss"  # faiss|pinecone|qdrant|chroma
     collection: str = "default"
     top_k: int = 5
-    chunk_size: int = 1000
-    chunk_overlap: int = 100
+    chunk_size: int = 1200
+    chunk_overlap: int = 120
     min_similarity: float = -10.0
     # Embeddings
     # - None/"auto": select an embedding-capable provider using core LLM config (env + fallback chain)
@@ -33,6 +44,9 @@ class RagConfig:
     #       Use DeepSeek as LLM for QA generation, and other models for embeddings.
     embeddings_provider: Optional[str] = None
     embeddings_model: str = "text-embedding-3-small"  # Generic model name for all embedding providers
+    # Retrieval
+    retrieval_overfetch_factor: int = 3   # overfetch multiplier: max(top_k * factor, 20)
+    rrf_k: int = 60                       # RRF smoothing constant
     # Storage paths
     rag_dir: str = ".rag_store"
     
@@ -42,6 +56,8 @@ class RagConfig:
         return self.embeddings_model
 
 def get_default_config() -> RagConfig:
+    ensure_dotenv()
+
     backend = os.getenv("RAG_BACKEND", "faiss").lower()
     collection = os.getenv("RAG_COLLECTION", "default")
     rag_dir = os.getenv("RAG_DIR", ".rag_store")

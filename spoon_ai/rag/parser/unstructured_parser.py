@@ -9,6 +9,7 @@ Supports loading documents from:
 
 from __future__ import annotations
 
+import logging
 import os
 import re
 from dataclasses import dataclass, field
@@ -21,6 +22,8 @@ from unstructured.partition.html import partition_html
 from unstructured.partition.md import partition_md
 from unstructured.partition.text import partition_text
 from unstructured.documents.elements import Text
+
+logger = logging.getLogger(__name__)
 
 # Default directories to ignore when loading files
 IGNORE_DIRS = {
@@ -115,8 +118,8 @@ class UnstructuredParser:
                             filepath=url,
                             elements=list(elements)
                         )
-                except Exception:
-                    pass
+                except Exception as e:
+                    logger.debug("Jina Reader fallback for %s: %s", url, e)
 
             # Direct download for raw files or as fallback
             r = requests.get(target_url, timeout=20)
@@ -142,7 +145,8 @@ class UnstructuredParser:
                 filepath=url,
                 elements=elements
             )
-        except Exception:
+        except Exception as e:
+            logger.warning("Failed to parse URL %s: %s", url, e)
             return None
 
     def parse_file(self, path: Path) -> Optional[ParsedDocument]:
@@ -165,7 +169,8 @@ class UnstructuredParser:
                 filepath=str(path),
                 elements=list(elements)
             )
-        except Exception:
+        except Exception as e:
+            logger.warning("Failed to parse file %s: %s", path, e)
             return None
 
     def parse_directory(self, dir_path: Path) -> List[ParsedDocument]:
