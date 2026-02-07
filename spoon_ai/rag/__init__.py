@@ -15,7 +15,7 @@ from .vectorstores import (
 from .index import RagIndex
 from .retriever import RagRetriever, RetrievedChunk
 from .qa import RagQA, QAResult
-from .loader import load_inputs
+from .parser import UnstructuredParser, ParsedDocument
 
 __all__ = [
     "RagConfig",
@@ -34,6 +34,7 @@ __all__ = [
     "RetrievedChunk",
     "RagQA",
     "QAResult",
-    "load_inputs",
+    "UnstructuredParser",
+    "ParsedDocument",
 ]
 
