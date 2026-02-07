@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "spoon-ai-sdk" # Package name, can be changed
-version = "0.3.6" # Initial version
+version = "0.4.0" # Initial version
 authors = [
   { name="Your Name", email="your.email@example.com" }, # Please replace with your info
 ]

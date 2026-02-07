@@ -35,6 +35,15 @@ from .decorators import (
     router_decorator,
 )
 from .checkpointer import InMemoryCheckpointer
+from .cache import (
+    BaseCache,
+    InMemoryCache,
+    SQLiteCache,
+    CacheEntry,
+    compute_cache_key,
+    create_memory_cache,
+    create_sqlite_cache,
+)
 
 # Engine and agent implementations (now within this package)
 from .engine import (
