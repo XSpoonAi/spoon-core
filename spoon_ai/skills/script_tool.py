@@ -5,6 +5,7 @@ Wraps SkillScript as a BaseTool that agents can call.
 AI decides how to use scripts - users only control whether scripts are allowed.
 """
 
+import json
 import logging
 from typing import Any, Dict, List, Optional
 
@@ -51,21 +52,35 @@ class ScriptTool(BaseTool):
         # Generate tool name
         tool_name = f"run_script_{skill_name}_{script.name}"
 
-        # Build description
+        # Build description and parameters based on input_schema
         desc = script.description or f"Execute the '{script.name}' script"
-        description = f"{desc} (Type: {script.type.value})"
 
-        # Simple parameter schema - just optional input
-        parameters = {
-            "type": "object",
-            "properties": {
-                "input": {
-                    "type": "string",
-                    "description": "Optional input text to pass to the script via stdin"
-                }
-            },
-            "required": []
-        }
+        if script.input_schema:
+            # Script declares its own input schema
+            description = f"{desc}. Pass a JSON string as 'input' with this structure: {json.dumps(script.input_schema)}. The JSON is sent to the script via stdin."
+            parameters = {
+                "type": "object",
+                "properties": {
+                    "input": {
+                        "type": "string",
+                        "description": f"JSON string to pass to script via stdin. Must match schema: {json.dumps(script.input_schema)}"
+                    }
+                },
+                "required": ["input"]
+            }
+        else:
+            # Fallback: generic description
+            description = f"{desc} (Type: {script.type.value}). If the script expects input, pass a JSON string as 'input'."
+            parameters = {
+                "type": "object",
+                "properties": {
+                    "input": {
+                        "type": "string",
+                        "description": "Input text (usually JSON) to pass to the script via stdin"
+                    }
+                },
+                "required": []
+            }
 
         super().__init__(
             name=tool_name,

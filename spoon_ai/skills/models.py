@@ -48,6 +48,12 @@ class SkillScript(BaseModel):
     file: Optional[str] = Field(default=None, description="Script file path (relative to skill dir)")
     inline: Optional[str] = Field(default=None, description="Inline script content")
 
+    # Input schema for LLM tool integration
+    input_schema: Optional[Dict[str, Any]] = Field(
+        default=None,
+        description="JSON Schema describing the expected stdin input format"
+    )
+
     # Execution settings
     timeout: int = Field(default=30, ge=1, le=600, description="Execution timeout in seconds")
     working_directory: Optional[str] = Field(default=None, description="Working directory override")
