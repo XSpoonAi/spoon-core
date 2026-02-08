@@ -413,6 +413,14 @@ class ToolCallAgent(ReActAgent):
             else:
                 return {}
 
+        # Normalize tool name: some proxies (e.g. cliproxy) add a "proxy_" prefix
+        original_name = tool_call.function.name
+        if original_name not in self.available_tools.tool_map and original_name.startswith("proxy_"):
+            stripped = original_name[len("proxy_"):]
+            if stripped in self.available_tools.tool_map:
+                tool_call.function.name = stripped
+                logger.debug(f"Normalized tool name: {original_name} -> {stripped}")
+
         if tool_call.function.name not in self.available_tools.tool_map:
             kwargs = parse_tool_arguments(tool_call.function.arguments)
 
@@ -435,7 +443,7 @@ class ToolCallAgent(ReActAgent):
                 logger.warning(f"MCPTool direct execution failed, falling back: {e}")
 
             # Agent-level fallback if it implements MCP client methods
-            if hasattr(self, "call_mcp_tool"):
+            if hasattr(self, "call_mcp_tool") and hasattr(self, "_map_mcp_tool_name"):
                 try:
                     actual_tool_name = self._map_mcp_tool_name(tool_call.function.name)
                     if not actual_tool_name:
