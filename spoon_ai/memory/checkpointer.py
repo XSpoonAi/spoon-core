@@ -491,6 +491,63 @@ class CheckpointMiddleware(AgentMiddleware):
 
         logger.info(f"Restored {len(messages)} messages from checkpoint for thread {runtime.thread_id}")
 
+        # CRITICAL: Messages must be added to agent.memory FIRST, then runtime.messages
+        # This is because runtime.messages is populated from agent.memory.get_messages()
+        # in _create_runtime_context, so we need to ensure messages are in memory first
+        
+        # Add messages to agent's memory if accessible
+        # CRITICAL: This must happen BEFORE agent.run() starts, so messages are available
+        if hasattr(runtime, '_agent_instance'):
+            agent = runtime._agent_instance
+            if hasattr(agent, 'memory'):
+                # CRITICAL: Clear existing messages before restoring checkpoint to avoid duplication
+                # This ensures that when auto_restore runs on an agent instance with existing messages
+                # (e.g., re-running the same agent, or if memory already contains a system prompt),
+                # we replace existing memory instead of appending to it.
+                if hasattr(agent.memory, 'messages') and isinstance(agent.memory.messages, list):
+                    agent.memory.messages.clear()
+                    logger.debug("Cleared existing messages from agent.memory.messages before restoring checkpoint")
+                elif hasattr(agent.memory, 'clear'):
+                    try:
+                        agent.memory.clear()
+                        logger.debug("Cleared existing messages from agent.memory via clear() method")
+                    except Exception as e:
+                        logger.warning(f"Failed to clear agent memory: {e}")
+                
+                # Try add_message method first (preferred for spoon_ai.chat.Memory)
+                if hasattr(agent.memory, 'add_message'):
+                    added_count = 0
+                    for msg in messages:
+                        try:
+                            agent.memory.add_message(msg)
+                            added_count += 1
+                        except Exception as e:
+                            logger.warning(f"Failed to add message to agent memory via add_message: {e}")
+                    logger.info(f"✅ Restored {added_count}/{len(messages)} messages to agent.memory via add_message()")
+                    
+                    # Verify messages were added
+                    if hasattr(agent.memory, 'get_messages'):
+                        restored_count = len(agent.memory.get_messages())
+                        logger.info(f"   Verification: agent.memory.get_messages() returns {restored_count} messages")
+                # Fallback: direct access to messages list
+                elif hasattr(agent.memory, 'messages'):
+                    if isinstance(agent.memory.messages, list):
+                        agent.memory.messages.extend(messages)
+                        logger.info(f"✅ Added {len(messages)} messages to agent.memory.messages")
+                    else:
+                        logger.warning(f"agent.memory.messages is not a list: {type(agent.memory.messages)}")
+                else:
+                    logger.warning(f"Agent memory does not support message restoration: {type(agent.memory)}")
+            else:
+                logger.warning(f"Agent does not have memory attribute")
+        else:
+            logger.warning(f"Runtime does not have _agent_instance, cannot restore messages to agent memory")
+        
+        # Update runtime.messages to reflect restored messages
+        # This ensures middleware and agent code see the restored messages
+        runtime.messages = list(messages)  # Use restored messages
+        logger.debug(f"Updated runtime.messages with {len(messages)} restored messages")
+
         # Return state updates
         return {
             **checkpoint.agent_state,
