@@ -51,7 +51,7 @@ class SkillLoader:
         re.DOTALL
     )
 
-    def __init__(self, additional_paths: Optional[List[Path]] = None):
+    def __init__(self, additional_paths: Optional[List[Path]] = None, include_default_paths: bool = True):
         """
         Initialize loader with skill search paths.
 
@@ -60,15 +60,16 @@ class SkillLoader:
         """
         self._paths: List[Path] = []
 
-        # Global user skills
-        global_path = Path.home() / ".spoon" / "skills"
-        if global_path.exists():
-            self._paths.append(global_path)
+        if include_default_paths:
+            # Global user skills
+            global_path = Path.home() / ".spoon" / "skills"
+            if global_path.exists():
+                self._paths.append(global_path)
 
-        # Project-local skills
-        local_path = Path.cwd() / "skills"
-        if local_path.exists():
-            self._paths.append(local_path)
+            # Project-local skills
+            local_path = Path.cwd() / "skills"
+            if local_path.exists():
+                self._paths.append(local_path)
 
         # Additional paths
         if additional_paths:

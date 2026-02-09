@@ -91,12 +91,14 @@ class SpoonReactSkill(SkillEnabledMixin, SpoonReactAI):
 
     async def run(self, request: Optional[str] = None) -> str:
         """
-        Execute agent with skill auto-activation.
+        Execute agent with per-turn auto skill activation.
 
         Flow:
-        1. Auto-detect and activate relevant skills (if enabled)
-        2. Inject skill context into system prompt
-        3. Execute parent SpoonReactAI.run()
+        1. Auto-detect and activate relevant skills (ephemeral for this run)
+        2. Sync skill tools into available_tools
+        3. Refresh base prompts with current tools
+        4. Execute parent SpoonReactAI.run()
+        5. Auto-deactivate skills activated in this turn
 
         Args:
             request: User request/message
@@ -104,18 +106,13 @@ class SpoonReactSkill(SkillEnabledMixin, SpoonReactAI):
         Returns:
             Agent response
         """
-        # Auto-activate matching skills
-        if request and self.auto_trigger_skills:
-            activated = await self.auto_activate_skills(request)
-            if activated:
-                names = [s.metadata.name for s in activated]
-                logger.debug(f"Auto-activated skills for request: {names}")
 
-        # Refresh prompts with active skills
-        self._refresh_prompts_with_skills()
+        async def _runner(req: Optional[str]) -> str:
+            # SpoonReactAI.run() rebuilds prompts from available_tools.
+            # Ensure skill tools are synced first, then delegate to parent.
+            return await super(SpoonReactSkill, self).run(req)
 
-        # Execute parent run
-        return await super().run(request)
+        return await self._run_with_auto_skills(request, _runner)
 
     async def initialize(self, __context=None):
         """
