@@ -42,7 +42,7 @@ class ProviderConfig:
     model: str = ""
     max_tokens: int = 4096
     temperature: float = 0.3
-    timeout: int = 30
+    timeout: int = 300
     retry_attempts: int = 3
     custom_headers: Dict[str, str] = field(default_factory=dict)
     extra_params: Dict[str, Any] = field(default_factory=dict)
@@ -138,7 +138,7 @@ class ConfigurationManager:
                 model=provider_config.get('model', ''),
                 max_tokens=provider_config.get('max_tokens', 4096),
                 temperature=provider_config.get('temperature', 0.3),
-                timeout=provider_config.get('timeout', 30),
+                timeout=provider_config.get('timeout', 300),
                 retry_attempts=provider_config.get('retry_attempts', 3),
                 custom_headers=provider_config.get('custom_headers', {}),
                 extra_params=provider_config.get('extra_params', {})
@@ -303,7 +303,7 @@ class ConfigurationManager:
         # Common defaults for all providers
         common_defaults = {
             'temperature': 0.3,
-            'timeout': 30,
+            'timeout': 300,  # 5 minutes for slow proxy endpoints
             'retry_attempts': 3,
             'custom_headers': {},
             'extra_params': {}

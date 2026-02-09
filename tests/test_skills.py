@@ -13,6 +13,7 @@ This module tests:
 import pytest
 import tempfile
 from pathlib import Path
+from typing import Optional
 
 # Path to example skills (since no built-in skills)
 EXAMPLES_SKILLS_PATH = Path(__file__).parent.parent / "examples" / "skills"
@@ -41,6 +42,8 @@ from spoon_ai.skills import (
     ScriptTool,
     create_script_tools,
 )
+from spoon_ai.agents.skill_mixin import SkillEnabledMixin
+from spoon_ai.tools import ToolManager
 
 
 # Sample SKILL.md content for testing
@@ -88,6 +91,68 @@ You are now in **Test Mode**.
 
 - Parameter: {{test_param}}
 """
+
+SKILL_WITH_TOOL_MD = """---
+name: tool-skill
+description: Skill with tool
+version: 1.0.0
+triggers:
+  - type: keyword
+    keywords:
+      - tool
+---
+
+# Tool Skill
+
+Use the tool when requested.
+"""
+
+SKILL_WITH_TRIGGER_MD = """---
+name: trigger-skill
+description: Skill with trigger
+version: 1.0.0
+triggers:
+  - type: keyword
+    keywords:
+      - trigger
+---
+
+# Trigger Skill
+
+Triggered by keyword.
+"""
+
+TOOLS_PY_CONTENT = """from typing import Any, Dict
+
+from spoon_ai.tools.base import BaseTool, ToolResult
+
+
+class TestSkillTool(BaseTool):
+    name: str = "test_skill_tool"
+    description: str = "A test skill tool."
+    parameters: Dict[str, Any] = {
+        "type": "object",
+        "properties": {},
+        "required": []
+    }
+
+    async def execute(self) -> ToolResult:
+        return ToolResult(output="ok")
+"""
+
+
+class DummySkillAgent(SkillEnabledMixin):
+    def __init__(self, skill_paths):
+        self.system_prompt = "Base prompt"
+        self.available_tools = ToolManager([])
+        self.skill_manager = SkillManager(skill_paths=skill_paths, auto_discover=True)
+        self._skill_manager_initialized = False
+        self._original_system_prompt = None
+        self.auto_trigger_skills = True
+        self.max_auto_skills = 3
+
+    async def run_stub(self, request: Optional[str] = None) -> str:
+        return "ok"
 
 
 # =============================================================================
@@ -696,6 +761,31 @@ class TestSkillManager:
         assert "intent_categories" in stats
         assert stats["total_skills"] >= 1
 
+    @pytest.mark.asyncio
+    async def test_intent_fallback_skips_on_trigger_hit(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            skill_dir = Path(tmpdir) / "trigger-skill"
+            skill_dir.mkdir()
+            (skill_dir / "SKILL.md").write_text(SKILL_WITH_TRIGGER_MD)
+
+            manager = SkillManager(skill_paths=[tmpdir], auto_discover=True, include_default_paths=False)
+            manager._intent_analyzer = object()
+            calls = {"count": 0}
+
+            async def fake_match_intent(text: str):
+                calls["count"] += 1
+                return []
+
+            manager.match_intent = fake_match_intent  # type: ignore[assignment]
+
+            matches = await manager.find_matching_skills("trigger this", use_intent=True)
+            assert len(matches) == 1
+            assert calls["count"] == 0
+
+            matches = await manager.find_matching_skills("no match", use_intent=True)
+            assert len(matches) == 0
+            assert calls["count"] == 1
+
 
 # =============================================================================
 # SKILL MANAGER SCRIPT INTEGRATION TESTS
@@ -898,7 +988,7 @@ class TestSkillIntegration:
             skill_dir.mkdir()
             (skill_dir / "SKILL.md").write_text(SAMPLE_SKILL_MD)
 
-            manager = SkillManager(skill_paths=[tmpdir], auto_discover=True)
+            manager = SkillManager(skill_paths=[tmpdir], auto_discover=True, include_default_paths=False)
             assert "test-skill" in manager.list()
 
             skill = await manager.activate("test-skill", {"test_param": "hello"})
@@ -922,13 +1012,58 @@ Instructions for skill {i}
 """
                 (skill_dir / "SKILL.md").write_text(content)
 
-            manager = SkillManager(skill_paths=[tmpdir], auto_discover=True)
+            manager = SkillManager(skill_paths=[tmpdir], auto_discover=True, include_default_paths=False)
             await manager.activate("skill-0")
             await manager.activate("skill-1")
             assert len(manager.get_active_skill_names()) == 2
 
             count = await manager.deactivate_all()
             assert count == 2
+
+
+# =============================================================================
+# SKILL MIXIN / TOOL SYNC TESTS
+# =============================================================================
+
+class TestSkillMixinBehavior:
+    """Tests for skill mixin tool sync and auto-activation cleanup."""
+
+    @pytest.mark.asyncio
+    async def test_auto_activated_skills_are_ephemeral(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            skill_dir = Path(tmpdir) / "tool-skill"
+            skill_dir.mkdir()
+            (skill_dir / "SKILL.md").write_text(SKILL_WITH_TOOL_MD)
+            (skill_dir / "tools.py").write_text(TOOLS_PY_CONTENT)
+
+            agent = DummySkillAgent([tmpdir])
+            active_during_run = {}
+
+            async def run_stub(request: Optional[str] = None) -> str:
+                active_during_run["names"] = agent.list_active_skills()
+                return "ok"
+
+            await agent._run_with_auto_skills("use tool", run_stub)
+
+            assert "tool-skill" in active_during_run.get("names", [])
+            assert agent.list_active_skills() == []
+            assert agent.system_prompt == "Base prompt"
+
+    @pytest.mark.asyncio
+    async def test_stale_skill_tools_removed_after_deactivation(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            skill_dir = Path(tmpdir) / "tool-skill"
+            skill_dir.mkdir()
+            (skill_dir / "SKILL.md").write_text(SKILL_WITH_TOOL_MD)
+            (skill_dir / "tools.py").write_text(TOOLS_PY_CONTENT)
+
+            agent = DummySkillAgent([tmpdir])
+            await agent.activate_skill("tool-skill")
+
+            assert "test_skill_tool" in agent.available_tools.tool_map
+
+            await agent.deactivate_skill("tool-skill")
+            assert "test_skill_tool" not in agent.available_tools.tool_map
 
 
 if __name__ == "__main__":

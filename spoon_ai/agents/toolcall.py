@@ -165,7 +165,8 @@ class ToolCallAgent(ReActAgent):
 
         # Bound LLM tool selection time to avoid step-level timeouts
         # Increase timeout for image/document processing (especially Data URLs and PDFs which can be slower)
-        base_timeout = max(20.0, min(60.0, getattr(self, '_default_timeout', 30.0) - 5.0))
+        # Also account for slow proxy endpoints (e.g. cliproxy on free HuggingFace Spaces)
+        base_timeout = max(90.0, getattr(self, '_default_timeout', 120.0) - 5.0)
         if has_images or has_documents:
             # Increase timeout for image/document processing
             # Documents (especially PDFs) can be large and require more processing time
@@ -552,6 +553,18 @@ class ToolCallAgent(ReActAgent):
                     actual_tool_name = self._map_mcp_tool_name(tool_name)
                     if not actual_tool_name:
                         return f"MCP tool '{tool_name}' not found. Available tools: {list(self.available_tools.tool_map.keys())}"
+
+                    # If mapping resolves to a local tool, execute locally (do NOT route via MCP).
+                    if actual_tool_name in self.available_tools.tool_map:
+                        result = await self.available_tools.execute(name=actual_tool_name, tool_input=arguments)
+                        observation = (
+                            f"Observed output of cmd {actual_tool_name} execution: {result}"
+                            if result
+                            else f"cmd {actual_tool_name} execution without any output"
+                        )
+                        self._handle_special_tool(actual_tool_name, result)
+                        return observation
+
                     result = await self.call_mcp_tool(actual_tool_name, **arguments)
                     return result
                 except Exception as e:
