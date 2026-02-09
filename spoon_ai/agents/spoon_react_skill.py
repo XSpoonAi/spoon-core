@@ -114,6 +114,30 @@ class SpoonReactSkill(SkillEnabledMixin, SpoonReactAI):
 
         return await self._run_with_auto_skills(request, _runner)
 
+    def _map_mcp_tool_name(self, requested_name: str) -> Optional[str]:
+        """Map proxy-prefixed MCP tool names to actual server tool names.
+
+        Some OpenAI-compatible gateways may prefix tool names with `proxy_`.
+        Keep a local mapping fallback here so MCP calls in ToolCallAgent don't fail
+        when this method is absent on skill-enabled agents.
+        """
+        if not requested_name:
+            return None
+
+        # Direct match
+        if hasattr(self, "available_tools") and self.available_tools and requested_name in self.available_tools.tool_map:
+            return requested_name
+
+        # Strip known proxy prefix
+        if requested_name.startswith("proxy_"):
+            candidate = requested_name[len("proxy_"):]
+            if hasattr(self, "available_tools") and self.available_tools and candidate in self.available_tools.tool_map:
+                return candidate
+            return candidate
+
+        # No mapping needed / available
+        return requested_name
+
     async def initialize(self, __context=None):
         """
         Initialize async components.
