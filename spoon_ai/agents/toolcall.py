@@ -165,7 +165,8 @@ class ToolCallAgent(ReActAgent):
 
         # Bound LLM tool selection time to avoid step-level timeouts
         # Increase timeout for image/document processing (especially Data URLs and PDFs which can be slower)
-        base_timeout = max(20.0, min(60.0, getattr(self, '_default_timeout', 30.0) - 5.0))
+        # Also account for slow proxy endpoints (e.g. cliproxy on free HuggingFace Spaces)
+        base_timeout = max(90.0, getattr(self, '_default_timeout', 120.0) - 5.0)
         if has_images or has_documents:
             # Increase timeout for image/document processing
             # Documents (especially PDFs) can be large and require more processing time
