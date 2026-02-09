@@ -76,6 +76,8 @@ class ToolManager:
             self.add_tool(tool)
 
     def remove_tool(self, name: str) -> None:
+        if name not in self.tool_map:
+            return
         self.tools = [tool for tool in self.tools if tool.name != name]
         del self.tool_map[name]
 
