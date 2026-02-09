@@ -552,6 +552,18 @@ class ToolCallAgent(ReActAgent):
                     actual_tool_name = self._map_mcp_tool_name(tool_name)
                     if not actual_tool_name:
                         return f"MCP tool '{tool_name}' not found. Available tools: {list(self.available_tools.tool_map.keys())}"
+
+                    # If mapping resolves to a local tool, execute locally (do NOT route via MCP).
+                    if actual_tool_name in self.available_tools.tool_map:
+                        result = await self.available_tools.execute(name=actual_tool_name, tool_input=arguments)
+                        observation = (
+                            f"Observed output of cmd {actual_tool_name} execution: {result}"
+                            if result
+                            else f"cmd {actual_tool_name} execution without any output"
+                        )
+                        self._handle_special_tool(actual_tool_name, result)
+                        return observation
+
                     result = await self.call_mcp_tool(actual_tool_name, **arguments)
                     return result
                 except Exception as e:
