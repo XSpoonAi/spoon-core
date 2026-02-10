@@ -245,7 +245,11 @@ class ChatBot:
         logger.info(f"Applied manual override for provider: {self.llm_provider}")
 
     def _apply_partial_override_with_config(self) -> None:
-        """Apply partial override with config fallback."""
+        """Apply partial override with config fallback.
+
+        IMPORTANT: when caller explicitly provides `llm_provider`, we MUST NOT silently
+        route to a different provider. Missing/mismatched credentials should fail fast.
+        """
         from spoon_ai.llm.config import ConfigurationManager
 
         config_manager = ConfigurationManager()
@@ -261,6 +265,14 @@ class ChatBot:
 
             final_api_key = self.api_key or config_api_key
             final_base_url = self.base_url or config_base_url
+
+            # Explicit provider selection must have explicit provider credentials.
+            if not final_api_key:
+                provider_key_env = f"{str(self.llm_provider).upper()}_API_KEY"
+                raise ConfigurationError(
+                    f"Missing API key for explicitly requested provider '{self.llm_provider}'. "
+                    f"Set {provider_key_env} or pass api_key directly."
+                )
 
             # Validate provider/API-key consistency only when using provider default base URL.
             # For custom proxy/base URLs (OpenAI-compatible gateways), key prefix heuristics are unreliable.
@@ -302,14 +314,9 @@ class ChatBot:
             logger.info(f"Applied partial override with config fallback for provider: {self.llm_provider}")
 
         except Exception as e:
-            logger.error(f"Failed to load config for provider {self.llm_provider}: {e}")
-            # Fallback to manual values only
-            self._update_provider_config(
-                provider=self.llm_provider,
-                api_key=self.api_key,
-                base_url=self.base_url,
-                model_name=self.model_name
-            )
+            logger.error(f"Failed to load config for explicitly requested provider {self.llm_provider}: {e}")
+            # No silent fallback for explicitly requested providers.
+            raise
 
     def _apply_full_config_loading(self) -> None:
         """Apply full config-based loading using default provider and fallback chain."""

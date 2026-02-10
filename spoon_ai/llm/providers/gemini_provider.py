@@ -513,22 +513,28 @@ class GeminiProvider(LLMProviderInterface):
                 ))
             elif message.role == "assistant":
                 if message.tool_calls:
-                    # Convert tool calls to Gemini format
-                    parts = []
-                    if message.content:
-                        parts.append(types.Part.from_text(text=message.content))
+                    # Gemini tool-calling sequencing is strict:
+                    # function_call turn must be standalone and followed immediately
+                    # by a function_response turn. Mixing assistant text + function_call
+                    # in the same turn can trigger INVALID_ARGUMENT ordering errors.
 
-                    for tool_call in message.tool_calls:
-                        args = tool_call.function.get_arguments_dict()
-                        parts.append(types.Part.from_function_call(
-                            name=tool_call.function.name,
-                            args=args
+                    # Emit assistant text as a separate model turn first (if any)
+                    if message.content:
+                        gemini_messages.append(types.Content(
+                            role="model",
+                            parts=[types.Part.from_text(text=message.content)]
                         ))
 
-                    gemini_messages.append(types.Content(
-                        role="model",
-                        parts=parts
-                    ))
+                    # Emit each function_call as its own model turn
+                    for tool_call in message.tool_calls:
+                        args = tool_call.function.get_arguments_dict()
+                        gemini_messages.append(types.Content(
+                            role="model",
+                            parts=[types.Part.from_function_call(
+                                name=tool_call.function.name,
+                                args=args
+                            )]
+                        ))
                 else:
                     gemini_messages.append(types.Content(
                         role="model",

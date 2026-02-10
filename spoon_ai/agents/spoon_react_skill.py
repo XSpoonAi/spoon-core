@@ -115,27 +115,32 @@ class SpoonReactSkill(SkillEnabledMixin, SpoonReactAI):
         return await self._run_with_auto_skills(request, _runner)
 
     def _map_mcp_tool_name(self, requested_name: str) -> Optional[str]:
-        """Map proxy-prefixed MCP tool names to actual server tool names.
+        """Map requested MCP tool names to the best available local name.
 
-        Some OpenAI-compatible gateways may prefix tool names with `proxy_`.
-        Keep a local mapping fallback here so MCP calls in ToolCallAgent don't fail
-        when this method is absent on skill-enabled agents.
+        Prefer exact matches from model/context output, with generic fallback
+        heuristics for gateway/vendor prefixes.
         """
         if not requested_name:
             return None
 
-        # Direct match
-        if hasattr(self, "available_tools") and self.available_tools and requested_name in self.available_tools.tool_map:
+        if not hasattr(self, "available_tools") or not self.available_tools:
             return requested_name
 
-        # Strip known proxy prefix
-        if requested_name.startswith("proxy_"):
-            candidate = requested_name[len("proxy_"):]
-            if hasattr(self, "available_tools") and self.available_tools and candidate in self.available_tools.tool_map:
-                return candidate
-            return candidate
+        tool_map = self.available_tools.tool_map
 
-        # No mapping needed / available
+        # Direct match (always preferred)
+        if requested_name in tool_map:
+            return requested_name
+
+        # Generic fallback: remove leading namespace/prefix segment(s),
+        # e.g. "proxy_x" -> "x", "vendor_proxy_x" -> "proxy_x" -> "x"
+        candidate = requested_name
+        while "_" in candidate:
+            candidate = candidate.split("_", 1)[1]
+            if candidate in tool_map:
+                return candidate
+
+        # Keep original for remote MCP routing.
         return requested_name
 
     async def initialize(self, __context=None):
