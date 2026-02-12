@@ -55,6 +55,10 @@ class ThreadSafeOutputQueue:
     async def put(self, item: Any) -> None:
         await self._queue.put(item)
 
+    def put_nowait(self, item: Any) -> None:
+        """Non-blocking put — delegates to the underlying asyncio.Queue."""
+        self._queue.put_nowait(item)
+
     async def get(self, timeout: Optional[float] = 30.0) -> Any:
         """Get item with timeout and fair access"""
         consumer_id = id(asyncio.current_task())
@@ -1053,7 +1057,12 @@ class BaseAgent(BaseModel, ABC):
         try:
             self._active_operations.add(stream_id)
 
-            while not (self.task_done.is_set() or self.output_queue.empty()):
+            # Continue streaming while the task is still running OR the queue
+            # has remaining items to drain.  The previous condition
+            # ``not (done or empty)`` was equivalent to ``not done and not empty``
+            # which would exit immediately when the queue started empty even
+            # though the background task had not yet produced output.
+            while not (self.task_done.is_set() and self.output_queue.empty()):
                 try:
                     # Create tasks for queue and done event
                     queue_task = asyncio.create_task(
