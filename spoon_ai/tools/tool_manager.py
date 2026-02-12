@@ -12,10 +12,19 @@ class ToolManager:
         self.tools = tools
         self.tool_map = {tool.name: tool for tool in tools}
         self.indexed = False
+        # Schema cache: avoids re-serializing every step
+        self._params_cache: List[Dict[str, Any]] | None = None
+        self._params_cache_count: int = -1
+
+    def _invalidate_params_cache(self) -> None:
+        """Invalidate the cached tool schemas."""
+        self._params_cache = None
+        self._params_cache_count = -1
 
     def reindex(self) -> None:
         """Rebuild the internal name->tool mapping. Useful if tools have been renamed dynamically."""
         self.tool_map = {tool.name: tool for tool in self.tools}
+        self._invalidate_params_cache()
 
 
     def _lazy_init_pinecone(self):
@@ -43,7 +52,11 @@ class ToolManager:
         return len(self.tools)
 
     def to_params(self) -> List[Dict[str, Any]]:
-        return [tool.to_param() for tool in self.tools]
+        if self._params_cache is not None and self._params_cache_count == len(self.tools):
+            return self._params_cache
+        self._params_cache = [tool.to_param() for tool in self.tools]
+        self._params_cache_count = len(self.tools)
+        return self._params_cache
 
     async def execute(self, * ,name: str, tool_input: Dict[str, Any] =None) -> ToolResult:
         tool = self.tool_map[name]
@@ -70,16 +83,20 @@ class ToolManager:
     def add_tool(self, tool: BaseTool) -> None:
         self.tools.append(tool)
         self.tool_map[tool.name] = tool
+        self._invalidate_params_cache()
 
     def add_tools(self, *tools: BaseTool) -> None:
         for tool in tools:
-            self.add_tool(tool)
+            self.tools.append(tool)
+            self.tool_map[tool.name] = tool
+        self._invalidate_params_cache()
 
     def remove_tool(self, name: str) -> None:
         if name not in self.tool_map:
             return
         self.tools = [tool for tool in self.tools if tool.name != name]
         del self.tool_map[name]
+        self._invalidate_params_cache()
 
     def index_tools(self):
         self._lazy_init_pinecone()
