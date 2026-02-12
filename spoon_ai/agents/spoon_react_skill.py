@@ -107,7 +107,6 @@ class SpoonReactSkill(SkillEnabledMixin, SpoonReactAI):
         Returns:
             Agent response
         """
-
         async def _runner(req: Optional[str]) -> str:
             # SpoonReactAI.run() rebuilds prompts from available_tools.
             # Ensure skill tools are synced first, then delegate to parent.

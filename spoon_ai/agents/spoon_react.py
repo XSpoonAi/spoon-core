@@ -60,7 +60,7 @@ class SpoonReactAI(MCPClientMixin, ToolCallAgent):
         """Initialize SpoonReactAI with both ToolCallAgent and MCPClientMixin initialization"""
         # Call parent class initializers
         ToolCallAgent.__init__(self, **kwargs)
-        
+
         # Initialize MCP client mixin
         MCPClientMixin.__init__(self, self.mcp_transport)
 
