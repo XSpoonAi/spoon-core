@@ -5,6 +5,7 @@ Wraps SkillScript as a BaseTool that agents can call.
 AI decides how to use scripts - users only control whether scripts are allowed.
 """
 
+import json
 import logging
 from typing import Any, Dict, List, Optional
 
@@ -22,7 +23,10 @@ class ScriptTool(BaseTool):
     Tool wrapper for skill scripts.
 
     Exposes a SkillScript as a callable tool that agents can invoke.
-    The AI decides what input to provide - there's no fixed parameter schema.
+    When the script defines an ``input_schema``, the tool parameters are
+    derived from that schema so the LLM receives a structured contract.
+    Otherwise a generic ``input`` string parameter is used for backward
+    compatibility.
     """
 
     name: str = Field(..., description="Tool name")
@@ -33,6 +37,7 @@ class ScriptTool(BaseTool):
     script: SkillScript = Field(..., exclude=True)
     skill_name: str = Field(..., exclude=True)
     working_directory: Optional[str] = Field(default=None, exclude=True)
+    _uses_structured_schema: bool = False
 
     def __init__(
         self,
@@ -55,17 +60,27 @@ class ScriptTool(BaseTool):
         desc = script.description or f"Execute the '{script.name}' script"
         description = f"{desc} (Type: {script.type.value})"
 
-        # Simple parameter schema - just optional input
-        parameters = {
-            "type": "object",
-            "properties": {
-                "input": {
-                    "type": "string",
-                    "description": "Optional input text to pass to the script via stdin"
-                }
-            },
-            "required": []
-        }
+        # Derive parameter schema from script.input_schema when available (#8)
+        uses_structured = False
+        if script.input_schema and isinstance(script.input_schema, dict):
+            parameters = {
+                "type": script.input_schema.get("type", "object"),
+                "properties": script.input_schema.get("properties", {}),
+                "required": script.input_schema.get("required", []),
+            }
+            uses_structured = True
+        else:
+            # Fallback: generic optional input string (backward compat)
+            parameters = {
+                "type": "object",
+                "properties": {
+                    "input": {
+                        "type": "string",
+                        "description": "Optional input text to pass to the script via stdin"
+                    }
+                },
+                "required": []
+            }
 
         super().__init__(
             name=tool_name,
@@ -75,14 +90,20 @@ class ScriptTool(BaseTool):
             skill_name=skill_name,
             working_directory=working_directory
         )
+        object.__setattr__(self, "_uses_structured_schema", uses_structured)
 
     async def execute(self, input: Optional[str] = None, **kwargs) -> str:
         """
         Execute the script.
 
+        When the script declares an ``input_schema``, the LLM's structured
+        kwargs are serialized to JSON and piped to stdin.  For legacy scripts
+        that only declare a generic ``input`` string, the raw value is passed
+        through as-is.
+
         Args:
-            input: Optional input text to pass to script via stdin
-            **kwargs: Additional arguments (ignored)
+            input: Optional input text (legacy path)
+            **kwargs: Structured arguments matching input_schema
 
         Returns:
             Script output as string
@@ -91,9 +112,24 @@ class ScriptTool(BaseTool):
 
         logger.debug(f"ScriptTool '{self.name}' executing")
 
+        # Decide what to send to the script on stdin
+        if self._uses_structured_schema:
+            # Build a JSON payload from all kwargs (including 'input' if present)
+            payload: Dict[str, Any] = {}
+            if input is not None:
+                payload["input"] = input
+            payload.update(kwargs)
+            input_text = json.dumps(payload, ensure_ascii=False)
+        else:
+            # Legacy path: plain string or try JSON passthrough
+            input_text = input
+            if input_text is None and kwargs:
+                # Model may have sent structured args despite generic schema
+                input_text = json.dumps(kwargs, ensure_ascii=False)
+
         result: ScriptResult = await executor.execute(
             script=self.script,
-            input_text=input,
+            input_text=input_text,
             working_directory=self.working_directory
         )
 
