@@ -3,18 +3,17 @@ requires = ["setuptools>=61.0"]
 build-backend = "setuptools.build_meta"
 
 [project]
-name = "spoon-ai-sdk" # Package name, can be changed
-version = "0.4.0" # Initial version
+name = "spoon-ai-sdk"
+version = "0.4.0"
 authors = [
-  { name="Your Name", email="your.email@example.com" }, # Please replace with your info
+  { name="XSpoon Team", email="team@xspoon.ai" },
 ]
-description = "SDK for SpoonAI tools and agents" # A brief description
-readme = "README.md" # If you have a README file
-# packages = ["spoon_ai"] # REMOVED: Invalid field here
-requires-python = ">=3.12" # Specify supported Python version
+description = "SDK for SpoonAI tools and agents"
+readme = "README.md"
+requires-python = ">=3.12"
 classifiers = [
     "Programming Language :: Python :: 3",
-    "License :: OSI Approved :: MIT License", # Choose an appropriate license
+    "License :: OSI Approved :: MIT License",
     "Operating System :: OS Independent",
 ]
 dependencies = [ # Complete dependencies from requirements.txt for out-of-the-box usage
