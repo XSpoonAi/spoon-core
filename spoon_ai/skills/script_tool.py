@@ -63,12 +63,34 @@ class ScriptTool(BaseTool):
         # Derive parameter schema from script.input_schema when available (#8)
         uses_structured = False
         if script.input_schema and isinstance(script.input_schema, dict):
-            parameters = {
-                "type": script.input_schema.get("type", "object"),
-                "properties": script.input_schema.get("properties", {}),
-                "required": script.input_schema.get("required", []),
-            }
-            uses_structured = True
+            schema_type = script.input_schema.get("type", "object")
+            # Tool/function calling interfaces expect top-level object schema.
+            # If skill metadata declares non-object type, degrade gracefully.
+            if schema_type != "object":
+                logger.warning(
+                    "Script '%s' in skill '%s' has non-object input_schema.type=%s; "
+                    "falling back to generic object schema",
+                    script.name,
+                    skill_name,
+                    schema_type,
+                )
+                parameters = {
+                    "type": "object",
+                    "properties": {
+                        "input": {
+                            "type": "string",
+                            "description": "Optional input text to pass to the script via stdin"
+                        }
+                    },
+                    "required": []
+                }
+            else:
+                parameters = {
+                    "type": "object",
+                    "properties": script.input_schema.get("properties", {}),
+                    "required": script.input_schema.get("required", []),
+                }
+                uses_structured = True
         else:
             # Fallback: generic optional input string (backward compat)
             parameters = {
