@@ -119,7 +119,7 @@ class ToolManager:
         self.index.upsert(vectors=vectors, namespace="dex-tools-test")
         self.indexed = True
 
-    def query_tools(self, query: str, top_k: int = 5, rerank_k: int = 20) -> List[BaseTool]:
+    def query_tools(self, query: str, top_k: int = 5, rerank_k: int = 20) -> List[str]:
         if not self.indexed:
             self.index_tools()
         embedding_vector = self.embedding_client.embeddings.create(
