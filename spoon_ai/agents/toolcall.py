@@ -215,6 +215,9 @@ class ToolCallAgent(ReActAgent):
             logger.info(f"🏁 {self.name} terminating due to finish_reason signals (no tool calls)")
             self.state = AgentState.FINISHED
             await self.add_message("assistant", response.content or "Task completed")
+            # Emit content to output queue for streaming consumers
+            if self.output_queue:
+                self.output_queue.put_nowait({"content": response.content or "Task completed"})
             # Set a flag to indicate finish_reason termination and store the content
             self._finish_reason_terminated = True
             self._final_response_content = response.content or "Task completed"

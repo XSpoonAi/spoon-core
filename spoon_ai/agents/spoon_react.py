@@ -60,7 +60,7 @@ class SpoonReactAI(MCPClientMixin, ToolCallAgent):
         """Initialize SpoonReactAI with both ToolCallAgent and MCPClientMixin initialization"""
         # Call parent class initializers
         ToolCallAgent.__init__(self, **kwargs)
-        
+
         # Initialize MCP client mixin
         MCPClientMixin.__init__(self, self.mcp_transport)
 
@@ -176,7 +176,12 @@ class SpoonReactAI(MCPClientMixin, ToolCallAgent):
 
         self._x402_tools_initialized = True
 
-    async def run(self, request: Optional[str] = None) -> str:
+    async def run(self, request: Optional[str] = None, timeout: Optional[float] = None) -> str:
         """Ensure prompts reflect current tools before running."""
         self._refresh_prompts()
-        return await super().run(request)
+        kwargs: dict = {}
+        if request is not None:
+            kwargs["request"] = request
+        if timeout is not None:
+            kwargs["timeout"] = timeout
+        return await super().run(**kwargs)
