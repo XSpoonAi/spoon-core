@@ -2,9 +2,11 @@
 Configuration management for LLM providers using environment variables.
 """
 
+from __future__ import annotations
+
 import os
 import re
-from typing import Dict, Any, Optional, List
+from typing import Any
 from dataclasses import dataclass, field
 from logging import getLogger
 
@@ -38,14 +40,14 @@ class ProviderConfig:
     """Configuration for a specific LLM provider."""
     name: str
     api_key: str
-    base_url: Optional[str] = None
+    base_url: str | None = None
     model: str = ""
     max_tokens: int = 4096
     temperature: float = 0.3
     timeout: int = 300
     retry_attempts: int = 3
-    custom_headers: Dict[str, str] = field(default_factory=dict)
-    extra_params: Dict[str, Any] = field(default_factory=dict)
+    custom_headers: dict[str, str] = field(default_factory=dict)
+    extra_params: dict[str, Any] = field(default_factory=dict)
 
     def __post_init__(self):
         """Validate configuration after initialization."""
@@ -62,11 +64,11 @@ class ProviderConfig:
         if self.retry_attempts < 0:
             raise ConfigurationError(f"retry_attempts must be non-negative, got {self.retry_attempts}")
 
-    def model_dump(self) -> Dict[str, Any]:
+    def model_dump(self) -> dict[str, Any]:
         """Convert the configuration to a dictionary.
 
         Returns:
-            Dict[str, Any]: Configuration as dictionary
+            dict[str, Any]: Configuration as dictionary
         """
         return {
             'name': self.name,
@@ -88,8 +90,8 @@ class ConfigurationManager:
     def __init__(self) -> None:
         """Initialize configuration manager and load environment variables."""
         self._load_dotenv()
-        self._config_cache: Dict[str, Any] = {}
-        self._provider_configs: Dict[str, ProviderConfig] = {}
+        self._config_cache: dict[str, Any] = {}
+        self._provider_configs: dict[str, ProviderConfig] = {}
         self._load_config()
 
     def _load_dotenv(self) -> None:
@@ -155,7 +157,7 @@ class ConfigurationManager:
                 context={"provider_config": provider_config, "error": str(e)}
             )
 
-    def _get_provider_config_dict(self, provider_name: str) -> Dict[str, Any]:
+    def _get_provider_config_dict(self, provider_name: str) -> dict[str, Any]:
         """Get provider configuration dictionary with flexible fallback logic.
 
         Configuration Priority (highest to lowest):
@@ -174,7 +176,7 @@ class ConfigurationManager:
             provider_name: Name of the provider
 
         Returns:
-            Dict[str, Any]: Provider configuration dictionary with defaults
+            dict[str, Any]: Provider configuration dictionary with defaults
         """
         config = {}
 
@@ -264,7 +266,7 @@ class ConfigurationManager:
         return config
 
     @staticmethod
-    def _is_placeholder_value(value: Optional[str]) -> bool:
+    def _is_placeholder_value(value: str | None) -> bool:
         """Detect whether a configuration value still uses template placeholders."""
         if value is None:
             return True
@@ -288,7 +290,7 @@ class ConfigurationManager:
 
         return False
 
-    def _get_provider_defaults(self, provider_name: str) -> Dict[str, Any]:
+    def _get_provider_defaults(self, provider_name: str) -> dict[str, Any]:
         """Get comprehensive default configuration for a provider.
 
         Provides sensible defaults for all configuration options, allowing
@@ -298,7 +300,7 @@ class ConfigurationManager:
             provider_name: Name of the provider
 
         Returns:
-            Dict[str, Any]: Complete default configuration
+            dict[str, Any]: Complete default configuration
         """
         # Common defaults for all providers
         common_defaults = {
@@ -434,15 +436,15 @@ class ConfigurationManager:
         logger.warning("No API keys found for any provider, falling back to openai")
         return 'openai'
 
-    def get_fallback_chain(self) -> List[str]:
+    def get_fallback_chain(self) -> list[str]:
         """Get fallback chain from configuration.
 
         Returns:
-            List[str]: List of provider names in fallback order
+            list[str]: List of provider names in fallback order
         """
-        def _dedupe_preserve_order(items: List[str]) -> List[str]:
+        def _dedupe_preserve_order(items: list[str]) -> list[str]:
             seen = set()
-            result: List[str] = []
+            result: list[str] = []
             for item in items:
                 if item in seen:
                     continue
@@ -450,8 +452,8 @@ class ConfigurationManager:
                 result.append(item)
             return result
 
-        def _filter_available_providers(items: List[str]) -> List[str]:
-            usable: List[str] = []
+        def _filter_available_providers(items: list[str]) -> list[str]:
+            usable: list[str] = []
             for provider in items:
                 try:
                     config = self._get_provider_config_dict(provider)
@@ -515,11 +517,11 @@ class ConfigurationManager:
         logger.warning("No fallback chain configured, using default")
         return ['openai']
 
-    def list_configured_providers(self) -> List[str]:
+    def list_configured_providers(self) -> list[str]:
         """List all configured providers.
 
         Returns:
-            List[str]: List of provider names that have configuration
+            list[str]: List of provider names that have configuration
         """
         configured: set[str] = set()
 
@@ -556,11 +558,11 @@ class ConfigurationManager:
 
         return list(configured)
 
-    def get_available_providers_by_priority(self) -> List[str]:
+    def get_available_providers_by_priority(self) -> list[str]:
         """Get available providers ordered by priority and quality.
 
         Returns:
-            List[str]: List of available provider names in priority order
+            list[str]: List of available provider names in priority order
         """
         # Define priority order based on quality and capabilities
         priority_order = ['openai', 'anthropic', 'openrouter', 'deepseek', 'gemini']
@@ -576,11 +578,11 @@ class ConfigurationManager:
 
         return available_providers
 
-    def get_provider_info(self) -> Dict[str, Dict[str, Any]]:
+    def get_provider_info(self) -> dict[str, dict[str, Any]]:
         """Get information about all providers and their availability.
 
         Returns:
-            Dict[str, Dict[str, Any]]: Provider information including availability
+            dict[str, dict[str, Any]]: Provider information including availability
         """
         provider_info = {}
 

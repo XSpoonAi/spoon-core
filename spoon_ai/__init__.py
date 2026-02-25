@@ -4,13 +4,13 @@ from pathlib import Path
 from .security import init_security
 try:  # Python 3.12+
     from importlib.metadata import PackageNotFoundError, version as _dist_version
-except Exception:  # pragma: no cover - fallback for older environments
+except ImportError:  # pragma: no cover - fallback for older environments
     try:
         from importlib_metadata import (  # type: ignore
             PackageNotFoundError,
             version as _dist_version,
         )
-    except Exception:  # Last-resort placeholders
+    except ImportError:  # Last-resort placeholders
         PackageNotFoundError = Exception  # type: ignore
 
 
@@ -27,7 +27,7 @@ def _read_local_pyproject_version() -> str | None:
     try:
         try:
             import tomllib  # Python 3.12+
-        except Exception:  # pragma: no cover
+        except ImportError:  # pragma: no cover
             import tomli as tomllib  # type: ignore
 
         with pyproject_path.open("rb") as f:
@@ -88,7 +88,7 @@ try:
         "MessageContent",
         "ContentBlock",
     ]
-except Exception:  # pragma: no cover - optional dependency surface
+except (ImportError, ModuleNotFoundError):  # pragma: no cover - optional dependency surface
     ChatBot = None  # type: ignore
     Message = None  # type: ignore
     LLMResponse = None  # type: ignore
@@ -108,7 +108,4 @@ except Exception:  # pragma: no cover - optional dependency surface
 init_security()
 
 __all__ = _exported
-
-
-
 

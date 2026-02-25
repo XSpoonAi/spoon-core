@@ -1,3 +1,5 @@
+from __future__ import annotations
+
 import asyncio
 import logging
 import uuid
@@ -6,7 +8,7 @@ import datetime
 from pathlib import Path
 from abc import ABC
 from contextlib import asynccontextmanager
-from typing import Literal, Optional, List, Union, Dict, Any, cast
+from typing import Any, Literal, cast
 import threading
 import time
 
@@ -37,7 +39,7 @@ try:
     MIDDLEWARE_AVAILABLE = True
 except ImportError:
     MIDDLEWARE_AVAILABLE = False
-    logger.warning("Middleware system not available. Install spoon_ai.middleware for deep agent features.")
+    logger.debug("Middleware system not available.")
 
 def debug_log(message):
     if DEBUG:
@@ -56,10 +58,10 @@ class ThreadSafeOutputQueue:
         await self._queue.put(item)
 
     def put_nowait(self, item: Any) -> None:
-        """Non-blocking put — delegates to the underlying asyncio.Queue."""
+        """Non-blocking put - delegates to the underlying asyncio.Queue."""
         self._queue.put_nowait(item)
 
-    async def get(self, timeout: Optional[float] = 30.0) -> Any:
+    async def get(self, timeout: float | None = 30.0) -> Any:
         """Get item with timeout and fair access"""
         consumer_id = id(asyncio.current_task())
 
@@ -90,14 +92,14 @@ class BaseAgent(BaseModel, ABC):
     Thread-safe base class for all agents with proper concurrency handling.
     """
     name: str = Field(..., description="The name of the agent")
-    description: Optional[str] = Field(None, description="The description of the agent")
-    system_prompt: Optional[str] = Field(None, description="The system prompt for the agent")
-    next_step_prompt: Optional[str] = Field(None, description="Prompt for determining next action")
+    description: str | None = Field(None, description="The description of the agent")
+    system_prompt: str | None = Field(None, description="The system prompt for the agent")
+    next_step_prompt: str | None = Field(None, description="Prompt for determining next action")
 
     llm: ChatBot = Field(..., description="The LLM to use for the agent")
     memory: Memory = Field(default_factory=Memory, description="The memory to use for the agent")
     enable_long_term_memory: bool = Field(default=False, description="Enable Mem0-based long-term memory")
-    mem0_config: Dict[str, Any] = Field(default_factory=dict, description="Mem0 configuration passed to the LLM client")
+    mem0_config: dict[str, Any] = Field(default_factory=dict, description="Mem0 configuration passed to the LLM client")
     state: AgentState = Field(default=AgentState.IDLE, description="The state of the agent")
 
     max_steps: int = Field(default=10, description="The maximum number of steps the agent can take")
@@ -108,10 +110,10 @@ class BaseAgent(BaseModel, ABC):
     task_done: asyncio.Event = Field(default_factory=asyncio.Event, description="The signal of agent run done")
 
     # Callback system
-    callbacks: List[BaseCallbackHandler] = Field(default_factory=list, description="Callback handlers for monitoring")
+    callbacks: list[BaseCallbackHandler] = Field(default_factory=list, description="Callback handlers for monitoring")
 
     # Middleware system (Deep Agent support)
-    middleware: List[Any] = Field(default_factory=list, description="Middleware for Plan-Act-Reflect and hooks")
+    middleware: list[Any] = Field(default_factory=list, description="Middleware for Plan-Act-Reflect and hooks")
     enable_plan_phase: bool = Field(default=False, description="Enable explicit planning phase before action loop")
     enable_reflect_phase: bool = Field(default=False, description="Enable reflection phase based on token threshold")
 
@@ -129,11 +131,11 @@ class BaseAgent(BaseModel, ABC):
     _last_reflect_token_count: int = 0
 
     # Thread ID for conversation isolation
-    thread_id: Optional[str] = Field(default=None, description="Thread ID for conversation isolation")
+    thread_id: str | None = Field(default=None, description="Thread ID for conversation isolation")
 
     # Internal middleware state (not in Pydantic schema)
-    _middleware_pipeline: Optional[Any] = None
-    _agent_state: Dict[str, Any] = {}
+    _middleware_pipeline: Any | None = None
+    _agent_state: dict[str, Any] = {}
 
     model_config = {
         "arbitrary_types_allowed": True,
@@ -220,10 +222,10 @@ class BaseAgent(BaseModel, ABC):
         self,
         role: Literal["user", "assistant", "tool"],
         content: MessageContent,
-        tool_call_id: Optional[str] = None,
-        tool_calls: Optional[List[ToolCall]] = None,
-        tool_name: Optional[str] = None,
-        timeout: Optional[float] = None
+        tool_call_id: str | None = None,
+        tool_calls: list[ToolCall] | None = None,
+        tool_name: str | None = None,
+        timeout: float | None = None
     ) -> None:
         """Thread-safe message addition with timeout protection.
 
@@ -297,11 +299,11 @@ class BaseAgent(BaseModel, ABC):
         self,
         role: Literal["user", "assistant"],
         text: str,
-        image_url: Optional[str] = None,
-        image_data: Optional[str] = None,
+        image_url: str | None = None,
+        image_data: str | None = None,
         image_media_type: str = "image/png",
         detail: Literal["auto", "low", "high"] = "auto",
-        timeout: Optional[float] = None
+        timeout: float | None = None
     ) -> None:
         """Convenience method to add a message with an image.
 
@@ -371,7 +373,7 @@ class BaseAgent(BaseModel, ABC):
 
         # No MIME type validation - pass through all types to LLM providers
 
-        content_blocks: List[ContentBlock] = [TextContent(text=text)]
+        content_blocks: list[ContentBlock] = [TextContent(text=text)]
 
         if image_url:
             content_blocks.append(
@@ -393,8 +395,8 @@ class BaseAgent(BaseModel, ABC):
         role: Literal["user", "assistant"],
         text: str,
         pdf_data: str,
-        filename: Optional[str] = None,
-        timeout: Optional[float] = None
+        filename: str | None = None,
+        timeout: float | None = None
     ) -> None:
         """Convenience method to add a message with a PDF document.
 
@@ -417,7 +419,7 @@ class BaseAgent(BaseModel, ABC):
         if role not in ["user", "assistant"]:
             raise ValueError(f"Multimodal messages only support user/assistant roles, got: {role}")
 
-        content_blocks: List[ContentBlock] = [TextContent(text=text)]
+        content_blocks: list[ContentBlock] = [TextContent(text=text)]
         content_blocks.append(
             DocumentContent(
                 source=DocumentSource(
@@ -437,8 +439,8 @@ class BaseAgent(BaseModel, ABC):
         text: str,
         document_data: str,
         media_type: str = "application/pdf",
-        filename: Optional[str] = None,
-        timeout: Optional[float] = None
+        filename: str | None = None,
+        timeout: float | None = None
     ) -> None:
         """Convenience method to add a message with a document.
 
@@ -465,7 +467,7 @@ class BaseAgent(BaseModel, ABC):
         if role not in ["user", "assistant"]:
             raise ValueError(f"Multimodal messages only support user/assistant roles, got: {role}")
 
-        content_blocks: List[ContentBlock] = [TextContent(text=text)]
+        content_blocks: list[ContentBlock] = [TextContent(text=text)]
         content_blocks.append(
             DocumentContent(
                 source=DocumentSource(
@@ -484,7 +486,7 @@ class BaseAgent(BaseModel, ABC):
         role: Literal["user", "assistant"],
         text: str,
         file_path: str,
-        timeout: Optional[float] = None
+        timeout: float | None = None
     ) -> None:
         """Convenience method to add a message with a PDF file from disk.
 
@@ -527,7 +529,7 @@ class BaseAgent(BaseModel, ABC):
         text: str,
         file_path: str,
         detail: str = "auto",
-        timeout: Optional[float] = None
+        timeout: float | None = None
     ) -> None:
         """Convenience method to add a message with an image file from disk.
 
@@ -577,7 +579,7 @@ class BaseAgent(BaseModel, ABC):
         role: Literal["user", "assistant"],
         text: str,
         file_path: str,
-        timeout: Optional[float] = None
+        timeout: float | None = None
     ) -> None:
         """Convenience method to add a message with any supported file from disk.
 
@@ -653,7 +655,7 @@ class BaseAgent(BaseModel, ABC):
             )
 
     @asynccontextmanager
-    async def state_context(self, new_state: AgentState, timeout: Optional[float] = None):
+    async def state_context(self, new_state: AgentState, timeout: float | None = None):
         """Thread-safe state context manager with deadlock prevention.
         Acquires the state lock only to perform quick transitions, not for the
         duration of the work inside the context, avoiding long-held locks and
@@ -734,13 +736,13 @@ class BaseAgent(BaseModel, ABC):
         finally:
             self._active_operations.discard(operation_id)
 
-    def _record_state_transition(self, transition: Dict[str, Any]) -> None:
+    def _record_state_transition(self, transition: dict[str, Any]) -> None:
         """Record state transition for debugging"""
         self._state_transition_history.append(transition)
         if len(self._state_transition_history) > self._max_history:
             self._state_transition_history.pop(0)
 
-    async def run(self, request: Optional[str] = None, timeout: Optional[float] = None) -> str:
+    async def run(self, request: str | None = None, timeout: float | None = None) -> str:
         """Thread-safe run method with proper concurrency control, callback support, and Plan-Act-Reflect phases."""
         timeout = timeout or self._default_timeout
         run_id = uuid.uuid4()
@@ -764,7 +766,7 @@ class BaseAgent(BaseModel, ABC):
         if request is not None:
             await self.add_message("user", request)
 
-        results: List[str] = []
+        results: list[str] = []
         operation_id = str(uuid.uuid4())
         runtime = None  # Will be set in try block
 
@@ -885,7 +887,7 @@ class BaseAgent(BaseModel, ABC):
                     self.state = AgentState.IDLE
                     self.current_step = 0
 
-    async def step(self, run_id: Optional[uuid.UUID] = None) -> str:
+    async def step(self, run_id: uuid.UUID | None = None) -> str:
         """Override this method in subclasses - now with step-level locking and callback support."""
         async with self._step_lock:
             # Subclasses should implement this
@@ -1049,7 +1051,7 @@ class BaseAgent(BaseModel, ABC):
         except Exception as e:
             debug_log(f"Error saving chat history: {e}")
 
-    async def stream(self, timeout: Optional[float] = None):
+    async def stream(self, timeout: float | None = None):
         """Thread-safe streaming with proper cleanup and timeout"""
         timeout = timeout or self._default_timeout
         stream_id = str(uuid.uuid4())
@@ -1122,9 +1124,9 @@ class BaseAgent(BaseModel, ABC):
         self,
         content: Any,
         sender: str,
-        message: Dict[str, Any],
+        message: dict[str, Any],
         agent_id: str,
-        timeout: Optional[float] = None
+        timeout: float | None = None
     ):
         """Thread-safe MCP message processing with timeout protection"""
         timeout = timeout or self._default_timeout
@@ -1182,7 +1184,7 @@ class BaseAgent(BaseModel, ABC):
             logger.error(f"Agent {self.name} error processing message: {str(e)}")
             return f"Error processing message: {str(e)}"
 
-    async def _run_and_signal_done(self, request: Optional[str] = None, timeout: Optional[float] = None):
+    async def _run_and_signal_done(self, request: str | None = None, timeout: float | None = None):
         """Helper method to run the agent and signal when done for streaming"""
         try:
             await self.run(request=request, timeout=timeout)
@@ -1231,7 +1233,7 @@ class BaseAgent(BaseModel, ABC):
     # Deep Agent Support - Plan-Act-Reflect Phases
     # ========================================================================
 
-    def _create_runtime_context(self, run_id: Optional[uuid.UUID] = None) -> Any:
+    def _create_runtime_context(self, run_id: uuid.UUID | None = None) -> Any:
         """Create runtime context for middleware.
 
         Returns AgentRuntime if middleware is available, None otherwise.
@@ -1290,7 +1292,7 @@ class BaseAgent(BaseModel, ABC):
         except Exception as e:
             logger.error(f"Error in PLAN phase for agent {self.name}: {e}")
 
-    async def _execute_reflect_phase(self, runtime: Any, phase_data: Dict[str, Any]) -> None:
+    async def _execute_reflect_phase(self, runtime: Any, phase_data: dict[str, Any]) -> None:
         """Execute REFLECT phase hooks from middleware.
 
         This is called periodically during the action loop (every N steps)
@@ -1324,7 +1326,7 @@ class BaseAgent(BaseModel, ABC):
         except Exception as e:
             logger.error(f"Error in REFLECT phase for agent {self.name}: {e}")
 
-    async def _execute_finish_phase(self, runtime: Any, phase_data: Dict[str, Any]) -> None:
+    async def _execute_finish_phase(self, runtime: Any, phase_data: dict[str, Any]) -> None:
         """Execute FINISH phase hooks from middleware.
 
         This is called after the action loop completes, before returning
@@ -1377,7 +1379,7 @@ class BaseAgent(BaseModel, ABC):
         """
         self._agent_state[key] = value
 
-    def update_agent_state(self, updates: Dict[str, Any]) -> None:
+    def update_agent_state(self, updates: dict[str, Any]) -> None:
         """Bulk update agent state (for middleware access).
 
         Args:
@@ -1385,7 +1387,7 @@ class BaseAgent(BaseModel, ABC):
         """
         self._agent_state.update(updates)
 
-    def get_diagnostics(self) -> Dict[str, Any]:
+    def get_diagnostics(self) -> dict[str, Any]:
         """Get diagnostic information about the agent's state"""
         diagnostics = {
             'name': self.name,
