@@ -109,22 +109,25 @@ class SkillLoader:
         Returns:
             List of paths to SKILL.md files
         """
-        skill_files = []
+        skill_files: List[Path] = []
+        seen_resolved: set = set()
 
         for base_path in self._paths:
             if not base_path.exists():
                 continue
 
-            # Find all SKILL.md files (case-insensitive on Windows)
-            for skill_md in base_path.rglob("SKILL.md"):
-                skill_files.append(skill_md)
-                logger.debug(f"Discovered skill: {skill_md}")
-
-            # Also check for skill.md (lowercase)
-            for skill_md in base_path.rglob("skill.md"):
-                if skill_md not in skill_files:
-                    skill_files.append(skill_md)
-                    logger.debug(f"Discovered skill: {skill_md}")
+            # Use a single glob and case-insensitive name check to avoid
+            # duplicates on Windows (where rglob("SKILL.md") and
+            # rglob("skill.md") may return the same files).
+            for md_file in base_path.rglob("*.md"):
+                if md_file.name.lower() != "skill.md":
+                    continue
+                resolved = md_file.resolve()
+                if resolved in seen_resolved:
+                    continue
+                seen_resolved.add(resolved)
+                skill_files.append(md_file)
+                logger.debug(f"Discovered skill: {md_file}")
 
         return skill_files
 
@@ -141,7 +144,10 @@ class SkillLoader:
         Raises:
             ValueError: If file format is invalid
         """
-        content = file_path.read_text(encoding='utf-8')
+        # Use utf-8-sig to strip BOM if present (common on Windows editors)
+        content = file_path.read_text(encoding='utf-8-sig')
+        # Normalize line endings for regex reliability (\r\n → \n)
+        content = content.replace('\r\n', '\n').replace('\r', '\n')
 
         match = self.FRONTMATTER_PATTERN.match(content)
         if not match:

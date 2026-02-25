@@ -57,6 +57,10 @@ class ThreadSafeOutputQueue:
     async def put(self, item: Any) -> None:
         await self._queue.put(item)
 
+    def put_nowait(self, item: Any) -> None:
+        """Non-blocking put - delegates to the underlying asyncio.Queue."""
+        self._queue.put_nowait(item)
+
     async def get(self, timeout: float | None = 30.0) -> Any:
         """Get item with timeout and fair access"""
         consumer_id = id(asyncio.current_task())
@@ -104,7 +108,7 @@ class BaseAgent(BaseModel, ABC):
     # Thread-safe replacements
     output_queue: ThreadSafeOutputQueue = Field(default_factory=ThreadSafeOutputQueue, description="Thread-safe output queue")
     task_done: asyncio.Event = Field(default_factory=asyncio.Event, description="The signal of agent run done")
-    
+
     # Callback system
     callbacks: list[BaseCallbackHandler] = Field(default_factory=list, description="Callback handlers for monitoring")
 
@@ -335,7 +339,7 @@ class BaseAgent(BaseModel, ABC):
 
         if not image_url and not image_data:
             raise ValueError("Either image_url or image_data must be provided")
-        
+
         # Validate image_data is not empty (if provided)
         # Three upload methods:
         # - Method 1: image_data (base64) - image_data must have a value
@@ -349,7 +353,7 @@ class BaseAgent(BaseModel, ABC):
             # Check if only whitespace (empty after strip)
             if not image_data.strip():
                 raise ValueError("image_data cannot be empty (only whitespace). If you want to use URL-based images, use image_url parameter instead.")
-        
+
         # Validate image_url format if provided
         # image_url supports both external URLs (way 2) and data URLs (way 3)
         if image_url:
@@ -366,7 +370,7 @@ class BaseAgent(BaseModel, ABC):
                         f"Invalid image URL format: {image_url}. "
                         f"Must be a valid HTTP/HTTPS URL (for external images) or data URL (for embedded images)."
                     )
-        
+
         # No MIME type validation - pass through all types to LLM providers
 
         content_blocks: list[ContentBlock] = [TextContent(text=text)]
@@ -1055,7 +1059,12 @@ class BaseAgent(BaseModel, ABC):
         try:
             self._active_operations.add(stream_id)
 
-            while not (self.task_done.is_set() or self.output_queue.empty()):
+            # Continue streaming while the task is still running OR the queue
+            # has remaining items to drain.  The previous condition
+            # ``not (done or empty)`` was equivalent to ``not done and not empty``
+            # which would exit immediately when the queue started empty even
+            # though the background task had not yet produced output.
+            while not (self.task_done.is_set() and self.output_queue.empty()):
                 try:
                     # Create tasks for queue and done event
                     queue_task = asyncio.create_task(
