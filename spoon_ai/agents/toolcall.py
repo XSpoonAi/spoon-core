@@ -44,6 +44,9 @@ class ToolCallAgent(ReActAgent):
     # Track last tool error for higher-level fallbacks
     last_tool_error: Optional[str] = Field(default=None, exclude=True)
 
+    # Reduced default timeout as per user request (blockchain operations will focus on submission)
+    _default_timeout: float = 120.0
+
     # MCP Tools Caching
     mcp_tools_cache: Optional[List[MCPTool]] = Field(default=None, exclude=True)
     mcp_tools_cache_timestamp: Optional[float] = Field(default=None, exclude=True)
@@ -169,14 +172,12 @@ class ToolCallAgent(ReActAgent):
         base_timeout = max(90.0, getattr(self, '_default_timeout', 120.0) - 5.0)
         if has_images or has_documents:
             # Increase timeout for image/document processing
-            # Documents (especially PDFs) can be large and require more processing time
-            # Large PDFs (4MB+) may need up to 180 seconds (3 minutes) for processing
             if has_documents:
                 llm_timeout = 180.0  # 3 minutes for large PDF processing
             elif has_images:
-                llm_timeout = min(120.0, base_timeout * 2)  # 2 minutes for images
+                llm_timeout = max(120.0, base_timeout * 2)  # 2 minutes for images
             else:
-                llm_timeout = min(60.0, base_timeout * 2)
+                llm_timeout = max(60.0, base_timeout * 2)
             
             content_type = "images and documents" if (has_images and has_documents) else ("images" if has_images else "documents")
             logger.debug(f"Detected {content_type}, increased timeout to {llm_timeout}s for processing")

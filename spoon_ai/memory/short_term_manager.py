@@ -148,9 +148,10 @@ class ShortTermMemoryManager:
 
         # Iteratively add dependencies until stable
         current_indices = set(keep_indices)
-        
+
         while True:
             added_any = False
+            dropped_any = False
             
             # 1. Tool -> Assistant (ensure parent is kept)
             for idx in list(current_indices):
@@ -164,18 +165,36 @@ class ShortTermMemoryManager:
                     added_any = True
 
             # 2. Assistant -> Tools (ensure all responses are kept)
+            # CRITICAL: If an assistant message has tool calls, but some of those tool calls
+            # don't have responses in the ENTIRE message list (e.g. due to timeout),
+            # we MUST drop the assistant message because OpenAI will reject it.
             for idx in list(current_indices):
                 message = messages[idx]
                 if message.role != "assistant" or not message.tool_calls:
                     continue
 
                 tool_indices = self._find_tool_indices_for_assistant(messages, idx)
+                
+                # Check if all tool calls have a corresponding tool message in the source 'messages' list
+                if len(tool_indices) < len(message.tool_calls):
+                    # Orphaned tool calls detected! 
+                    # This assistant message is invalid for the API.
+                    logger.warning(f"Dropping assistant message at index {idx} because it has {len(message.tool_calls)} tool calls but only {len(tool_indices)} responses found in memory.")
+                    current_indices.remove(idx)
+                    # Also remove any partial responses already in keep_indices
+                    for t_idx in tool_indices:
+                        if t_idx in current_indices:
+                            current_indices.remove(t_idx)
+                    dropped_any = True
+                    continue
+
+                # All responses exist in source list, ensure they are all in current_indices
                 for t_idx in tool_indices:
                     if t_idx not in current_indices:
                         current_indices.add(t_idx)
                         added_any = True
             
-            if not added_any:
+            if not added_any and not dropped_any:
                 break
 
         # Check budget if specified
@@ -189,14 +208,14 @@ class ShortTermMemoryManager:
             
             proposed_messages = [messages[i] for i in sorted(current_indices)]
             token_cost = await self.token_counter.count_tokens(proposed_messages, model)
-            
+
             if token_cost > max_tokens:
                 # If adding dependencies broke the budget, we have to start dropping.
                 # Simplest strategy: if a group (Assistant + Tools) doesn't fit, drop the whole group
                 # starting from the oldest.
                 # This is a bit advanced, so for now we'll just log it.
                 logger.warning(f"Tool dependency resolution exceeded token budget ({token_cost} > {max_tokens})")
-        
+
         return current_indices
 
     async def trim_messages(

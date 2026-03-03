@@ -62,6 +62,7 @@ class Web3ResearchSkillAgent(SpoonReactSkill):
         kwargs.setdefault('description', 'AI agent specialized in Web3 and cryptocurrency research (skill-based)')
         kwargs.setdefault('system_prompt', self._get_system_prompt())
         kwargs.setdefault('max_steps', 10)
+        kwargs.setdefault('_default_timeout', 120.0)
 
         # Configure skill paths to include examples/skills
         kwargs.setdefault('skill_paths', [EXAMPLES_SKILLS_PATH])
@@ -112,10 +113,10 @@ where appropriate. Cryptocurrency markets are highly volatile and speculative.
         skills = self.list_skills()
         logger.info(f"Available skills: {skills}")
 
-        # Activate web3-research skill to get access to tavily_search script
-        if "web3-research" in skills:
-            await self.activate_skill("web3-research")
-            logger.info("Activated web3-research skill with tavily_search script")
+        # # Activate web3-research skill to get access to tavily_search script
+        # if "web3-research" in skills:
+        #     await self.activate_skill("web3-research")
+        #     logger.info("Activated web3-research skill with tavily_search script")
 
     async def research(self, query: str) -> str:
         """
@@ -150,8 +151,6 @@ async def demo_basic_research():
     # Create agent with OpenAI
     agent = Web3ResearchSkillAgent(
         llm=ChatBot(
-            llm_provider="openai",
-            model_name="gpt-4o-mini"
         ),
         auto_trigger_skills=True,
         max_auto_skills=2
@@ -186,8 +185,6 @@ async def demo_with_skill_info():
 
     agent = Web3ResearchSkillAgent(
         llm=ChatBot(
-            llm_provider="openai",
-            model_name="gpt-4o-mini"
         ),
         auto_trigger_skills=True
     )
@@ -243,8 +240,6 @@ async def demo_interactive():
 
     agent = Web3ResearchSkillAgent(
         llm=ChatBot(
-            llm_provider="openai",
-            model_name="gpt-4o-mini"
         ),
         auto_trigger_skills=True
     )
@@ -298,8 +293,8 @@ async def main():
         print("Tavily search will not work. Get your API key from https://tavily.com")
         print()
 
-    if not (os.getenv("OPENAI_API_KEY") or os.getenv("ANTHROPIC_API_KEY")):
-        print("Error: No LLM API key found. Set OPENAI_API_KEY or ANTHROPIC_API_KEY.")
+    if not (os.getenv("OPENAI_API_KEY") or os.getenv("ANTHROPIC_API_KEY")or os.getenv("GEMINI_API_KEY") or os.getenv("OPENROUTER_API_KEY")):
+        print("Error: No LLM API key found. Set OPENAI_API_KEY or ANTHROPIC_API_KEY,GEMINI_API_KEY or OPENROUTER_API_KEY.")
         sys.exit(1)
 
     # Run demos
