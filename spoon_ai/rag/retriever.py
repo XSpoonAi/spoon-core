@@ -8,6 +8,7 @@ from typing import Dict, List, Optional
 from .config import RagConfig
 from .embeddings import EmbeddingClient
 from .vectorstores import VectorStore
+from .reranker import get_rerank_client
 
 
 @dataclass
@@ -32,6 +33,10 @@ class RagRetriever:
         self.bm25 = None
         self.bm25_data = None
         self._load_bm25()
+        self.reranker = get_rerank_client(
+            config.rerank_provider,
+            model=config.rerank_model
+        )
 
     def _load_bm25(self):
         try:
@@ -41,9 +46,14 @@ class RagRetriever:
                 with open(bm2_file, "rb") as f:
                     self.bm25_data = pickle.load(f)
                 
-                # Simple whitespace tokenization
-                tokenized_corpus = [doc.lower().split() for doc in self.bm25_data["texts"]]
+                # Better tokenization for code
+                import re
+                def tokenizer(text):
+                    return re.findall(r"\w+", text.lower())
+
+                tokenized_corpus = [tokenizer(doc) for doc in self.bm25_data["texts"]]
                 self.bm25 = BM25Okapi(tokenized_corpus)
+                self._tokenizer = tokenizer
         except ImportError:
             pass  # BM25 optional
         except Exception as e:
@@ -119,8 +129,13 @@ class RagRetriever:
         bm25_chunks: List[RetrievedChunk] = []
         if self.bm25 and self.bm25_data:
             try:
-                tokenized_query = query.lower().split()
+                if hasattr(self, '_tokenizer'):
+                    tokenized_query = self._tokenizer(query)
+                else:
+                    tokenized_query = query.lower().split()
+
                 scores = self.bm25.get_scores(tokenized_query)
+                # print(f"DEBUG: BM25 Max Score: {max(scores) if len(scores)>0 else 0}", flush=True)
                 top_n_indices = sorted(range(len(scores)), key=lambda i: scores[i], reverse=True)[:max(k * 3, 20)]
                 
                 for idx in top_n_indices:
@@ -151,7 +166,24 @@ class RagRetriever:
             seen.add(key)
             deduped.append(c)
 
-        return deduped[:k]
+        # 4. Reranking (if enabled)
+        # We rerank the top (k * 2) from the fused/deduped list to optimize precision
+        candidates = deduped[:max(k * 2, 10)]
+        
+        # If we have a reranker, use it
+        # But we only rerank if we have enough candidates or if enforced? 
+        # Actually usually we rerank everything we selected to be a candidate.
+        if hasattr(self, 'reranker') and self.config.rerank_provider:
+            candidate_texts = [c.text for c in candidates]
+            if candidate_texts:
+                new_scores = self.reranker.rerank(query, candidate_texts)
+                for c, s in zip(candidates, new_scores):
+                    c.score = s
+                
+                # Sort by new score
+                candidates.sort(key=lambda x: x.score, reverse=True)
+
+        return candidates[:k]
 
     def build_context(self, chunks: List[RetrievedChunk]) -> str:
         lines: List[str] = []
