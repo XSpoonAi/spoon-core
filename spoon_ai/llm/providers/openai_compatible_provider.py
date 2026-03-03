@@ -83,6 +83,57 @@ class OpenAICompatibleProvider(LLMProviderInterface):
 
         return {"max_tokens": max_tokens}
 
+    @staticmethod
+    def _resolve_stream_tool_call_id(
+        tc_chunk: Any,
+        tool_call_accumulator: Dict[str, Dict[str, Any]],
+        tool_call_ids_by_index: Dict[int, str],
+    ) -> str:
+        """Resolve a stable tool-call id across streamed fragments.
+
+        OpenAI-compatible streams often send the tool-call ``id`` only on the
+        first fragment and omit it for subsequent fragments while keeping the
+        same ``index``. We keep a per-index mapping so later fragments merge
+        into the same accumulator entry.
+        """
+        tc_index = getattr(tc_chunk, "index", None)
+        explicit_id = getattr(tc_chunk, "id", None)
+
+        if explicit_id:
+            previous_id = (
+                tool_call_ids_by_index.get(tc_index)
+                if isinstance(tc_index, int)
+                else None
+            )
+            if previous_id and previous_id != explicit_id and previous_id in tool_call_accumulator:
+                previous = tool_call_accumulator.pop(previous_id)
+                current = tool_call_accumulator.get(explicit_id)
+                if current is None:
+                    tool_call_accumulator[explicit_id] = previous
+                    current = tool_call_accumulator[explicit_id]
+                else:
+                    current["function"]["name"] = (
+                        previous["function"]["name"] + current["function"]["name"]
+                    )
+                    current["function"]["arguments"] = (
+                        previous["function"]["arguments"] + current["function"]["arguments"]
+                    )
+                current["id"] = explicit_id
+                if not current.get("type") and previous.get("type"):
+                    current["type"] = previous["type"]
+
+            if isinstance(tc_index, int):
+                tool_call_ids_by_index[tc_index] = explicit_id
+            return explicit_id
+
+        if isinstance(tc_index, int) and tc_index in tool_call_ids_by_index:
+            return tool_call_ids_by_index[tc_index]
+
+        synthetic_id = f"call_{tc_index}" if isinstance(tc_index, int) else f"call_{uuid4().hex[:8]}"
+        if isinstance(tc_index, int):
+            tool_call_ids_by_index[tc_index] = synthetic_id
+        return synthetic_id
+
     def get_provider_name(self) -> str:
         """Get the provider name. Should be overridden by subclasses."""
         return self.provider_name
@@ -695,6 +746,7 @@ class OpenAICompatibleProvider(LLMProviderInterface):
             full_content = ""
             chunk_index = 0
             tool_call_accumulator = {}  # For accumulating tool calls
+            tool_call_ids_by_index: Dict[int, str] = {}
             finish_reason = None  # Initialize finish_reason outside loop
             tool_calls = []  # Initialize tool_calls outside loop
             
@@ -747,7 +799,11 @@ class OpenAICompatibleProvider(LLMProviderInterface):
                 if delta.tool_calls:
                     tool_call_chunks = []
                     for tc_chunk in delta.tool_calls:
-                        tc_id = tc_chunk.id or f"call_{tc_chunk.index}"
+                        tc_id = self._resolve_stream_tool_call_id(
+                            tc_chunk,
+                            tool_call_accumulator,
+                            tool_call_ids_by_index,
+                        )
 
                         # Initialize accumulator if needed
                         if tc_id not in tool_call_accumulator:
@@ -769,7 +825,7 @@ class OpenAICompatibleProvider(LLMProviderInterface):
 
                         tool_call_chunks.append({
                             "index": tc_chunk.index,
-                            "id": tc_chunk.id,
+                            "id": tc_id,
                             "type": tc_chunk.type,
                             "function": tc_chunk.function.model_dump() if tc_chunk.function else None
                         })
@@ -905,6 +961,7 @@ class OpenAICompatibleProvider(LLMProviderInterface):
                 usage = None
                 emitted_chunk_count = 0
                 tool_call_accumulator: Dict[str, Dict[str, Any]] = {}
+                tool_call_ids_by_index: Dict[int, str] = {}
 
                 async for chunk in stream:
                     if not hasattr(chunk, "choices") or not chunk.choices:
@@ -932,7 +989,11 @@ class OpenAICompatibleProvider(LLMProviderInterface):
 
                     if delta.tool_calls:
                         for tc_chunk in delta.tool_calls:
-                            tc_id = tc_chunk.id or f"call_{tc_chunk.index}"
+                            tc_id = self._resolve_stream_tool_call_id(
+                                tc_chunk,
+                                tool_call_accumulator,
+                                tool_call_ids_by_index,
+                            )
                             if tc_id not in tool_call_accumulator:
                                 tool_call_accumulator[tc_id] = {
                                     "id": tc_id,

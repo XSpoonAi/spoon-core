@@ -146,6 +146,71 @@ async def test_openai_chat_with_tools_streams_deltas_to_output_queue():
 
 
 @pytest.mark.asyncio
+async def test_openai_chat_with_tools_merges_streamed_tool_call_fragments_without_repeated_id():
+    provider = OpenAICompatibleProvider()
+    provider.model = "gpt-4.1"
+
+    stream_items = [
+        SimpleNamespace(
+            choices=[
+                SimpleNamespace(
+                    delta=SimpleNamespace(
+                        content="",
+                        tool_calls=[
+                            SimpleNamespace(
+                                id="call_abc",
+                                index=0,
+                                type="function",
+                                function=SimpleNamespace(name="get_weather", arguments='{"city":"'),
+                            )
+                        ],
+                    ),
+                    finish_reason=None,
+                )
+            ],
+            usage=None,
+        ),
+        SimpleNamespace(
+            choices=[
+                SimpleNamespace(
+                    delta=SimpleNamespace(
+                        content="",
+                        tool_calls=[
+                            SimpleNamespace(
+                                id=None,
+                                index=0,
+                                type=None,
+                                function=SimpleNamespace(name=None, arguments='Paris"}'),
+                            )
+                        ],
+                    ),
+                    finish_reason="tool_calls",
+                )
+            ],
+            usage=None,
+        ),
+    ]
+    provider.client = SimpleNamespace(
+        chat=SimpleNamespace(
+            completions=SimpleNamespace(create=AsyncMock(return_value=_AsyncItems(stream_items))),
+        )
+    )
+
+    q: asyncio.Queue = asyncio.Queue()
+    response = await provider.chat_with_tools(
+        messages=[Message(role="user", content="weather?")],
+        tools=_tool_spec(),
+        output_queue=q,
+    )
+
+    assert response.finish_reason == "tool_calls"
+    assert len(response.tool_calls) == 1
+    assert response.tool_calls[0].id == "call_abc"
+    assert response.tool_calls[0].function.name == "get_weather"
+    assert response.tool_calls[0].function.arguments == '{"city":"Paris"}'
+
+
+@pytest.mark.asyncio
 async def test_anthropic_chat_with_tools_streams_deltas_to_output_queue():
     provider = AnthropicProvider()
     provider.model = "claude-sonnet-4-20250514"
@@ -175,6 +240,8 @@ async def test_anthropic_chat_with_tools_streams_deltas_to_output_queue():
 
     assert deltas == ["Hel", "lo"]
     assert response.content == "Hello"
+    assert response.finish_reason == "stop"
+    assert response.native_finish_reason == "end_turn"
     assert response.metadata.get("streamed_content") is True
 
 
@@ -229,6 +296,8 @@ async def test_gemini_chat_with_tools_streams_deltas_to_output_queue():
 
     assert deltas == ["Hel", "lo"]
     assert response.content == "Hello"
+    assert response.finish_reason == "stop"
+    assert response.native_finish_reason == "STOP"
     assert response.metadata.get("streamed_content") is True
 
 
@@ -344,6 +413,58 @@ async def test_gemini_chat_stream_yields_incrementally():
 
     assert first.delta == "Hel"
     assert second.delta == "lo"
+    assert second.finish_reason == "stop"
+
+
+@pytest.mark.asyncio
+async def test_gemini_chat_with_tools_keeps_tool_calls_finish_reason_when_native_is_stop():
+    provider = GeminiProvider()
+    provider.api_key = "test-key"
+    provider.model = "gemini-2.5-pro"
+
+    responses = [
+        SimpleNamespace(
+            candidates=[
+                SimpleNamespace(
+                    content=SimpleNamespace(
+                        parts=[
+                            SimpleNamespace(
+                                function_call=SimpleNamespace(
+                                    name="get_weather",
+                                    args={"city": "Paris"},
+                                )
+                            )
+                        ]
+                    ),
+                    finish_reason="STOP",
+                )
+            ]
+        ),
+    ]
+
+    class _FakeGeminiClient:
+        def __init__(self, api_key: str):
+            self.aio = SimpleNamespace(
+                models=SimpleNamespace(
+                    generate_content_stream=AsyncMock(return_value=_AsyncItems(responses))
+                ),
+                aclose=AsyncMock(return_value=None),
+            )
+
+        def close(self):
+            return None
+
+    with patch("spoon_ai.llm.providers.gemini_provider.genai.Client", _FakeGeminiClient):
+        response = await provider.chat_with_tools(
+            messages=[Message(role="user", content="weather?")],
+            tools=_tool_spec(),
+            output_queue=asyncio.Queue(),
+        )
+
+    assert response.finish_reason == "tool_calls"
+    assert response.native_finish_reason == "STOP"
+    assert len(response.tool_calls) == 1
+    assert response.tool_calls[0].function.name == "get_weather"
 
 
 @pytest.mark.asyncio

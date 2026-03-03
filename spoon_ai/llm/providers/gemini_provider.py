@@ -138,6 +138,27 @@ class GeminiProvider(LLMProviderInterface):
         return self.model
 
     @staticmethod
+    def _normalize_finish_reason(finish_reason: Any) -> Optional[str]:
+        """Normalize provider-specific finish reasons to shared semantics."""
+        if finish_reason is None:
+            return None
+        reason = str(finish_reason).strip()
+        if not reason:
+            return None
+        normalized = reason.split(".")[-1].lower()
+        mapping = {
+            "stop": "stop",
+            "end_turn": "stop",
+            "max_tokens": "length",
+            "max_output_tokens": "length",
+            "length": "length",
+            "tool_calls": "tool_calls",
+            "tool_call": "tool_calls",
+            "function_call": "tool_calls",
+        }
+        return mapping.get(normalized, normalized)
+
+    @staticmethod
     def _thinking_budget_min_for_model(model: str) -> Optional[int]:
         """Return minimum thinking_budget for models that support/require thinking_config."""
         if not isinstance(model, str):
@@ -748,6 +769,7 @@ class GeminiProvider(LLMProviderInterface):
             full_content = ""
             chunk_index = 0
             finish_reason = None
+            native_finish_reason = None
             usage_data = None
 
             # Send streaming request
@@ -802,7 +824,8 @@ class GeminiProvider(LLMProviderInterface):
                         and part_response.candidates
                         and part_response.candidates[0].finish_reason
                     ):
-                        finish_reason = str(part_response.candidates[0].finish_reason)
+                        native_finish_reason = str(part_response.candidates[0].finish_reason)
+                        finish_reason = self._normalize_finish_reason(native_finish_reason)
 
                     # Extract usage stats if available
                     if hasattr(part_response, 'usage_metadata') and part_response.usage_metadata:
@@ -845,7 +868,7 @@ class GeminiProvider(LLMProviderInterface):
                 provider="gemini",
                 model=model,
                 finish_reason=finish_reason or "stop",
-                native_finish_reason=finish_reason or "stop",
+                native_finish_reason=native_finish_reason or finish_reason or "stop",
                 tool_calls=[],
                 usage=usage_data,
                 metadata={}
@@ -926,6 +949,7 @@ class GeminiProvider(LLMProviderInterface):
                     emitted_chunk_count = 0
                     tool_calls: List[ToolCall] = []
                     finish_reason = "stop"
+                    native_finish_reason = "stop"
 
                     async for part_response in stream:
                         # Incremental text
@@ -976,7 +1000,10 @@ class GeminiProvider(LLMProviderInterface):
                             and part_response.candidates
                             and getattr(part_response.candidates[0], "finish_reason", None)
                         ):
-                            finish_reason = str(part_response.candidates[0].finish_reason)
+                            native_finish_reason = str(part_response.candidates[0].finish_reason)
+                            normalized_finish_reason = self._normalize_finish_reason(native_finish_reason)
+                            if not tool_calls and normalized_finish_reason:
+                                finish_reason = normalized_finish_reason
 
                     duration = asyncio.get_event_loop().time() - start_time
                     return LLMResponse(
@@ -984,7 +1011,7 @@ class GeminiProvider(LLMProviderInterface):
                         provider="gemini",
                         model=model,
                         finish_reason=finish_reason,
-                        native_finish_reason=finish_reason,
+                        native_finish_reason=native_finish_reason,
                         tool_calls=tool_calls,
                         duration=duration,
                         metadata={
