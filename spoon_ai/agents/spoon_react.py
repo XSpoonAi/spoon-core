@@ -58,9 +58,14 @@ class SpoonReactAI(MCPClientMixin, ToolCallAgent):
 
     def __init__(self, **kwargs):
         """Initialize SpoonReactAI with both ToolCallAgent and MCPClientMixin initialization"""
+        # Track whether the caller supplied custom prompts so _refresh_prompts()
+        # does not overwrite them on init or before run().
+        self._custom_system_prompt = "system_prompt" in kwargs and kwargs["system_prompt"] is not None
+        self._custom_next_step_prompt = "next_step_prompt" in kwargs and kwargs["next_step_prompt"] is not None
+
         # Call parent class initializers
         ToolCallAgent.__init__(self, **kwargs)
-        
+
         # Initialize MCP client mixin
         MCPClientMixin.__init__(self, self.mcp_transport)
 
@@ -104,12 +109,18 @@ class SpoonReactAI(MCPClientMixin, ToolCallAgent):
         return "\n".join(lines)
 
     def _refresh_prompts(self) -> None:
-        """Refresh system and next-step prompts dynamically from current tools."""
+        """Refresh system and next-step prompts dynamically from current tools.
+
+        Respects custom prompts: if the caller passed ``system_prompt`` or
+        ``next_step_prompt`` via the constructor, those values are kept.
+        """
         tool_list = self._build_tool_list()
-        self.system_prompt = f"{SYSTEM_PROMPT}\n\nAvailable tools:\n{tool_list}"
-        self.next_step_prompt = NEXT_STEP_PROMPT_TEMPLATE.format(
-            tool_list=tool_list,
-        )
+        if not getattr(self, "_custom_system_prompt", False):
+            self.system_prompt = f"{SYSTEM_PROMPT}\n\nAvailable tools:\n{tool_list}"
+        if not getattr(self, "_custom_next_step_prompt", False):
+            self.next_step_prompt = NEXT_STEP_PROMPT_TEMPLATE.format(
+                tool_list=tool_list,
+            )
 
     async def connect(self):
         """Establish connection to MCP server."""
@@ -176,7 +187,12 @@ class SpoonReactAI(MCPClientMixin, ToolCallAgent):
 
         self._x402_tools_initialized = True
 
-    async def run(self, request: Optional[str] = None) -> str:
+    async def run(self, request: Optional[str] = None, timeout: Optional[float] = None) -> str:
         """Ensure prompts reflect current tools before running."""
         self._refresh_prompts()
-        return await super().run(request)
+        kwargs: dict = {}
+        if request is not None:
+            kwargs["request"] = request
+        if timeout is not None:
+            kwargs["timeout"] = timeout
+        return await super().run(**kwargs)

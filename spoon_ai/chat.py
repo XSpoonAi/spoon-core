@@ -259,9 +259,17 @@ class ChatBot:
             config_base_url = provider_config.get('base_url')
             config_model = provider_config.get('model')
 
-            # Validate provider consistency: ensure API key matches requested provider
             final_api_key = self.api_key or config_api_key
-            if final_api_key and not self._validate_provider_api_key_match(self.llm_provider, final_api_key):
+            final_base_url = self.base_url or config_base_url
+
+            # Validate provider/API-key consistency only when using provider default base URL.
+            # For custom proxy/base URLs (OpenAI-compatible gateways), key prefix heuristics are unreliable.
+            should_validate_api_key = self._should_validate_provider_api_key(
+                self.llm_provider,
+                final_base_url,
+                config_manager,
+            )
+            if final_api_key and should_validate_api_key and not self._validate_provider_api_key_match(self.llm_provider, final_api_key):
                 # Get available providers for helpful error message
                 available_providers = config_manager.list_configured_providers()
                 logger.error(f"Provider/API key mismatch detected: requested '{self.llm_provider}' but API key appears to be for different provider")
@@ -276,12 +284,18 @@ class ChatBot:
                         "api_key_prefix": final_api_key[:10] + "..." if final_api_key else None
                     }
                 )
+            elif final_api_key and not should_validate_api_key:
+                logger.info(
+                    "Skipping provider/API-key prefix validation for provider '%s' due to custom base_url '%s'",
+                    self.llm_provider,
+                    final_base_url,
+                )
 
             # Apply configuration with manual overrides taking priority
             self._update_provider_config(
                 provider=self.llm_provider,
                 api_key=final_api_key,
-                base_url=self.base_url or config_base_url,
+                base_url=final_base_url,
                 model_name=self.model_name or config_model
             )
 
@@ -379,6 +393,33 @@ class ChatBot:
 
         except Exception as e:
             logger.error(f"Failed to update provider configuration: {e}")
+
+    def _should_validate_provider_api_key(self, provider_name: str, base_url: Optional[str], config_manager: Any) -> bool:
+        """Return whether provider/API-key prefix validation should run.
+
+        Validation is only enforced when the effective base_url is absent or equals
+        the provider default. For custom proxy endpoints (OpenAI-compatible gateways),
+        key-prefix heuristics are not reliable and should be skipped.
+        """
+        if not provider_name:
+            return True
+
+        effective_base_url = (base_url or "").strip().rstrip("/")
+        if not effective_base_url:
+            return True
+
+        try:
+            defaults = config_manager._get_provider_defaults(provider_name)
+            default_base_url = (defaults.get("base_url") or "").strip().rstrip("/")
+        except Exception:
+            logger.debug("Could not load provider defaults for '%s'; keeping API-key validation enabled", provider_name)
+            return True
+
+        # Unknown provider default: keep existing strict behavior
+        if not default_base_url:
+            return True
+
+        return effective_base_url == default_base_url
 
     def _validate_provider_api_key_match(self, provider_name: str, api_key: str) -> bool:
         """Validate that an API key belongs to the specified provider family.

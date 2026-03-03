@@ -142,11 +142,20 @@ class MCPTool(BaseTool, MCPClientMixin):
                     async with self.get_session() as session:
                         tools = await asyncio.wait_for(session.list_tools(), timeout=self._connection_timeout)
                         if tools:
+                            # Try exact name match first; fall back to first tool
                             target_tool = None
                             for tool in tools:
                                 if getattr(tool, 'name', '') == self.name:
                                     target_tool = tool
                                     break
+                            # Also try matching against _server_name (the original
+                            # alias) so that the first call still resolves after
+                            # a previous expand_server_tools renamed `self.name`.
+                            if not target_tool and hasattr(self, '_server_name'):
+                                for tool in tools:
+                                    if getattr(tool, 'name', '') == self._server_name:
+                                        target_tool = tool
+                                        break
 
                             if not target_tool and tools:
                                 target_tool = tools[0]
@@ -349,6 +358,50 @@ class MCPTool(BaseTool, MCPClientMixin):
         except Exception as e:
             logger.error(f"MCP tool '{tool_name}' call failed: {e}")
             raise RuntimeError(f"MCP tool '{tool_name}' execution failed: {str(e)}") from e
+
+    async def expand_server_tools(self) -> List["MCPTool"]:
+        """Expand this single MCPTool (one-per-server) into one MCPTool per
+        real server tool.  Each returned tool shares the same MCP transport
+        config and delegates execution to ``call_mcp_tool(real_name)``.
+
+        If the server is unreachable or returns no tools, an empty list is
+        returned (callers should keep the original proxy as fallback).
+
+        Returns:
+            List of MCPTool instances, one per discovered server tool.
+        """
+        server_tools = await self.list_available_tools()
+        if not server_tools:
+            return []
+
+        expanded: List[MCPTool] = []
+        server_name = self.name  # Original alias (e.g. "filesystem")
+
+        for tool_info in server_tools:
+            real_name = tool_info.get("name", "")
+            if not real_name:
+                continue
+            desc = tool_info.get("description", f"MCP tool from {server_name}")
+            schema = tool_info.get("inputSchema") or {
+                "type": "object", "properties": {}, "required": []
+            }
+
+            child = MCPTool(
+                name=real_name,
+                description=desc,
+                parameters=schema,
+                mcp_config=self.mcp_config,
+            )
+            child._parameters_loaded = True  # Already resolved
+            # Store original server alias so execute fallback can find it
+            object.__setattr__(child, '_server_name', server_name)
+            expanded.append(child)
+
+        logger.info(
+            f"Expanded MCP server '{server_name}' into {len(expanded)} tools: "
+            f"{[t.name for t in expanded]}"
+        )
+        return expanded
 
     async def list_available_tools(self) -> list:
         """List available tools from the MCP server."""

@@ -21,6 +21,28 @@ class SpoonReactMCP(SpoonReactAI):
         super().__init__(**kwargs)
         logger.info(f"Initialized SpoonReactMCP agent: {self.name}")
 
+    def _map_mcp_tool_name(self, requested_name: str):
+        """Map proxy-prefixed MCP tool names to actual tool names.
+        
+        Some OpenAI-compatible gateways may prefix tool names with `proxy_`.
+        """
+        if not requested_name:
+            return None
+        
+        # Direct match
+        if hasattr(self, "available_tools") and self.available_tools and requested_name in self.available_tools.tool_map:
+            return requested_name
+        
+        # Strip known proxy prefix
+        if requested_name.startswith("proxy_"):
+            candidate = requested_name[len("proxy_"):]
+            if hasattr(self, "available_tools") and self.available_tools and candidate in self.available_tools.tool_map:
+                return candidate
+            return candidate
+        
+        # No mapping needed
+        return requested_name
+
     async def list_mcp_tools(self):
         """Return MCP tools from available_tools manager"""
         # Import here to avoid circular imports

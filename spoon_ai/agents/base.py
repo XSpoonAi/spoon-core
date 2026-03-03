@@ -1,3 +1,5 @@
+from __future__ import annotations
+
 import asyncio
 import logging
 import uuid
@@ -6,7 +8,7 @@ import datetime
 from pathlib import Path
 from abc import ABC
 from contextlib import asynccontextmanager
-from typing import Literal, Optional, List, Union, Dict, Any, cast
+from typing import Any, Literal, cast
 import threading
 import time
 
@@ -25,6 +27,20 @@ from spoon_ai.callbacks.manager import CallbackManager
 logger = logging.getLogger(__name__)
 DEBUG = False
 
+# Import middleware support (optional for backward compatibility)
+try:
+    from spoon_ai.middleware import (
+        AgentMiddleware,
+        MiddlewarePipeline,
+        AgentRuntime,
+        AgentPhase,
+        create_middleware_pipeline
+    )
+    MIDDLEWARE_AVAILABLE = True
+except ImportError:
+    MIDDLEWARE_AVAILABLE = False
+    logger.debug("Middleware system not available.")
+
 def debug_log(message):
     if DEBUG:
         logger.info(f"DEBUG: {message}\n")
@@ -41,7 +57,11 @@ class ThreadSafeOutputQueue:
     async def put(self, item: Any) -> None:
         await self._queue.put(item)
 
-    async def get(self, timeout: Optional[float] = 30.0) -> Any:
+    def put_nowait(self, item: Any) -> None:
+        """Non-blocking put - delegates to the underlying asyncio.Queue."""
+        self._queue.put_nowait(item)
+
+    async def get(self, timeout: float | None = 30.0) -> Any:
         """Get item with timeout and fair access"""
         consumer_id = id(asyncio.current_task())
 
@@ -72,14 +92,14 @@ class BaseAgent(BaseModel, ABC):
     Thread-safe base class for all agents with proper concurrency handling.
     """
     name: str = Field(..., description="The name of the agent")
-    description: Optional[str] = Field(None, description="The description of the agent")
-    system_prompt: Optional[str] = Field(None, description="The system prompt for the agent")
-    next_step_prompt: Optional[str] = Field(None, description="Prompt for determining next action")
+    description: str | None = Field(None, description="The description of the agent")
+    system_prompt: str | None = Field(None, description="The system prompt for the agent")
+    next_step_prompt: str | None = Field(None, description="Prompt for determining next action")
 
     llm: ChatBot = Field(..., description="The LLM to use for the agent")
     memory: Memory = Field(default_factory=Memory, description="The memory to use for the agent")
     enable_long_term_memory: bool = Field(default=False, description="Enable Mem0-based long-term memory")
-    mem0_config: Dict[str, Any] = Field(default_factory=dict, description="Mem0 configuration passed to the LLM client")
+    mem0_config: dict[str, Any] = Field(default_factory=dict, description="Mem0 configuration passed to the LLM client")
     state: AgentState = Field(default=AgentState.IDLE, description="The state of the agent")
 
     max_steps: int = Field(default=10, description="The maximum number of steps the agent can take")
@@ -88,9 +108,34 @@ class BaseAgent(BaseModel, ABC):
     # Thread-safe replacements
     output_queue: ThreadSafeOutputQueue = Field(default_factory=ThreadSafeOutputQueue, description="Thread-safe output queue")
     task_done: asyncio.Event = Field(default_factory=asyncio.Event, description="The signal of agent run done")
-    
+
     # Callback system
-    callbacks: List[BaseCallbackHandler] = Field(default_factory=list, description="Callback handlers for monitoring")
+    callbacks: list[BaseCallbackHandler] = Field(default_factory=list, description="Callback handlers for monitoring")
+
+    # Middleware system (Deep Agent support)
+    middleware: list[Any] = Field(default_factory=list, description="Middleware for Plan-Act-Reflect and hooks")
+    enable_plan_phase: bool = Field(default=False, description="Enable explicit planning phase before action loop")
+    enable_reflect_phase: bool = Field(default=False, description="Enable reflection phase based on token threshold")
+
+    # Reflection trigger configuration (token-based, LangChain-style)
+    reflect_token_threshold: float = Field(
+        default=0.85,
+        description="Token usage threshold to trigger reflection (0.0-1.0, default 0.85 = 85%)"
+    )
+    max_context_tokens: int = Field(
+        default=200000,
+        description="Maximum context tokens for the model (used for threshold calculation)"
+    )
+
+    # Track last reflection for token-based mode
+    _last_reflect_token_count: int = 0
+
+    # Thread ID for conversation isolation
+    thread_id: str | None = Field(default=None, description="Thread ID for conversation isolation")
+
+    # Internal middleware state (not in Pydantic schema)
+    _middleware_pipeline: Any | None = None
+    _agent_state: dict[str, Any] = {}
 
     model_config = {
         "arbitrary_types_allowed": True,
@@ -129,18 +174,58 @@ class BaseAgent(BaseModel, ABC):
                 self.llm.update_mem0_config(self.mem0_config, enable=self.enable_long_term_memory)
             except Exception as exc:
                 logger.warning("Unable to configure Mem0 for agent %s: %s", self.name, exc)
-        
+
         # Initialize callback manager
         self._callback_manager = CallbackManager.from_callbacks(self.callbacks)
+
+        # Initialize middleware pipeline (Deep Agent support)
+        self._initialize_middleware()
+
+        # Initialize thread ID
+        if not self.thread_id:
+            self.thread_id = str(uuid.uuid4())
+
+        # Initialize agent state dict
+        self._agent_state = {}
+
+        # Initialize token tracking for reflection
+        self._last_reflect_token_count = 0
+
+    def _initialize_middleware(self) -> None:
+        """Initialize middleware pipeline if middleware is configured."""
+        if not MIDDLEWARE_AVAILABLE:
+            if self.middleware:
+                logger.warning(f"Agent {self.name} has middleware configured but middleware system is not available")
+            return
+
+        if self.middleware:
+            try:
+                self._middleware_pipeline = create_middleware_pipeline(self.middleware)
+                logger.info(f"Agent {self.name} initialized with {len(self.middleware)} middleware")
+
+                # Inject middleware tools
+                middleware_tools = self._middleware_pipeline.collect_tools()
+                if middleware_tools and hasattr(self, 'available_tools'):
+                    for tool in middleware_tools:
+                        self.available_tools.add_tool(tool)
+                    logger.info(f"Injected {len(middleware_tools)} middleware tools into agent {self.name}")
+
+                # Extend system prompt with middleware prompts
+                if self.system_prompt:
+                    self.system_prompt = self._middleware_pipeline.build_system_prompt(self.system_prompt)
+
+            except Exception as e:
+                logger.error(f"Failed to initialize middleware for agent {self.name}: {e}")
+                self._middleware_pipeline = None
 
     async def add_message(
         self,
         role: Literal["user", "assistant", "tool"],
         content: MessageContent,
-        tool_call_id: Optional[str] = None,
-        tool_calls: Optional[List[ToolCall]] = None,
-        tool_name: Optional[str] = None,
-        timeout: Optional[float] = None
+        tool_call_id: str | None = None,
+        tool_calls: list[ToolCall] | None = None,
+        tool_name: str | None = None,
+        timeout: float | None = None
     ) -> None:
         """Thread-safe message addition with timeout protection.
 
@@ -214,11 +299,11 @@ class BaseAgent(BaseModel, ABC):
         self,
         role: Literal["user", "assistant"],
         text: str,
-        image_url: Optional[str] = None,
-        image_data: Optional[str] = None,
+        image_url: str | None = None,
+        image_data: str | None = None,
         image_media_type: str = "image/png",
         detail: Literal["auto", "low", "high"] = "auto",
-        timeout: Optional[float] = None
+        timeout: float | None = None
     ) -> None:
         """Convenience method to add a message with an image.
 
@@ -254,7 +339,7 @@ class BaseAgent(BaseModel, ABC):
 
         if not image_url and not image_data:
             raise ValueError("Either image_url or image_data must be provided")
-        
+
         # Validate image_data is not empty (if provided)
         # Three upload methods:
         # - Method 1: image_data (base64) - image_data must have a value
@@ -268,7 +353,7 @@ class BaseAgent(BaseModel, ABC):
             # Check if only whitespace (empty after strip)
             if not image_data.strip():
                 raise ValueError("image_data cannot be empty (only whitespace). If you want to use URL-based images, use image_url parameter instead.")
-        
+
         # Validate image_url format if provided
         # image_url supports both external URLs (way 2) and data URLs (way 3)
         if image_url:
@@ -285,10 +370,10 @@ class BaseAgent(BaseModel, ABC):
                         f"Invalid image URL format: {image_url}. "
                         f"Must be a valid HTTP/HTTPS URL (for external images) or data URL (for embedded images)."
                     )
-        
+
         # No MIME type validation - pass through all types to LLM providers
 
-        content_blocks: List[ContentBlock] = [TextContent(text=text)]
+        content_blocks: list[ContentBlock] = [TextContent(text=text)]
 
         if image_url:
             content_blocks.append(
@@ -310,8 +395,8 @@ class BaseAgent(BaseModel, ABC):
         role: Literal["user", "assistant"],
         text: str,
         pdf_data: str,
-        filename: Optional[str] = None,
-        timeout: Optional[float] = None
+        filename: str | None = None,
+        timeout: float | None = None
     ) -> None:
         """Convenience method to add a message with a PDF document.
 
@@ -334,7 +419,7 @@ class BaseAgent(BaseModel, ABC):
         if role not in ["user", "assistant"]:
             raise ValueError(f"Multimodal messages only support user/assistant roles, got: {role}")
 
-        content_blocks: List[ContentBlock] = [TextContent(text=text)]
+        content_blocks: list[ContentBlock] = [TextContent(text=text)]
         content_blocks.append(
             DocumentContent(
                 source=DocumentSource(
@@ -354,8 +439,8 @@ class BaseAgent(BaseModel, ABC):
         text: str,
         document_data: str,
         media_type: str = "application/pdf",
-        filename: Optional[str] = None,
-        timeout: Optional[float] = None
+        filename: str | None = None,
+        timeout: float | None = None
     ) -> None:
         """Convenience method to add a message with a document.
 
@@ -382,7 +467,7 @@ class BaseAgent(BaseModel, ABC):
         if role not in ["user", "assistant"]:
             raise ValueError(f"Multimodal messages only support user/assistant roles, got: {role}")
 
-        content_blocks: List[ContentBlock] = [TextContent(text=text)]
+        content_blocks: list[ContentBlock] = [TextContent(text=text)]
         content_blocks.append(
             DocumentContent(
                 source=DocumentSource(
@@ -401,7 +486,7 @@ class BaseAgent(BaseModel, ABC):
         role: Literal["user", "assistant"],
         text: str,
         file_path: str,
-        timeout: Optional[float] = None
+        timeout: float | None = None
     ) -> None:
         """Convenience method to add a message with a PDF file from disk.
 
@@ -444,7 +529,7 @@ class BaseAgent(BaseModel, ABC):
         text: str,
         file_path: str,
         detail: str = "auto",
-        timeout: Optional[float] = None
+        timeout: float | None = None
     ) -> None:
         """Convenience method to add a message with an image file from disk.
 
@@ -494,7 +579,7 @@ class BaseAgent(BaseModel, ABC):
         role: Literal["user", "assistant"],
         text: str,
         file_path: str,
-        timeout: Optional[float] = None
+        timeout: float | None = None
     ) -> None:
         """Convenience method to add a message with any supported file from disk.
 
@@ -570,7 +655,7 @@ class BaseAgent(BaseModel, ABC):
             )
 
     @asynccontextmanager
-    async def state_context(self, new_state: AgentState, timeout: Optional[float] = None):
+    async def state_context(self, new_state: AgentState, timeout: float | None = None):
         """Thread-safe state context manager with deadlock prevention.
         Acquires the state lock only to perform quick transitions, not for the
         duration of the work inside the context, avoiding long-held locks and
@@ -651,14 +736,14 @@ class BaseAgent(BaseModel, ABC):
         finally:
             self._active_operations.discard(operation_id)
 
-    def _record_state_transition(self, transition: Dict[str, Any]) -> None:
+    def _record_state_transition(self, transition: dict[str, Any]) -> None:
         """Record state transition for debugging"""
         self._state_transition_history.append(transition)
         if len(self._state_transition_history) > self._max_history:
             self._state_transition_history.pop(0)
 
-    async def run(self, request: Optional[str] = None, timeout: Optional[float] = None) -> str:
-        """Thread-safe run method with proper concurrency control and callback support."""
+    async def run(self, request: str | None = None, timeout: float | None = None) -> str:
+        """Thread-safe run method with proper concurrency control, callback support, and Plan-Act-Reflect phases."""
         timeout = timeout or self._default_timeout
         run_id = uuid.uuid4()
 
@@ -681,20 +766,39 @@ class BaseAgent(BaseModel, ABC):
         if request is not None:
             await self.add_message("user", request)
 
-        results: List[str] = []
+        results: list[str] = []
         operation_id = str(uuid.uuid4())
+        runtime = None  # Will be set in try block
 
         try:
             self._active_operations.add(operation_id)
 
             async with asyncio.timeout(timeout):
                 async with self.state_context(AgentState.RUNNING):
+                    # Create runtime context for middleware
+                    runtime = self._create_runtime_context(run_id)
+
+                    # PLAN PHASE: Execute before action loop (Deep Agent feature)
+                    if self.enable_plan_phase:
+                        await self._execute_plan_phase(runtime)
+
+                    # BEFORE AGENT: Execute middleware before_agent hooks
+                    if self._middleware_pipeline:
+                        state_updates = self._middleware_pipeline.execute_before_agent(
+                            self._agent_state,
+                            runtime
+                        )
+                        if state_updates:
+                            logger.debug(f"Agent {self.name} state updated by before_agent hooks: {list(state_updates.keys())}")
+
+                    # ACTION LOOP: Standard think-act cycle
                     while (
                         self.current_step < self.max_steps and
                         self.state == AgentState.RUNNING and
                         not self._shutdown_event.is_set()
                     ):
                         self.current_step += 1
+                        runtime.current_step = self.current_step
                         logger.info(f"Agent {self.name} is running step {self.current_step}/{self.max_steps}")
 
                         # Execute step with timeout protection
@@ -707,6 +811,16 @@ class BaseAgent(BaseModel, ABC):
                             step_result = f"Step {self.current_step} timed out"
                             logger.warning(f"Agent {self.name} step {self.current_step} timed out")
 
+                        # REFLECT PHASE: Token-based or step-based reflection (Deep Agent feature)
+                        if self.should_trigger_reflection():
+                            await self._execute_reflect_phase(runtime, {
+                                "current_step": self.current_step,
+                                "step_result": step_result,
+                                "results": results,
+                                "token_count": self.estimate_token_count(),
+                            })
+                            self._on_reflection_complete()
+
                         if await self.is_stuck():
                             await self.handle_stuck_state()
 
@@ -716,19 +830,54 @@ class BaseAgent(BaseModel, ABC):
                     if self.current_step >= self.max_steps:
                         results.append(f"Step {self.current_step}: Reached maximum steps. Stopping.")
 
+                    # FINAL REFLECTION: Ensure reflection happens at least once before finishing
+                    # Trigger if we have content but haven't reflected yet
+                    if self.enable_reflect_phase and self.current_step > 0:
+                        current_tokens = self.estimate_token_count()
+                        if self._last_reflect_token_count == 0 and current_tokens > 0:
+                            logger.info(f"Agent {self.name} performing final reflection before completion")
+                            await self._execute_reflect_phase(runtime, {
+                                "current_step": self.current_step,
+                                "step_result": "Final step completed",
+                                "results": results,
+                                "is_final_reflection": True,
+                                "token_count": current_tokens,
+                            })
+                            self._on_reflection_complete()
+
+                    # FINISH PHASE: Final middleware hooks
+                    if self._middleware_pipeline:
+                        await self._execute_finish_phase(runtime, {"results": results})
+
             final_output = "\n".join(results) if results else "No results"
             return final_output
 
         except asyncio.TimeoutError as e:
             logger.error(f"Agent {self.name} run() timed out after {timeout}s")
-            
             raise RuntimeError(f"Agent run timed out after {timeout}s")
-            
+
         except Exception as e:
             logger.error(f"Error during agent run: {e}")
-            
             raise
+
         finally:
+            #AFTER AGENT hooks in finally block to guarantee execution
+            # This ensures checkpointing always happens, even on errors/timeouts
+            if runtime and self._middleware_pipeline:
+                try:
+                    # Update runtime with current messages
+                    runtime.messages = self.memory.get_messages() if hasattr(self.memory, 'get_messages') else []
+                    runtime.current_step = self.current_step
+
+                    state_updates = self._middleware_pipeline.execute_after_agent(
+                        self._agent_state,
+                        runtime
+                    )
+                    if state_updates:
+                        logger.debug(f"Agent {self.name} state updated by after_agent hooks: {list(state_updates.keys())}")
+                except Exception as e:
+                    logger.error(f"Error in after_agent hooks: {e}")
+
             self._active_operations.discard(operation_id)
 
             # Always reset to IDLE state safely
@@ -738,7 +887,7 @@ class BaseAgent(BaseModel, ABC):
                     self.state = AgentState.IDLE
                     self.current_step = 0
 
-    async def step(self, run_id: Optional[uuid.UUID] = None) -> str:
+    async def step(self, run_id: uuid.UUID | None = None) -> str:
         """Override this method in subclasses - now with step-level locking and callback support."""
         async with self._step_lock:
             # Subclasses should implement this
@@ -783,6 +932,76 @@ class BaseAgent(BaseModel, ABC):
             self.next_step_prompt = stuck_prompt
 
         logger.warning(f"Added stuck prompt: {stuck_prompt}")
+
+    def estimate_token_count(self) -> int:
+        """Estimate the token count of current conversation context.
+
+        Uses a simple heuristic: ~4 characters per token (conservative estimate).
+        For more accurate counting, override this method with tiktoken or
+        model-specific tokenizers.
+
+        Returns:
+            Estimated token count of all messages
+        """
+        messages = self.memory.get_messages() if hasattr(self.memory, 'get_messages') else []
+        total_chars = 0
+
+        for msg in messages:
+            # Handle text content
+            content = msg.text_content or ""
+            total_chars += len(content)
+
+            # Count tool calls if present
+            if hasattr(msg, 'tool_calls') and msg.tool_calls:
+                for tc in msg.tool_calls:
+                    if isinstance(tc, dict):
+                        total_chars += len(json.dumps(tc))
+                    else:
+                        total_chars += len(str(tc))
+
+        # Add system prompt
+        if self.system_prompt:
+            total_chars += len(self.system_prompt)
+
+        # Conservative estimate: ~4 chars per token
+        return total_chars // 4
+
+    def should_trigger_reflection(self) -> bool:
+        """Determine if reflection should be triggered based on token threshold.
+
+        LangChain-style token-based trigger:
+            Triggers when context tokens exceed reflect_token_threshold (default 85%)
+            of max_context_tokens.
+
+        Returns:
+            True if reflection should be triggered
+        """
+        if not self.enable_reflect_phase:
+            return False
+
+        # Token-based trigger (LangChain-style 85% threshold)
+        current_tokens = self.estimate_token_count()
+        threshold_tokens = int(self.max_context_tokens * self.reflect_token_threshold)
+
+        # Only trigger if we've added significant tokens since last reflection
+        # This prevents triggering on every step once threshold is crossed
+        token_increase = current_tokens - self._last_reflect_token_count
+        min_token_increase = int(self.max_context_tokens * 0.05)  # At least 5% increase
+
+        if current_tokens >= threshold_tokens and token_increase >= min_token_increase:
+            logger.info(
+                f"Agent {self.name} reflection triggered: "
+                f"{current_tokens}/{self.max_context_tokens} tokens "
+                f"({current_tokens * 100 // self.max_context_tokens}% >= "
+                f"{int(self.reflect_token_threshold * 100)}% threshold)"
+            )
+            return True
+        return False
+
+    def _on_reflection_complete(self) -> None:
+        """Called after reflection completes to update tracking state."""
+        self._last_reflect_token_count = self.estimate_token_count()
+
     # Basic retrieval compatibility: allow loading documents even if agent doesn't use RAG
     def add_documents(self, documents) -> None:
         """Store documents on the agent so CLI load-docs works without RAG mixin.
@@ -832,7 +1051,7 @@ class BaseAgent(BaseModel, ABC):
         except Exception as e:
             debug_log(f"Error saving chat history: {e}")
 
-    async def stream(self, timeout: Optional[float] = None):
+    async def stream(self, timeout: float | None = None):
         """Thread-safe streaming with proper cleanup and timeout"""
         timeout = timeout or self._default_timeout
         stream_id = str(uuid.uuid4())
@@ -840,7 +1059,12 @@ class BaseAgent(BaseModel, ABC):
         try:
             self._active_operations.add(stream_id)
 
-            while not (self.task_done.is_set() or self.output_queue.empty()):
+            # Continue streaming while the task is still running OR the queue
+            # has remaining items to drain.  The previous condition
+            # ``not (done or empty)`` was equivalent to ``not done and not empty``
+            # which would exit immediately when the queue started empty even
+            # though the background task had not yet produced output.
+            while not (self.task_done.is_set() and self.output_queue.empty()):
                 try:
                     # Create tasks for queue and done event
                     queue_task = asyncio.create_task(
@@ -900,9 +1124,9 @@ class BaseAgent(BaseModel, ABC):
         self,
         content: Any,
         sender: str,
-        message: Dict[str, Any],
+        message: dict[str, Any],
         agent_id: str,
-        timeout: Optional[float] = None
+        timeout: float | None = None
     ):
         """Thread-safe MCP message processing with timeout protection"""
         timeout = timeout or self._default_timeout
@@ -960,7 +1184,7 @@ class BaseAgent(BaseModel, ABC):
             logger.error(f"Agent {self.name} error processing message: {str(e)}")
             return f"Error processing message: {str(e)}"
 
-    async def _run_and_signal_done(self, request: Optional[str] = None, timeout: Optional[float] = None):
+    async def _run_and_signal_done(self, request: str | None = None, timeout: float | None = None):
         """Helper method to run the agent and signal when done for streaming"""
         try:
             await self.run(request=request, timeout=timeout)
@@ -1005,9 +1229,167 @@ class BaseAgent(BaseModel, ABC):
 
         logger.info(f"Agent {self.name} shutdown complete")
 
-    def get_diagnostics(self) -> Dict[str, Any]:
+    # ========================================================================
+    # Deep Agent Support - Plan-Act-Reflect Phases
+    # ========================================================================
+
+    def _create_runtime_context(self, run_id: uuid.UUID | None = None) -> Any:
+        """Create runtime context for middleware.
+
+        Returns AgentRuntime if middleware is available, None otherwise.
+        """
+        if not MIDDLEWARE_AVAILABLE:
+            return None
+
+        messages = self.memory.get_messages() if hasattr(self.memory, 'get_messages') else []
+
+        runtime = AgentRuntime(
+            agent_name=self.name,
+            run_id=run_id,
+            thread_id=self.thread_id,
+            state=self._agent_state,
+            config={},
+            current_phase=AgentPhase.THINK,
+            current_step=self.current_step,
+            max_steps=self.max_steps,
+            messages=messages,
+            metadata={}
+        )
+
+        # CRITICAL FIX: Add agent instance reference for SubAgentMiddleware
+        # This allows middleware to access the parent agent for delegation
+        setattr(runtime, '_agent_instance', self)
+
+        return runtime
+
+    async def _execute_plan_phase(self, runtime: Any) -> None:
+        """Execute PLAN phase hooks from middleware.
+
+        This is called BEFORE the action loop starts, allowing middleware
+        to generate an initial plan based on the user's request.
+        """
+        if not self._middleware_pipeline or not runtime:
+            return
+
+        try:
+            runtime.current_phase = AgentPhase.PLAN if MIDDLEWARE_AVAILABLE else None
+            logger.info(f"Agent {self.name} entering PLAN phase")
+
+            phase_data = {
+                "user_request": runtime.get_last_message(Role.USER) if MIDDLEWARE_AVAILABLE else None,
+                "existing_plan": self._agent_state.get("plan"),
+            }
+
+            state_updates = self._middleware_pipeline.execute_phase_hook(
+                AgentPhase.PLAN,
+                runtime,
+                phase_data
+            )
+
+            if state_updates:
+                logger.info(f"Agent {self.name} plan created/updated: {list(state_updates.keys())}")
+
+        except Exception as e:
+            logger.error(f"Error in PLAN phase for agent {self.name}: {e}")
+
+    async def _execute_reflect_phase(self, runtime: Any, phase_data: dict[str, Any]) -> None:
+        """Execute REFLECT phase hooks from middleware.
+
+        This is called periodically during the action loop (every N steps)
+        to allow middleware to evaluate progress and potentially revise the plan.
+        """
+        if not self._middleware_pipeline or not runtime:
+            return
+
+        try:
+            runtime.current_phase = AgentPhase.REFLECT if MIDDLEWARE_AVAILABLE else None
+            logger.info(f"Agent {self.name} entering REFLECT phase (step {self.current_step})")
+
+            # Add plan and progress to phase data
+            phase_data.update({
+                "plan": self._agent_state.get("plan"),
+                "progress": {
+                    "steps_completed": self.current_step,
+                    "steps_remaining": self.max_steps - self.current_step,
+                }
+            })
+
+            state_updates = self._middleware_pipeline.execute_phase_hook(
+                AgentPhase.REFLECT,
+                runtime,
+                phase_data
+            )
+
+            if state_updates:
+                logger.info(f"Agent {self.name} reflection complete: {list(state_updates.keys())}")
+
+        except Exception as e:
+            logger.error(f"Error in REFLECT phase for agent {self.name}: {e}")
+
+    async def _execute_finish_phase(self, runtime: Any, phase_data: dict[str, Any]) -> None:
+        """Execute FINISH phase hooks from middleware.
+
+        This is called after the action loop completes, before returning
+        to allow middleware to finalize results and clean up.
+        """
+        if not self._middleware_pipeline or not runtime:
+            return
+
+        try:
+            runtime.current_phase = AgentPhase.FINISH if MIDDLEWARE_AVAILABLE else None
+            logger.info(f"Agent {self.name} entering FINISH phase")
+
+            # Add final statistics to phase data
+            phase_data.update({
+                "plan": self._agent_state.get("plan"),
+                "total_steps": self.current_step,
+                "completed": self.current_step < self.max_steps,
+            })
+
+            state_updates = self._middleware_pipeline.execute_phase_hook(
+                AgentPhase.FINISH,
+                runtime,
+                phase_data
+            )
+
+            if state_updates:
+                logger.info(f"Agent {self.name} finish phase complete: {list(state_updates.keys())}")
+
+        except Exception as e:
+            logger.error(f"Error in FINISH phase for agent {self.name}: {e}")
+
+    def get_agent_state(self, key: str, default: Any = None) -> Any:
+        """Get value from agent state (for middleware access).
+
+        Args:
+            key: State key
+            default: Default value if key not found
+
+        Returns:
+            State value or default
+        """
+        return self._agent_state.get(key, default)
+
+    def set_agent_state(self, key: str, value: Any) -> None:
+        """Set value in agent state (for middleware access).
+
+        Args:
+            key: State key
+            value: State value
+        """
+        self._agent_state[key] = value
+
+    def update_agent_state(self, updates: dict[str, Any]) -> None:
+        """Bulk update agent state (for middleware access).
+
+        Args:
+            updates: Dictionary of state updates
+        """
+        self._agent_state.update(updates)
+
+    def get_diagnostics(self) -> dict[str, Any]:
         """Get diagnostic information about the agent's state"""
-        return {
+        diagnostics = {
             'name': self.name,
             'state': self.state.value if hasattr(self.state, 'value') else str(self.state),
             'current_step': self.current_step,
@@ -1019,3 +1401,10 @@ class BaseAgent(BaseModel, ABC):
             'shutdown_requested': self._shutdown_event.is_set(),
             'memory_messages': len(self.memory.get_messages()) if hasattr(self.memory, 'get_messages') else 0
         }
+
+        # Add middleware diagnostics if available
+        if self._middleware_pipeline:
+            diagnostics['middleware_count'] = len(self.middleware)
+            diagnostics['agent_state_keys'] = list(self._agent_state.keys())
+
+        return diagnostics

@@ -2,9 +2,11 @@
 LLM Manager - Central orchestrator for managing providers, fallback, and load balancing.
 """
 
+from __future__ import annotations
+
 import asyncio
 import random
-from typing import List, Dict, Any, Optional, AsyncGenerator, Set
+from typing import Any, AsyncGenerator
 from logging import getLogger
 
 from contextlib import asynccontextmanager
@@ -31,11 +33,11 @@ class ProviderState:
     is_initializing: bool = False
     is_initialized: bool = False
     initialization_lock: asyncio.Lock = field(default_factory=asyncio.Lock)
-    last_error: Optional[Exception] = None
-    last_error_time: Optional[datetime] = None
+    last_error: Exception | None = None
+    last_error_time: datetime | None = None
     initialization_attempts: int = 0
     max_attempts: int = 3
-    backoff_until: Optional[datetime] = None
+    backoff_until: datetime | None = None
 
     def can_retry_initialization(self) -> bool:
         """Check if provider initialization can be retried."""
@@ -74,7 +76,7 @@ class FallbackStrategy:
     def __init__(self, debug_logger: DebugLogger):
         self.debug_logger = debug_logger
 
-    async def execute_with_fallback(self, providers: List[str], operation, *args, **kwargs) -> LLMResponse:
+    async def execute_with_fallback(self, providers: list[str], operation, *args, **kwargs) -> LLMResponse:
         """Execute operation with fallback chain.
 
         Args:
@@ -124,10 +126,10 @@ class LoadBalancer:
     """Handles load balancing between multiple provider instances."""
 
     def __init__(self):
-        self.provider_weights: Dict[str, float] = {}
-        self.provider_health: Dict[str, bool] = {}
+        self.provider_weights: dict[str, float] = {}
+        self.provider_health: dict[str, bool] = {}
 
-    def select_provider(self, providers: List[str], strategy: str = "round_robin") -> str:
+    def select_provider(self, providers: list[str], strategy: str = "round_robin") -> str:
         """Select a provider based on load balancing strategy.
 
         Args:
@@ -151,7 +153,7 @@ class LoadBalancer:
         else:  # round_robin (default)
             return self._round_robin_selection(healthy_providers)
 
-    def _round_robin_selection(self, providers: List[str]) -> str:
+    def _round_robin_selection(self, providers: list[str]) -> str:
         """Simple round-robin selection."""
         if not hasattr(self, '_round_robin_index'):
             self._round_robin_index = 0
@@ -160,7 +162,7 @@ class LoadBalancer:
         self._round_robin_index += 1
         return provider
 
-    def _weighted_selection(self, providers: List[str]) -> str:
+    def _weighted_selection(self, providers: list[str]) -> str:
         """Weighted selection based on provider weights."""
         if not self.provider_weights:
             return random.choice(providers)
@@ -194,11 +196,11 @@ class LLMManager:
     """Central orchestrator for LLM providers with fallback and load balancing."""
 
     def __init__(self,
-                 config_manager: Optional[ConfigurationManager] = None,
-                 debug_logger: Optional[DebugLogger] = None,
-                 metrics_collector: Optional[MetricsCollector] = None,
-                 response_normalizer: Optional[ResponseNormalizer] = None,
-                 registry: Optional[LLMProviderRegistry] = None):
+                 config_manager: ConfigurationManager | None = None,
+                 debug_logger: DebugLogger | None = None,
+                 metrics_collector: MetricsCollector | None = None,
+                 response_normalizer: ResponseNormalizer | None = None,
+                 registry: LLMProviderRegistry | None = None):
         """Initialize LLM Manager with enhanced provider state tracking."""
         self.config_manager = config_manager or ConfigurationManager()
         self.debug_logger = debug_logger or get_debug_logger()
@@ -210,14 +212,14 @@ class LLMManager:
         self.load_balancer = LoadBalancer()
 
         # Enhanced provider state management
-        self.provider_states: Dict[str, ProviderState] = {}
-        self.provider_cleanup_tasks: Set[asyncio.Task] = set()
+        self.provider_states: dict[str, ProviderState] = {}
+        self.provider_cleanup_tasks: set[asyncio.Task] = set()
         self._manager_lock = asyncio.Lock()
         self._shutdown_event = asyncio.Event()
 
         # Existing configuration
-        self.fallback_chain: List[str] = []
-        self.default_provider: Optional[str] = None
+        self.fallback_chain: list[str] = []
+        self.default_provider: str | None = None
         self.load_balancing_enabled: bool = False
         self.load_balancing_strategy: str = "round_robin"
 
@@ -582,7 +584,7 @@ class LLMManager:
             logger.error(f"Failed to initialize LLM Manager: {e}")
             raise ConfigurationError(f"LLM Manager initialization failed: {str(e)}")
 
-    async def chat(self, messages: List[Message], provider: Optional[str] = None, **kwargs) -> LLMResponse:
+    async def chat(self, messages: list[Message], provider: str | None = None, **kwargs) -> LLMResponse:
         """Send chat request with automatic provider selection and fallback.
 
         Args:
@@ -613,7 +615,7 @@ class LLMManager:
         # Normalize and return response
         return self.response_normalizer.normalize_response(response)
 
-    async def chat_stream(self,messages: List[Message],provider: Optional[str] = None,callbacks: Optional[List[BaseCallbackHandler]] = None,**kwargs) -> AsyncGenerator[LLMResponseChunk, None]:
+    async def chat_stream(self,messages: list[Message],provider: str | None = None,callbacks: Optional[list[BaseCallbackHandler]] = None,**kwargs) -> AsyncGenerator[LLMResponseChunk, None]:
         """Send streaming chat request with callback support.
         Args:
             messages: List of conversation messages
@@ -661,12 +663,12 @@ class LLMManager:
             )
             raise
 
-    def _get_internal_callbacks(self) -> List[BaseCallbackHandler]:
+    def _get_internal_callbacks(self) -> list[BaseCallbackHandler]:
         """Get internal monitoring callbacks."""
         # For now, return empty list
         return []
 
-    async def completion(self, prompt: str, provider: Optional[str] = None, **kwargs) -> LLMResponse:
+    async def completion(self, prompt: str, provider: str | None = None, **kwargs) -> LLMResponse:
         """Send completion request.
 
         Args:
@@ -697,8 +699,8 @@ class LLMManager:
         # Normalize and return response
         return self.response_normalizer.normalize_response(response)
 
-    async def chat_with_tools(self, messages: List[Message], tools: List[Dict],
-                            provider: Optional[str] = None, **kwargs) -> LLMResponse:
+    async def chat_with_tools(self, messages: list[Message], tools: list[dict],
+                            provider: str | None = None, **kwargs) -> LLMResponse:
         """Send tool-enabled chat request.
 
         Args:
@@ -751,9 +753,9 @@ class LLMManager:
         # Normalize and return response
         return self.response_normalizer.normalize_response(response)
 
-    def _sanitize_provider_chain(self, providers: Optional[List[str]]) -> List[str]:
+    def _sanitize_provider_chain(self, providers: list[str] | None) -> list[str]:
         """Remove duplicates and unknown providers while preserving order."""
-        sanitized: List[str] = []
+        sanitized: list[str] = []
         if not providers:
             return sanitized
 
@@ -767,7 +769,7 @@ class LLMManager:
                 sanitized.append(provider)
         return sanitized
 
-    def _resolve_fallback_candidates(self) -> List[str]:
+    def _resolve_fallback_candidates(self) -> list[str]:
         """Determine fallback candidates from config or available providers."""
         if self.fallback_chain:
             return self.fallback_chain.copy()
@@ -778,9 +780,9 @@ class LLMManager:
 
         return []
 
-    def _build_provider_chain(self) -> List[str]:
+    def _build_provider_chain(self) -> list[str]:
         """Construct ordered provider chain starting with the default provider."""
-        providers: List[str] = []
+        providers: list[str] = []
 
         if self.default_provider:
             if self.registry.is_registered(self.default_provider):
@@ -803,14 +805,14 @@ class LLMManager:
 
         return providers
 
-    def _get_providers_for_request(self, requested_provider: Optional[str]) -> List[str]:
+    def _get_providers_for_request(self, requested_provider: str | None) -> list[str]:
         """Get list of providers to use for a request.
 
         Args:
             requested_provider: Specific provider requested (optional)
 
         Returns:
-            List[str]: List of provider names in order of preference
+            list[str]: List of provider names in order of preference
         """
         if requested_provider:
             # Use specific provider only
@@ -830,14 +832,14 @@ class LLMManager:
 
         return providers
 
-    def set_fallback_chain(self, providers: List[str]) -> None:
+    def set_fallback_chain(self, providers: list[str]) -> None:
         """Set fallback provider chain.
 
         Args:
             providers: List of provider names in fallback order
         """
         # Validate providers
-        sanitized: List[str] = []
+        sanitized: list[str] = []
         for provider in providers:
             if not self.registry.is_registered(provider):
                 raise ConfigurationError(f"Provider '{provider}' not registered")
@@ -866,11 +868,11 @@ class LLMManager:
         self.load_balancing_enabled = False
         logger.info("Disabled load balancing")
 
-    async def health_check_all(self) -> Dict[str, bool]:
+    async def health_check_all(self) -> dict[str, bool]:
         """Check health of all registered providers.
 
         Returns:
-            Dict[str, bool]: Provider health status
+            dict[str, bool]: Provider health status
         """
         health_status = {}
 
@@ -924,7 +926,7 @@ class LLMManager:
 
 
 # Global manager instance
-_global_manager: Optional[LLMManager] = None
+_global_manager: LLMManager | None = None
 
 
 def get_llm_manager() -> LLMManager:

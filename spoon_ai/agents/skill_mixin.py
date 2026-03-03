@@ -5,7 +5,7 @@ Follows MCPClientMixin pattern for composable agent integration.
 """
 
 import logging
-from typing import Any, Dict, List, Optional, TYPE_CHECKING
+from typing import Any, Dict, List, Optional, TYPE_CHECKING, Set
 
 from pydantic import Field
 
@@ -53,6 +53,7 @@ class SkillEnabledMixin:
     # Private state
     _original_system_prompt: Optional[str] = None
     _skill_manager_initialized: bool = False
+    _skill_tool_names: Optional[Set[str]] = None
 
     def _ensure_skill_manager(self) -> SkillManager:
         """
@@ -84,6 +85,11 @@ class SkillEnabledMixin:
 
         return self.skill_manager
 
+    def _ensure_skill_tool_tracking(self) -> None:
+        """Ensure skill tool tracking is initialized."""
+        if self._skill_tool_names is None:
+            self._skill_tool_names = set()
+
     def _refresh_prompts_with_skills(self) -> None:
         """
         Inject active skill instructions into system prompt.
@@ -100,22 +106,41 @@ class SkillEnabledMixin:
             self.system_prompt = base_prompt
 
     def _inject_skill_tools(self) -> None:
-        """
-        Add tools from active skills to available_tools.
+        """Backward-compatible alias for syncing skill tools."""
+        self._sync_skill_tools()
 
-        Only adds tools not already present.
+    def _sync_skill_tools(self) -> None:
+        """
+        Sync tools from active skills with available_tools.
+
+        Adds missing active skill tools and removes stale ones previously injected.
         """
         available_tools: Optional["ToolManager"] = getattr(self, 'available_tools', None)
-        if not available_tools:
+        if available_tools is None:
             return
 
         manager = self._ensure_skill_manager()
         skill_tools = manager.get_active_tools()
+        self._ensure_skill_tool_tracking()
 
+        active_tool_names = set()
+        newly_added = set()
         for tool in skill_tools:
             if tool.name not in available_tools.tool_map:
                 available_tools.add_tool(tool)
+                newly_added.add(tool.name)
                 logger.debug(f"Injected skill tool: {tool.name}")
+            active_tool_names.add(tool.name)
+
+        # Track injected tools to safely remove them when skills deactivate
+        self._skill_tool_names |= newly_added
+
+        stale = self._skill_tool_names - active_tool_names
+        for tool_name in stale:
+            if tool_name in available_tools.tool_map:
+                available_tools.remove_tool(tool_name)
+                logger.debug(f"Removed stale skill tool: {tool_name}")
+        self._skill_tool_names -= stale
 
     async def activate_skill(
         self,
@@ -137,7 +162,7 @@ class SkillEnabledMixin:
 
         # Refresh agent state
         self._refresh_prompts_with_skills()
-        self._inject_skill_tools()
+        self._sync_skill_tools()
 
         agent_name = getattr(self, 'name', 'unknown')
         logger.info(f"Agent '{agent_name}' activated skill: {name}")
@@ -159,7 +184,7 @@ class SkillEnabledMixin:
 
         if result:
             self._refresh_prompts_with_skills()
-            # Note: We don't remove tools as they might still be useful
+            self._sync_skill_tools()
 
         return result
 
@@ -205,6 +230,34 @@ class SkillEnabledMixin:
 
         return activated
 
+    async def _run_with_auto_skills(self, request: Optional[str], runner) -> str:
+        """
+        Run a request with per-turn auto-activated skills.
+
+        Ensures auto-activated skills are cleaned up after the run.
+        """
+        activated: List[Skill] = []
+        if request and self.auto_trigger_skills:
+            activated = await self.auto_activate_skills(request)
+            if activated:
+                names = [s.metadata.name for s in activated]
+                logger.debug(f"Auto-activated skills for request: {names}")
+
+        self._refresh_prompts_with_skills()
+        self._sync_skill_tools()
+
+        try:
+            return await runner(request)
+        finally:
+            if activated:
+                for skill in activated:
+                    try:
+                        await self.deactivate_skill(skill.metadata.name)
+                    except Exception as e:
+                        logger.warning(
+                            f"Failed to auto-deactivate skill '{skill.metadata.name}': {e}"
+                        )
+
     def list_skills(self) -> List[str]:
         """List all available skill names."""
         manager = self._ensure_skill_manager()
@@ -237,6 +290,7 @@ class SkillEnabledMixin:
 
         if count > 0:
             self._refresh_prompts_with_skills()
+            self._sync_skill_tools()
 
         return count
 

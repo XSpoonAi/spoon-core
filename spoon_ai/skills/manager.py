@@ -70,7 +70,8 @@ class SkillManager:
         skill_paths: Optional[List[str]] = None,
         llm: Optional["LLMManager"] = None,
         auto_discover: bool = True,
-        scripts_enabled: bool = True
+        scripts_enabled: bool = True,
+        include_default_paths: bool = True
     ):
         """
         Initialize the skill manager.
@@ -86,7 +87,10 @@ class SkillManager:
         if skill_paths:
             additional_paths = [Path(p) for p in skill_paths]
 
-        self._loader = SkillLoader(additional_paths=additional_paths)
+        self._loader = SkillLoader(
+            additional_paths=additional_paths,
+            include_default_paths=include_default_paths,
+        )
         self._registry = SkillRegistry()
         self._checkpointer = InMemoryCheckpointer(
             max_checkpoints_per_thread=10,
@@ -274,9 +278,9 @@ class SkillManager:
         # Fast trigger matching
         trigger_matches = self.match_triggers(text)
 
-        # LLM intent matching
+        # LLM intent matching (fallback only when triggers are empty)
         intent_matches = []
-        if use_intent and self._intent_analyzer:
+        if use_intent and not trigger_matches and self._intent_analyzer:
             intent_matches = await self.match_intent(text)
 
         # Combine and deduplicate

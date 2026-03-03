@@ -6,10 +6,14 @@ from typing import Dict, Iterable, List, Optional
 
 from .config import RagConfig
 from .embeddings import EmbeddingClient
-from .loader import load_inputs, chunk_text
+from .parser import UnstructuredParser
+from .chunk import chunk_text
 from .vectorstores import VectorStore
-import pickle
+import json
 import os
+import logging
+
+logger = logging.getLogger(__name__)
 
 
 @dataclass
@@ -32,16 +36,27 @@ class RagIndex:
         self.embeddings = embeddings
 
     def ingest(self, inputs: Iterable[str], *, collection: Optional[str] = None) -> int:
-        docs = load_inputs(inputs)
+        # Use UnstructuredParser for document parsing
+        parser = UnstructuredParser()
+        docs = parser.parse(inputs)
         records: List[IndexedRecord] = []
-        for d in docs:
-            print(f"Indexing document: {d.source}")
-            chunks = chunk_text(d.text, self.config.chunk_size, self.config.chunk_overlap)
+        for doc in docs:
+            logger.info("Indexing document: %s", doc.filepath)
+
+            # Use recursive chunking directly on elements
+            chunks = chunk_text(
+                text='',  # Not used when elements provided
+                chunk_size=self.config.chunk_size,
+                overlap=self.config.chunk_overlap,
+                chunk_method='recursive',
+                elements=doc.elements
+            )
+
             for i, ch in enumerate(chunks):
                 rec_id = str(uuid.uuid4())
                 md = {
-                    "source": d.source,
-                    "doc_id": d.id,
+                    "source": doc.filepath,
+                    "doc_id": doc.filename,
                     "chunk_index": i,
                 }
                 records.append(IndexedRecord(id=rec_id, text=ch, metadata=md))
@@ -57,38 +72,38 @@ class RagIndex:
             metadatas=[r.metadata | {"text": r.text} for r in records],
         )
 
-        # Save data for BM25 (Hybrid Search)
+        # Save data for BM25 (Hybrid Search) using JSON (safe serialization)
         try:
-            bm2_file = os.path.join(self.config.rag_dir, "bm25_dump.pkl")
+            bm25_file = os.path.join(self.config.rag_dir, "bm25_data.json")
             if not os.path.exists(self.config.rag_dir):
                 os.makedirs(self.config.rag_dir, exist_ok=True)
-            
+
             existing_data = {"ids": [], "texts": [], "metadatas": []}
-            if os.path.exists(bm2_file):
+            if os.path.exists(bm25_file):
                 try:
-                    with open(bm2_file, "rb") as f:
-                        existing_data = pickle.load(f)
-                except Exception:
-                    pass
-            
+                    with open(bm25_file, "r", encoding="utf-8") as f:
+                        existing_data = json.load(f)
+                except (json.JSONDecodeError, KeyError):
+                    logger.warning("Corrupted BM25 data file, starting fresh")
+                    existing_data = {"ids": [], "texts": [], "metadatas": []}
+
             existing_data["ids"].extend([r.id for r in records])
             existing_data["texts"].extend([r.text for r in records])
             existing_data["metadatas"].extend([r.metadata for r in records])
-            
-            with open(bm2_file, "wb") as f:
-                pickle.dump(existing_data, f)
+
+            with open(bm25_file, "w", encoding="utf-8") as f:
+                json.dump(existing_data, f, ensure_ascii=False)
         except Exception as e:
-            # Non-critical failure
-            print(f"[Warning] Failed to save BM25 data: {e}")
+            logger.warning("Failed to save BM25 data: %s", e)
 
         return len(records)
 
     def clear(self, *, collection: Optional[str] = None) -> None:
         # Also clear BM25 data
         try:
-            bm2_file = os.path.join(self.config.rag_dir, "bm25_dump.pkl")
-            if os.path.exists(bm2_file):
-                os.remove(bm2_file)
+            bm25_file = os.path.join(self.config.rag_dir, "bm25_data.json")
+            if os.path.exists(bm25_file):
+                os.remove(bm25_file)
         except Exception:
             pass
         self.store.delete_collection(collection or self.config.collection)

@@ -52,6 +52,12 @@ class SkillScript(BaseModel):
     timeout: int = Field(default=30, ge=1, le=600, description="Execution timeout in seconds")
     working_directory: Optional[str] = Field(default=None, description="Working directory override")
 
+    # Structured input schema (mirrors JSON Schema for script stdin)
+    input_schema: Optional[Dict[str, Any]] = Field(
+        default=None,
+        description="JSON Schema describing the structured input the script expects via stdin"
+    )
+
     # Lifecycle hooks
     run_on_activation: bool = Field(default=False, description="Run when skill activates")
     run_on_deactivation: bool = Field(default=False, description="Run when skill deactivates")
