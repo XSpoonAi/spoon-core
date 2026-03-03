@@ -441,12 +441,13 @@ class OllamaProvider(LLMProviderInterface):
         include_tools = tool_choice != "none"
         if tool_choice == "required" and not tools:
             raise ProviderError("ollama", "tool_choice=required but no tools provided")
+        output_queue = kwargs.get("output_queue")
 
         model = (kwargs.get("model") or self.model).strip()
         payload: Dict[str, Any] = {
             "model": model,
             "messages": self._convert_messages(messages),
-            "stream": False,
+            "stream": bool(output_queue),
             "options": self._build_options(**kwargs),
         }
         if include_tools and tools:
@@ -456,6 +457,62 @@ class OllamaProvider(LLMProviderInterface):
         start = asyncio.get_event_loop().time()
 
         try:
+            if output_queue is not None:
+                full_content = ""
+                tool_calls: List[ToolCall] = []
+                done_reason = "stop"
+                emitted_chunk_count = 0
+                usage = None
+
+                async with self.client.stream("POST", url, json=payload) as resp:
+                    resp.raise_for_status()
+
+                    async for line in resp.aiter_lines():
+                        if not line:
+                            continue
+
+                        try:
+                            data = json.loads(line)
+                        except Exception:
+                            continue
+
+                        if not isinstance(data, dict):
+                            continue
+
+                        delta = self._extract_content(data)
+                        if delta:
+                            full_content += delta
+                            emitted_chunk_count += 1
+                            try:
+                                output_queue.put_nowait({"content": delta})
+                            except Exception:
+                                pass
+
+                        current_tool_calls = self._extract_tool_calls(data)
+                        if current_tool_calls:
+                            tool_calls = current_tool_calls
+
+                        if data.get("done"):
+                            done_reason = str(data.get("done_reason") or "stop")
+                            usage = self._extract_usage(data)
+
+                duration = asyncio.get_event_loop().time() - start
+                return LLMResponse(
+                    content=full_content,
+                    provider="ollama",
+                    model=model,
+                    finish_reason="tool_calls" if tool_calls else "stop",
+                    native_finish_reason=done_reason,
+                    tool_calls=tool_calls,
+                    usage=usage,
+                    metadata={
+                        "streamed_content": emitted_chunk_count > 0,
+                        "stream_chunk_count": emitted_chunk_count,
+                    },
+                    duration=duration,
+                    timestamp=datetime.now(),
+                )
+
             resp = await self.client.post(url, json=payload)
             resp.raise_for_status()
             data = resp.json()

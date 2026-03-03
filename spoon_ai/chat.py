@@ -693,6 +693,7 @@ class ChatBot:
             tools=tools or [],
             provider=self.llm_provider,
             tool_choice=tool_choice,
+            output_queue=output_queue,
             **kwargs
         )
 

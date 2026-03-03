@@ -756,14 +756,14 @@ class GeminiProvider(LLMProviderInterface):
                                if k not in ['model', 'max_tokens', 'temperature', 'callbacks', 'timeout']}
             client = genai.Client(api_key=self.api_key)
             try:
-                stream = client.models.generate_content_stream(
+                stream = await client.aio.models.generate_content_stream(
                     model=model,
                     contents=contents,
                     config=generate_config,
                     **filtered_kwargs
                 )
 
-                for part_response in stream:
+                async for part_response in stream:
                     chunk = ""
                     try:
                         if (
@@ -890,6 +890,7 @@ class GeminiProvider(LLMProviderInterface):
             except Exception:
                 max_tokens = int(self.max_tokens)
             temperature = kwargs.get('temperature', self.temperature)
+            output_queue = kwargs.get("output_queue")
 
             max_tokens, thinking_config = self._apply_thinking_defaults(
                 model=model,
@@ -914,6 +915,84 @@ class GeminiProvider(LLMProviderInterface):
             # Send request
             client = genai.Client(api_key=self.api_key)
             try:
+                if output_queue is not None:
+                    stream = await client.aio.models.generate_content_stream(
+                        model=model,
+                        contents=gemini_messages,
+                        config=generate_config
+                    )
+
+                    full_content = ""
+                    emitted_chunk_count = 0
+                    tool_calls: List[ToolCall] = []
+                    finish_reason = "stop"
+
+                    async for part_response in stream:
+                        # Incremental text
+                        delta_text = ""
+                        try:
+                            if (
+                                hasattr(part_response, "candidates")
+                                and part_response.candidates
+                                and getattr(part_response.candidates[0], "content", None) is not None
+                                and getattr(part_response.candidates[0].content, "parts", None)
+                            ):
+                                for part in part_response.candidates[0].content.parts:
+                                    text = getattr(part, "text", None)
+                                    if text:
+                                        delta_text += text
+                                    function_call = getattr(part, "function_call", None)
+                                    if function_call:
+                                        arguments_json = json.dumps(function_call.args) if function_call.args else "{}"
+                                        tool_calls.append(
+                                            ToolCall(
+                                                id=f"call_{uuid.uuid4().hex[:8]}",
+                                                type="function",
+                                                function=Function(
+                                                    name=function_call.name,
+                                                    arguments=arguments_json,
+                                                ),
+                                            )
+                                        )
+                                        finish_reason = "tool_calls"
+                        except Exception:
+                            delta_text = ""
+
+                        if not delta_text:
+                            maybe_text = getattr(part_response, "text", None)
+                            if isinstance(maybe_text, str):
+                                delta_text = maybe_text
+
+                        if delta_text:
+                            full_content += delta_text
+                            emitted_chunk_count += 1
+                            try:
+                                output_queue.put_nowait({"content": delta_text})
+                            except Exception:
+                                pass
+
+                        if (
+                            hasattr(part_response, "candidates")
+                            and part_response.candidates
+                            and getattr(part_response.candidates[0], "finish_reason", None)
+                        ):
+                            finish_reason = str(part_response.candidates[0].finish_reason)
+
+                    duration = asyncio.get_event_loop().time() - start_time
+                    return LLMResponse(
+                        content=full_content,
+                        provider="gemini",
+                        model=model,
+                        finish_reason=finish_reason,
+                        native_finish_reason=finish_reason,
+                        tool_calls=tool_calls,
+                        duration=duration,
+                        metadata={
+                            "streamed_content": emitted_chunk_count > 0,
+                            "stream_chunk_count": emitted_chunk_count,
+                        },
+                    )
+
                 response = client.models.generate_content(
                     model=model,
                     contents=gemini_messages,

@@ -208,6 +208,11 @@ class ToolCallAgent(ReActAgent):
             return False
 
         self.tool_calls = response.tool_calls
+        response_metadata = getattr(response, "metadata", {}) or {}
+        streamed_content = bool(
+            isinstance(response_metadata, dict)
+            and response_metadata.get("streamed_content")
+        )
 
         # Only terminate on finish_reason if there are NO tool calls
         # If there are tool calls, we should execute them regardless of finish_reason
@@ -216,7 +221,7 @@ class ToolCallAgent(ReActAgent):
             self.state = AgentState.FINISHED
             await self.add_message("assistant", response.content or "Task completed")
             # Emit content to output queue for streaming consumers
-            if self.output_queue:
+            if self.output_queue and not streamed_content:
                 self.output_queue.put_nowait({"content": response.content or "Task completed"})
             # Set a flag to indicate finish_reason termination and store the content
             self._finish_reason_terminated = True
@@ -232,7 +237,8 @@ class ToolCallAgent(ReActAgent):
             logger.info(colored(f"🛠️ {self.name} selected no tools", "yellow"))
 
         if self.output_queue:
-            self.output_queue.put_nowait({"content": response.content})
+            if response.content and not streamed_content:
+                self.output_queue.put_nowait({"content": response.content})
             self.output_queue.put_nowait({"tool_calls": response.tool_calls})
 
         try:

@@ -877,11 +877,11 @@ class OpenAICompatibleProvider(LLMProviderInterface):
             max_tokens = kwargs.get('max_tokens', self.max_tokens)
             temperature = kwargs.get('temperature', self.temperature)
             tool_choice = kwargs.get('tool_choice', 'auto')
+            output_queue = kwargs.get("output_queue")
 
             request_kwargs: Dict[str, Any] = {
                 "model": model,
                 "messages": openai_messages,
-                "stream": False,
             }
             # Only add temperature for models that support it
             if self._supports_temperature(model):
@@ -892,9 +892,100 @@ class OpenAICompatibleProvider(LLMProviderInterface):
                 request_kwargs["tools"] = tools
                 request_kwargs["tool_choice"] = tool_choice
 
-            extra_keys = {'model', 'max_tokens', 'max_completion_tokens', 'temperature', 'tool_choice'}
+            extra_keys = {'model', 'max_tokens', 'max_completion_tokens', 'temperature', 'tool_choice', 'output_queue'}
             request_kwargs.update({k: v for k, v in kwargs.items() if k not in extra_keys})
 
+            if output_queue is not None:
+                request_kwargs["stream"] = True
+                request_kwargs["stream_options"] = {"include_usage": True}
+                stream = await self.client.chat.completions.create(**request_kwargs)
+
+                full_content = ""
+                finish_reason = None
+                usage = None
+                emitted_chunk_count = 0
+                tool_call_accumulator: Dict[str, Dict[str, Any]] = {}
+
+                async for chunk in stream:
+                    if not hasattr(chunk, "choices") or not chunk.choices:
+                        if hasattr(chunk, "usage") and chunk.usage:
+                            usage = {
+                                "prompt_tokens": chunk.usage.prompt_tokens,
+                                "completion_tokens": chunk.usage.completion_tokens,
+                                "total_tokens": chunk.usage.total_tokens,
+                            }
+                        continue
+
+                    choice = chunk.choices[0]
+                    delta = choice.delta
+                    token = delta.content or ""
+                    if token:
+                        full_content += token
+                        emitted_chunk_count += 1
+                        try:
+                            output_queue.put_nowait({"content": token})
+                        except Exception:
+                            pass
+
+                    if choice.finish_reason is not None:
+                        finish_reason = choice.finish_reason
+
+                    if delta.tool_calls:
+                        for tc_chunk in delta.tool_calls:
+                            tc_id = tc_chunk.id or f"call_{tc_chunk.index}"
+                            if tc_id not in tool_call_accumulator:
+                                tool_call_accumulator[tc_id] = {
+                                    "id": tc_id,
+                                    "type": tc_chunk.type or "function",
+                                    "function": {
+                                        "name": "",
+                                        "arguments": "",
+                                    },
+                                }
+                            if tc_chunk.function:
+                                if tc_chunk.function.name:
+                                    tool_call_accumulator[tc_id]["function"]["name"] += tc_chunk.function.name
+                                if tc_chunk.function.arguments:
+                                    tool_call_accumulator[tc_id]["function"]["arguments"] += tc_chunk.function.arguments
+
+                tool_calls = [
+                    ToolCall(
+                        id=tc["id"],
+                        type=tc["type"],
+                        function=Function(
+                            name=tc["function"]["name"],
+                            arguments=tc["function"]["arguments"],
+                        ),
+                    )
+                    for tc in tool_call_accumulator.values()
+                ]
+
+                duration = asyncio.get_event_loop().time() - start_time
+                native_finish_reason = finish_reason or "stop"
+                standardized_finish_reason = finish_reason or "stop"
+                if standardized_finish_reason == "tool_calls":
+                    standardized_finish_reason = "tool_calls"
+                elif standardized_finish_reason in ("stop", "length", "content_filter"):
+                    pass
+                else:
+                    standardized_finish_reason = "stop"
+
+                return LLMResponse(
+                    content=full_content,
+                    provider=self.get_provider_name(),
+                    model=model,
+                    finish_reason=standardized_finish_reason,
+                    native_finish_reason=native_finish_reason,
+                    tool_calls=tool_calls,
+                    usage=usage,
+                    duration=duration,
+                    metadata={
+                        "streamed_content": emitted_chunk_count > 0,
+                        "stream_chunk_count": emitted_chunk_count,
+                    },
+                )
+
+            request_kwargs["stream"] = False
             response = await self.client.chat.completions.create(**request_kwargs)
 
             duration = asyncio.get_event_loop().time() - start_time
