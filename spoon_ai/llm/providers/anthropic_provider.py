@@ -356,6 +356,7 @@ class AnthropicProvider(LLMProviderInterface):
             max_tokens = kwargs.get('max_tokens', self.max_tokens)
             temperature = kwargs.get('temperature', self.temperature)
             tool_choice = kwargs.get('tool_choice')
+            output_queue = kwargs.get("output_queue")
             # Guard against missing/None model overrides
             if not model:
                 model = self.model or "claude-sonnet-4-20250514"
@@ -529,6 +530,7 @@ class AnthropicProvider(LLMProviderInterface):
             max_tokens = kwargs.get('max_tokens', self.max_tokens)
             temperature = kwargs.get('temperature', self.temperature)
             tool_choice = kwargs.get('tool_choice')
+            output_queue = kwargs.get("output_queue")
             # Guard against missing/None model overrides
             if not model:
                 model = self.model or "claude-sonnet-4-20250514"
@@ -541,7 +543,8 @@ class AnthropicProvider(LLMProviderInterface):
             tool_calls = []
             finish_reason = None
             native_finish_reason = None
-            
+            emitted_chunk_count = 0
+
             # Prepare request parameters
             request_params = {
                 'model': model,
@@ -549,7 +552,7 @@ class AnthropicProvider(LLMProviderInterface):
                 'temperature': temperature,
                 'messages': anthropic_messages,
                 'tools': anthropic_tools,
-                **{k: v for k, v in kwargs.items() if k not in ['model', 'max_tokens', 'temperature', 'tool_choice']}
+                **{k: v for k, v in kwargs.items() if k not in ['model', 'max_tokens', 'temperature', 'tool_choice', 'output_queue']}
             }
 
             # Anthropic expects tool_choice as an object, not a plain string/enum
@@ -596,6 +599,13 @@ class AnthropicProvider(LLMProviderInterface):
                             }
                         continue
                     elif chunk.type == "content_block_delta" and chunk.delta.type == "text_delta":
+                        if chunk.delta.text:
+                            emitted_chunk_count += 1
+                            if output_queue is not None:
+                                try:
+                                    output_queue.put_nowait({"content": chunk.delta.text})
+                                except Exception:
+                                    pass
                         buffer += chunk.delta.text
                         continue
                     elif chunk.type == "content_block_delta" and chunk.delta.type == "input_json_delta":
@@ -627,7 +637,7 @@ class AnthropicProvider(LLMProviderInterface):
             elif finish_reason == "tool_use":
                 finish_reason = "tool_calls"
             
-            return LLMResponse(
+            response = LLMResponse(
                 content=content,
                 provider="anthropic",
                 model=model,
@@ -637,7 +647,10 @@ class AnthropicProvider(LLMProviderInterface):
                 duration=duration,
                 metadata={"cache_metrics": self.cache_metrics}
             )
-            
+            response.metadata["streamed_content"] = emitted_chunk_count > 0
+            response.metadata["stream_chunk_count"] = emitted_chunk_count
+            return response
+ 
         except Exception as e:
             await self._handle_error(e)
     

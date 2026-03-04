@@ -9,6 +9,7 @@ from spoon_ai.agents.toolcall import ToolCallAgent
 from spoon_ai.agents.spoon_react import SpoonReactAI
 from spoon_ai.chat import ChatBot
 from spoon_ai.schema import Message, LLMResponse, ToolCall, Function, AgentState
+from spoon_ai.llm.interface import LLMResponse as ManagerLLMResponse
 from spoon_ai.tools import ToolManager
 
 
@@ -207,6 +208,35 @@ class TestAgentLLMIntegration:
         
         # Verify streaming worked
         assert "Streaming response chunk" in result
+
+    @pytest.mark.asyncio
+    async def test_streamed_tool_response_does_not_enqueue_full_content_twice(self, mock_chatbot_manager, tool_manager):
+        """When provider already streamed chunks to output_queue, agent should not append full content again."""
+        streamed_response = ManagerLLMResponse(
+            content="already streamed full text",
+            provider="openai",
+            model="gpt-4.1",
+            finish_reason="stop",
+            native_finish_reason="stop",
+            tool_calls=[],
+            metadata={"streamed_content": True, "stream_chunk_count": 5},
+        )
+        mock_chatbot_manager.ask_tool.return_value = streamed_response
+
+        agent = ToolCallAgent(
+            name="streaming_agent",
+            llm=mock_chatbot_manager,
+            available_tools=tool_manager,
+        )
+        mock_queue = Mock()
+        agent.output_queue = mock_queue
+        await agent.add_message("user", "hello")
+
+        should_continue = await agent.think()
+
+        assert should_continue is False
+        put_calls = mock_queue.put_nowait.call_args_list
+        assert all(call.args != ({"content": "already streamed full text"},) for call in put_calls)
     
     @pytest.mark.asyncio
     async def test_agent_memory_consistency(self, mock_chatbot_manager, tool_manager):

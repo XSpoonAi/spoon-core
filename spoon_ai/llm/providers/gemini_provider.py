@@ -138,6 +138,27 @@ class GeminiProvider(LLMProviderInterface):
         return self.model
 
     @staticmethod
+    def _normalize_finish_reason(finish_reason: Any) -> Optional[str]:
+        """Normalize provider-specific finish reasons to shared semantics."""
+        if finish_reason is None:
+            return None
+        reason = str(finish_reason).strip()
+        if not reason:
+            return None
+        normalized = reason.split(".")[-1].lower()
+        mapping = {
+            "stop": "stop",
+            "end_turn": "stop",
+            "max_tokens": "length",
+            "max_output_tokens": "length",
+            "length": "length",
+            "tool_calls": "tool_calls",
+            "tool_call": "tool_calls",
+            "function_call": "tool_calls",
+        }
+        return mapping.get(normalized, normalized)
+
+    @staticmethod
     def _thinking_budget_min_for_model(model: str) -> Optional[int]:
         """Return minimum thinking_budget for models that support/require thinking_config."""
         if not isinstance(model, str):
@@ -748,6 +769,7 @@ class GeminiProvider(LLMProviderInterface):
             full_content = ""
             chunk_index = 0
             finish_reason = None
+            native_finish_reason = None
             usage_data = None
 
             # Send streaming request
@@ -756,14 +778,14 @@ class GeminiProvider(LLMProviderInterface):
                                if k not in ['model', 'max_tokens', 'temperature', 'callbacks', 'timeout']}
             client = genai.Client(api_key=self.api_key)
             try:
-                stream = client.models.generate_content_stream(
+                stream = await client.aio.models.generate_content_stream(
                     model=model,
                     contents=contents,
                     config=generate_config,
                     **filtered_kwargs
                 )
 
-                for part_response in stream:
+                async for part_response in stream:
                     chunk = ""
                     try:
                         if (
@@ -802,7 +824,8 @@ class GeminiProvider(LLMProviderInterface):
                         and part_response.candidates
                         and part_response.candidates[0].finish_reason
                     ):
-                        finish_reason = str(part_response.candidates[0].finish_reason)
+                        native_finish_reason = str(part_response.candidates[0].finish_reason)
+                        finish_reason = self._normalize_finish_reason(native_finish_reason)
 
                     # Extract usage stats if available
                     if hasattr(part_response, 'usage_metadata') and part_response.usage_metadata:
@@ -845,7 +868,7 @@ class GeminiProvider(LLMProviderInterface):
                 provider="gemini",
                 model=model,
                 finish_reason=finish_reason or "stop",
-                native_finish_reason=finish_reason or "stop",
+                native_finish_reason=native_finish_reason or finish_reason or "stop",
                 tool_calls=[],
                 usage=usage_data,
                 metadata={}
@@ -890,6 +913,7 @@ class GeminiProvider(LLMProviderInterface):
             except Exception:
                 max_tokens = int(self.max_tokens)
             temperature = kwargs.get('temperature', self.temperature)
+            output_queue = kwargs.get("output_queue")
 
             max_tokens, thinking_config = self._apply_thinking_defaults(
                 model=model,
@@ -914,6 +938,88 @@ class GeminiProvider(LLMProviderInterface):
             # Send request
             client = genai.Client(api_key=self.api_key)
             try:
+                if output_queue is not None:
+                    stream = await client.aio.models.generate_content_stream(
+                        model=model,
+                        contents=gemini_messages,
+                        config=generate_config
+                    )
+
+                    full_content = ""
+                    emitted_chunk_count = 0
+                    tool_calls: List[ToolCall] = []
+                    finish_reason = "stop"
+                    native_finish_reason = "stop"
+
+                    async for part_response in stream:
+                        # Incremental text
+                        delta_text = ""
+                        try:
+                            if (
+                                hasattr(part_response, "candidates")
+                                and part_response.candidates
+                                and getattr(part_response.candidates[0], "content", None) is not None
+                                and getattr(part_response.candidates[0].content, "parts", None)
+                            ):
+                                for part in part_response.candidates[0].content.parts:
+                                    text = getattr(part, "text", None)
+                                    if text:
+                                        delta_text += text
+                                    function_call = getattr(part, "function_call", None)
+                                    if function_call:
+                                        arguments_json = json.dumps(function_call.args) if function_call.args else "{}"
+                                        tool_calls.append(
+                                            ToolCall(
+                                                id=f"call_{uuid.uuid4().hex[:8]}",
+                                                type="function",
+                                                function=Function(
+                                                    name=function_call.name,
+                                                    arguments=arguments_json,
+                                                ),
+                                            )
+                                        )
+                                        finish_reason = "tool_calls"
+                        except Exception:
+                            delta_text = ""
+
+                        if not delta_text:
+                            maybe_text = getattr(part_response, "text", None)
+                            if isinstance(maybe_text, str):
+                                delta_text = maybe_text
+
+                        if delta_text:
+                            full_content += delta_text
+                            emitted_chunk_count += 1
+                            try:
+                                output_queue.put_nowait({"content": delta_text})
+                            except Exception:
+                                pass
+
+                        if (
+                            hasattr(part_response, "candidates")
+                            and part_response.candidates
+                            and getattr(part_response.candidates[0], "finish_reason", None)
+                        ):
+                            native_finish_reason = str(part_response.candidates[0].finish_reason)
+                            normalized_finish_reason = self._normalize_finish_reason(native_finish_reason)
+                            if not tool_calls and normalized_finish_reason:
+                                finish_reason = normalized_finish_reason
+
+                    duration = asyncio.get_event_loop().time() - start_time
+                    return LLMResponse(
+                        content=full_content,
+                        provider="gemini",
+                        model=model,
+                        finish_reason=finish_reason,
+                        native_finish_reason=native_finish_reason,
+                        tool_calls=tool_calls,
+                        duration=duration,
+                        metadata={
+                            "streamed_content": emitted_chunk_count > 0,
+                            "stream_chunk_count": emitted_chunk_count,
+                        },
+                    )
+
                 response = client.models.generate_content(
                     model=model,
                     contents=gemini_messages,

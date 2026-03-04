@@ -126,7 +126,12 @@ class TestChatBotIntegration:
             }
         }]
         
-        result = await chatbot_with_manager.ask_tool(messages, tools=tools)
+        output_queue = asyncio.Queue()
+        result = await chatbot_with_manager.ask_tool(
+            messages,
+            tools=tools,
+            output_queue=output_queue,
+        )
         
         # Verify the result
         assert result.content == "I'll check the weather for you."
@@ -138,6 +143,7 @@ class TestChatBotIntegration:
         call_args = mock_llm_manager.chat_with_tools.call_args
         assert call_args[1]['provider'] == "openai"
         assert call_args[1]['tools'] == tools
+        assert call_args[1]['output_queue'] is output_queue
     
     @pytest.mark.asyncio
     async def test_backward_compatibility_flag(self, mock_llm_manager):

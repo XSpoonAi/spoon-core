@@ -19,3 +19,5 @@ history.txt
 .venv/
 .DS_Store
 CLAUDE.md
+
+build/

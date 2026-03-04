@@ -83,6 +83,57 @@ class OpenAICompatibleProvider(LLMProviderInterface):
 
         return {"max_tokens": max_tokens}
 
+    @staticmethod
+    def _resolve_stream_tool_call_id(
+        tc_chunk: Any,
+        tool_call_accumulator: Dict[str, Dict[str, Any]],
+        tool_call_ids_by_index: Dict[int, str],
+    ) -> str:
+        """Resolve a stable tool-call id across streamed fragments.
+
+        OpenAI-compatible streams often send the tool-call ``id`` only on the
+        first fragment and omit it for subsequent fragments while keeping the
+        same ``index``. We keep a per-index mapping so later fragments merge
+        into the same accumulator entry.
+        """
+        tc_index = getattr(tc_chunk, "index", None)
+        explicit_id = getattr(tc_chunk, "id", None)
+
+        if explicit_id:
+            previous_id = (
+                tool_call_ids_by_index.get(tc_index)
+                if isinstance(tc_index, int)
+                else None
+            )
+            if previous_id and previous_id != explicit_id and previous_id in tool_call_accumulator:
+                previous = tool_call_accumulator.pop(previous_id)
+                current = tool_call_accumulator.get(explicit_id)
+                if current is None:
+                    tool_call_accumulator[explicit_id] = previous
+                    current = tool_call_accumulator[explicit_id]
+                else:
+                    current["function"]["name"] = (
+                        previous["function"]["name"] + current["function"]["name"]
+                    )
+                    current["function"]["arguments"] = (
+                        previous["function"]["arguments"] + current["function"]["arguments"]
+                    )
+                current["id"] = explicit_id
+                if not current.get("type") and previous.get("type"):
+                    current["type"] = previous["type"]
+
+            if isinstance(tc_index, int):
+                tool_call_ids_by_index[tc_index] = explicit_id
+            return explicit_id
+
+        if isinstance(tc_index, int) and tc_index in tool_call_ids_by_index:
+            return tool_call_ids_by_index[tc_index]
+
+        synthetic_id = f"call_{tc_index}" if isinstance(tc_index, int) else f"call_{uuid4().hex[:8]}"
+        if isinstance(tc_index, int):
+            tool_call_ids_by_index[tc_index] = synthetic_id
+        return synthetic_id
+
     def get_provider_name(self) -> str:
         """Get the provider name. Should be overridden by subclasses."""
         return self.provider_name
@@ -695,6 +746,7 @@ class OpenAICompatibleProvider(LLMProviderInterface):
             full_content = ""
             chunk_index = 0
             tool_call_accumulator = {}  # For accumulating tool calls
+            tool_call_ids_by_index: Dict[int, str] = {}
             finish_reason = None  # Initialize finish_reason outside loop
             tool_calls = []  # Initialize tool_calls outside loop
             
@@ -747,7 +799,11 @@ class OpenAICompatibleProvider(LLMProviderInterface):
                 if delta.tool_calls:
                     tool_call_chunks = []
                     for tc_chunk in delta.tool_calls:
-                        tc_id = tc_chunk.id or f"call_{tc_chunk.index}"
+                        tc_id = self._resolve_stream_tool_call_id(
+                            tc_chunk,
+                            tool_call_accumulator,
+                            tool_call_ids_by_index,
+                        )
 
                         # Initialize accumulator if needed
                         if tc_id not in tool_call_accumulator:
@@ -769,7 +825,7 @@ class OpenAICompatibleProvider(LLMProviderInterface):
 
                         tool_call_chunks.append({
                             "index": tc_chunk.index,
-                            "id": tc_chunk.id,
+                            "id": tc_id,
                             "type": tc_chunk.type,
                             "function": tc_chunk.function.model_dump() if tc_chunk.function else None
                         })
@@ -877,11 +933,11 @@ class OpenAICompatibleProvider(LLMProviderInterface):
             max_tokens = kwargs.get('max_tokens', self.max_tokens)
             temperature = kwargs.get('temperature', self.temperature)
             tool_choice = kwargs.get('tool_choice', 'auto')
+            output_queue = kwargs.get("output_queue")
 
             request_kwargs: Dict[str, Any] = {
                 "model": model,
                 "messages": openai_messages,
-                "stream": False,
             }
             # Only add temperature for models that support it
             if self._supports_temperature(model):
@@ -892,9 +948,105 @@ class OpenAICompatibleProvider(LLMProviderInterface):
                 request_kwargs["tools"] = tools
                 request_kwargs["tool_choice"] = tool_choice
 
-            extra_keys = {'model', 'max_tokens', 'max_completion_tokens', 'temperature', 'tool_choice'}
+            extra_keys = {'model', 'max_tokens', 'max_completion_tokens', 'temperature', 'tool_choice', 'output_queue'}
             request_kwargs.update({k: v for k, v in kwargs.items() if k not in extra_keys})
 
+            if output_queue is not None:
+                request_kwargs["stream"] = True
+                request_kwargs["stream_options"] = {"include_usage": True}
+                stream = await self.client.chat.completions.create(**request_kwargs)
+
+                full_content = ""
+                finish_reason = None
+                usage = None
+                emitted_chunk_count = 0
+                tool_call_accumulator: Dict[str, Dict[str, Any]] = {}
+                tool_call_ids_by_index: Dict[int, str] = {}
+
+                async for chunk in stream:
+                    if not hasattr(chunk, "choices") or not chunk.choices:
+                        if hasattr(chunk, "usage") and chunk.usage:
+                            usage = {
+                                "prompt_tokens": chunk.usage.prompt_tokens,
+                                "completion_tokens": chunk.usage.completion_tokens,
+                                "total_tokens": chunk.usage.total_tokens,
+                            }
+                        continue
+
+                    choice = chunk.choices[0]
+                    delta = choice.delta
+                    token = delta.content or ""
+                    if token:
+                        full_content += token
+                        emitted_chunk_count += 1
+                        try:
+                            output_queue.put_nowait({"content": token})
+                        except Exception:
+                            pass
+
+                    if choice.finish_reason is not None:
+                        finish_reason = choice.finish_reason
+
+                    if delta.tool_calls:
+                        for tc_chunk in delta.tool_calls:
+                            tc_id = self._resolve_stream_tool_call_id(
+                                tc_chunk,
+                                tool_call_accumulator,
+                                tool_call_ids_by_index,
+                            )
+                            if tc_id not in tool_call_accumulator:
+                                tool_call_accumulator[tc_id] = {
+                                    "id": tc_id,
+                                    "type": tc_chunk.type or "function",
+                                    "function": {
+                                        "name": "",
+                                        "arguments": "",
+                                    },
+                                }
+                            if tc_chunk.function:
+                                if tc_chunk.function.name:
+                                    tool_call_accumulator[tc_id]["function"]["name"] += tc_chunk.function.name
+                                if tc_chunk.function.arguments:
+                                    tool_call_accumulator[tc_id]["function"]["arguments"] += tc_chunk.function.arguments
+
+                tool_calls = [
+                    ToolCall(
+                        id=tc["id"],
+                        type=tc["type"],
+                        function=Function(
+                            name=tc["function"]["name"],
+                            arguments=tc["function"]["arguments"],
+                        ),
+                    )
+                    for tc in tool_call_accumulator.values()
+                ]
+
+                duration = asyncio.get_event_loop().time() - start_time
+                native_finish_reason = finish_reason or "stop"
+                standardized_finish_reason = finish_reason or "stop"
+                if standardized_finish_reason == "tool_calls":
+                    standardized_finish_reason = "tool_calls"
+                elif standardized_finish_reason in ("stop", "length", "content_filter"):
+                    pass
+                else:
+                    standardized_finish_reason = "stop"
+
+                return LLMResponse(
+                    content=full_content,
+                    provider=self.get_provider_name(),
+                    model=model,
+                    finish_reason=standardized_finish_reason,
+                    native_finish_reason=native_finish_reason,
+                    tool_calls=tool_calls,
+                    usage=usage,
+                    duration=duration,
+                    metadata={
+                        "streamed_content": emitted_chunk_count > 0,
+                        "stream_chunk_count": emitted_chunk_count,
+                    },
+                )
+
+            request_kwargs["stream"] = False
             response = await self.client.chat.completions.create(**request_kwargs)
 
             duration = asyncio.get_event_loop().time() - start_time
