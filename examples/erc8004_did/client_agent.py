@@ -82,7 +82,6 @@ def fetch_agent_info(
     """
     client = ERC8004Client(
         rpc_url=rpc_url,
-        agent_registry_address=os.getenv("NEOX_AGENT_REGISTRY") or "0x2B11c9C19fdAeE8dB3f63b54fbb3077Fb455C683",
         identity_registry_address=registry_addr,
         reputation_registry_address=os.getenv("NEOX_REPUTATION_REGISTRY", DEFAULT_REPUTATION_REGISTRY),
         validation_registry_address=os.getenv("NEOX_VALIDATION_REGISTRY", DEFAULT_VALIDATION_REGISTRY),
