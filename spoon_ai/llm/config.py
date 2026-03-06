@@ -314,7 +314,7 @@ class ConfigurationManager:
         # Provider-specific defaults
         provider_defaults = {
             'openai': {
-                'model': 'gpt-4.1',
+                'model': 'gpt-5.4',
                 'base_url': 'https://api.openai.com/v1',
                 **common_defaults
             },
@@ -413,7 +413,7 @@ class ConfigurationManager:
                 return normalized
 
         # 3. Intelligent selection based on available API keys and quality
-        # Priority order: openai (GPT-4.1 default) -> anthropic -> openrouter -> deepseek -> gemini
+        # Priority order: openai (GPT-5.4 default) -> anthropic -> openrouter -> deepseek -> gemini
         provider_priority = ['openai', 'anthropic', 'openrouter', 'deepseek', 'gemini']
         available_providers = []
 
