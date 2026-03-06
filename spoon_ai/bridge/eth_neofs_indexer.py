@@ -1,6 +1,6 @@
 """
 Ethereum to NeoFS/IPFS Event Indexer
-Listens to ERC-8004 registry events and ensures off-chain storage is synchronized
+Listens to ERC-8004 IdentityRegistry events and ensures off-chain storage is synchronized
 """
 
 import time
@@ -14,8 +14,8 @@ from ..identity.storage_client import DIDStorageClient
 
 class EthereumNeoFSIndexer:
     """
-    Event indexer that syncs Ethereum registry events to NeoFS/IPFS
-    Ensures content hash verification and storage consistency
+    Event indexer that syncs Ethereum IdentityRegistry events to NeoFS/IPFS.
+    Ensures content hash verification and storage consistency.
     """
 
     def __init__(
@@ -28,7 +28,7 @@ class EthereumNeoFSIndexer:
         self.erc8004_client = erc8004_client
         self.storage_client = storage_client
         self.w3 = erc8004_client.w3
-        self.agent_registry = erc8004_client.agent_registry
+        self.identity_registry = erc8004_client.identity_registry
         self.from_block = from_block
         self.current_block = from_block  # Track current block position
         self.poll_interval = poll_interval
@@ -72,21 +72,19 @@ class EthereumNeoFSIndexer:
                             print(f"Block limit reached ({block_limit}), stopping")
                             break
                         max_blocks_in_batch = min(max_blocks_in_batch, remaining_blocks)
-                    
+
                     # Process blocks in batches
                     to_block = min(self.current_block + max_blocks_in_batch - 1, latest_block)
 
                     print(f"Processing blocks {self.current_block} to {to_block}")
 
-                    # Fetch events
-                    self._process_agent_registered_events(self.current_block, to_block)
-                    self._process_uris_updated_events(self.current_block, to_block)
-                    self._process_capabilities_updated_events(self.current_block, to_block)
+                    # Fetch IdentityRegistry events
+                    self._process_identity_registered_events(self.current_block, to_block)
 
                     # Calculate blocks processed before updating current_block
                     blocks_in_batch = to_block - self.current_block + 1
                     blocks_processed += blocks_in_batch
-                    
+
                     self.current_block = to_block + 1
 
                     # Stop if block limit reached
@@ -105,115 +103,12 @@ class EthereumNeoFSIndexer:
         """Stop the indexer"""
         self.running = False
 
-    def _process_agent_registered_events(self, from_block: int, to_block: int):
-        """Process AgentRegistered events"""
-        try:
-            if not hasattr(self.agent_registry.events, 'AgentRegistered'):
-                # Event not defined in ABI, skip silently
-                return
-            
-            event_filter = self.agent_registry.events.AgentRegistered.create_filter(
-                fromBlock=from_block,
-                toBlock=to_block
-            )
-
-            events = event_filter.get_all_entries()
-
-            for event in events:
-                try:
-                    did_hash = event['args']['didHash']
-                    controller = event['args']['controller']
-                    agent_card_uri = event['args']['agentCardURI']
-                    did_doc_uri = event['args']['didDocURI']
-                    block_number = event['blockNumber']
-                    tx_hash = event['transactionHash'].hex()
-
-                    print(f"AgentRegistered: DID={did_hash.hex()}, Controller={controller}")
-
-                    # Verify URIs are accessible
-                    self._verify_and_replicate(did_hash.hex(), agent_card_uri, did_doc_uri)
-
-                    # Call custom handler if registered
-                    if 'AgentRegistered' in self.event_handlers:
-                        self.event_handlers['AgentRegistered'](event)
-
-                except Exception as e:
-                    print(f"Error processing AgentRegistered event: {e}")
-        except Exception as e:
-            # Silently skip if event is not available (e.g., ABI doesn't include events)
-            pass
-
-    def _process_uris_updated_events(self, from_block: int, to_block: int):
-        """Process URIsUpdated events"""
-        try:
-            if not hasattr(self.agent_registry.events, 'URIsUpdated'):
-                # Event not defined in ABI, skip silently
-                return
-            
-            event_filter = self.agent_registry.events.URIsUpdated.create_filter(
-                fromBlock=from_block,
-                toBlock=to_block
-            )
-
-            events = event_filter.get_all_entries()
-
-            for event in events:
-                try:
-                    did_hash = event['args']['didHash']
-                    agent_card_uri = event['args']['agentCardURI']
-                    did_doc_uri = event['args']['didDocURI']
-
-                    print(f"URIsUpdated: DID={did_hash.hex()}")
-
-                    # Verify and replicate new URIs
-                    self._verify_and_replicate(did_hash.hex(), agent_card_uri, did_doc_uri)
-
-                    if 'URIsUpdated' in self.event_handlers:
-                        self.event_handlers['URIsUpdated'](event)
-
-                except Exception as e:
-                    print(f"Error processing URIsUpdated event: {e}")
-        except Exception as e:
-            # Silently skip if event is not available (e.g., ABI doesn't include events)
-            pass
-
-    def _process_capabilities_updated_events(self, from_block: int, to_block: int):
-        """Process CapabilitiesUpdated events"""
-        try:
-            if not hasattr(self.agent_registry.events, 'CapabilitiesUpdated'):
-                # Event not defined in ABI, skip silently
-                return
-            
-            event_filter = self.agent_registry.events.CapabilitiesUpdated.create_filter(
-                fromBlock=from_block,
-                toBlock=to_block
-            )
-
-            events = event_filter.get_all_entries()
-
-            for event in events:
-                try:
-                    did_hash = event['args']['didHash']
-                    capabilities = event['args']['capabilities']
-
-                    print(f"CapabilitiesUpdated: DID={did_hash.hex()}, Caps={capabilities}")
-
-                    if 'CapabilitiesUpdated' in self.event_handlers:
-                        self.event_handlers['CapabilitiesUpdated'](event)
-
-                except Exception as e:
-                    print(f"Error processing CapabilitiesUpdated event: {e}")
-        except Exception as e:
-            # Silently skip if event is not available (e.g., ABI doesn't include events)
-            pass
-
     def _process_identity_registered_events(self, from_block: int, to_block: int):
         """Process IdentityRegistry Registered events"""
         try:
             if not hasattr(self.identity_registry.events, 'Registered'):
-                # Event not defined in ABI, skip silently
                 return
-            
+
             event_filter = self.identity_registry.events.Registered.create_filter(
                 fromBlock=from_block,
                 toBlock=to_block
@@ -229,7 +124,11 @@ class EthereumNeoFSIndexer:
                     block_number = event['blockNumber']
                     tx_hash = event['transactionHash'].hex()
 
-                    print(f"📝 IdentityRegistry Registered: AgentId={agent_id}, Owner={owner}, TokenURI={token_uri}")
+                    print(f"Registered: AgentId={agent_id}, Owner={owner}, TokenURI={token_uri}")
+
+                    # Verify token URI is accessible and replicate if needed
+                    if token_uri:
+                        self._verify_and_replicate_uri(token_uri)
 
                     # Call custom handler if registered
                     if 'IdentityRegistered' in self.event_handlers:
@@ -238,34 +137,28 @@ class EthereumNeoFSIndexer:
                 except Exception as e:
                     print(f"Error processing IdentityRegistry Registered event: {e}")
         except Exception as e:
-            # Silently skip if event is not available (e.g., ABI doesn't include events)
             pass
 
-    def _verify_and_replicate(self, did_hash: str, agent_card_uri: str, did_doc_uri: str):
+    def _verify_and_replicate_uri(self, uri: str):
         """
-        Verify URIs are accessible and replicate if needed
+        Verify a URI is accessible and replicate to IPFS backup if needed.
         """
         try:
-            # Try to fetch DID document
-            did_doc = self.storage_client.fetch_did_document(did_doc_uri)
-            print(f"✓ DID document verified: {did_doc_uri}")
-
-            # Try to fetch agent card
-            agent_card = self.storage_client.fetch_did_document(agent_card_uri)
-            print(f"✓ Agent card verified: {agent_card_uri}")
+            content = self.storage_client.fetch_did_document(uri)
+            print(f"  Verified: {uri}")
 
             # If primary is NeoFS, ensure IPFS backup exists
-            if did_doc_uri.startswith("neofs://"):
+            if uri.startswith("neofs://"):
                 try:
                     ipfs_cid = self.storage_client._publish_to_ipfs(
-                        json.dumps(did_doc).encode('utf-8')
+                        json.dumps(content).encode('utf-8')
                     )
-                    print(f"✓ IPFS backup created: {ipfs_cid}")
+                    print(f"  IPFS backup created: {ipfs_cid}")
                 except Exception as e:
-                    print(f"IPFS replication warning: {e}")
+                    print(f"  IPFS replication warning: {e}")
 
         except Exception as e:
-            print(f"⚠ Content verification/replication failed: {e}")
+            print(f"  Content verification/replication failed for {uri}: {e}")
 
     def get_indexer_status(self) -> Dict:
         """Get current indexer status"""
@@ -277,19 +170,3 @@ class EthereumNeoFSIndexer:
             "sync_lag": latest_block - self.current_block,
             "blocks_processed": self.current_block - self.from_block
         }
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
