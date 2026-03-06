@@ -282,18 +282,16 @@ class ToolCallAgent(ReActAgent):
         except asyncio.TimeoutError:
             raise RuntimeError(f"Agent {self.name} is busy - another run() operation is in progress")
 
-        if request is not None:
-            await self.add_message("user", request)
-
-        # Reset finish_reason termination flag
-        self._finish_reason_terminated = False
-        self._final_response_content = None
-
         results: List[str] = []
         runtime = None  # Will be set in try block
 
         try:
-    
+            if request is not None:
+                await self.add_message("user", request)
+
+            # Reset finish_reason termination flag
+            self._finish_reason_terminated = False
+            self._final_response_content = None
 
             run_id = uuid.uuid4()
             runtime = self._create_runtime_context(run_id)
@@ -455,6 +453,10 @@ class ToolCallAgent(ReActAgent):
         results = []
         for tool_call in self.tool_calls:
             try:
+                _args_brief = str(tool_call.function.arguments or "")
+                if len(_args_brief) > 200:
+                    _args_brief = _args_brief[:197] + "..."
+                logger.info(f"Tool call: {tool_call.function.name}({_args_brief})")
                 result = await self.execute_tool(tool_call)
                 logger.info(f"Tool {tool_call.function.name} executed with result: {result}")
                 # Flag error-like results so callers can decide on fallbacks
