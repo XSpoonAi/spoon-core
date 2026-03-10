@@ -543,6 +543,7 @@ class ChatBot:
                     messages_to_keep=config.messages_to_keep,
                     summary_model=token_model,
                     llm_manager=self.llm_manager,
+                    llm_provider=self.llm_provider,
                     existing_summary=self._latest_summary_text or "",
                 )
 

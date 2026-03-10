@@ -763,14 +763,14 @@ class BaseAgent(BaseModel, ABC):
         except asyncio.TimeoutError:
             raise RuntimeError(f"Agent {self.name} is busy - another run() operation is in progress")
 
-        if request is not None:
-            await self.add_message("user", request)
-
         results: list[str] = []
         operation_id = str(uuid.uuid4())
         runtime = None  # Will be set in try block
 
         try:
+            if request is not None:
+                await self.add_message("user", request)
+
             self._active_operations.add(operation_id)
 
             async with asyncio.timeout(timeout):
