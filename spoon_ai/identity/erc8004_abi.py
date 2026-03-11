@@ -14,6 +14,13 @@ IDENTITY_ABI_MIN = [
         "type": "function",
     },
     {
+        "inputs": [{"internalType": "uint256", "name": "agentId", "type": "uint256"}],
+        "name": "agentExists",
+        "outputs": [{"internalType": "bool", "name": "exists", "type": "bool"}],
+        "stateMutability": "view",
+        "type": "function",
+    },
+    {
         "inputs": [{"internalType": "uint256", "name": "tokenId", "type": "uint256"}],
         "name": "tokenURI",
         "outputs": [{"internalType": "string", "name": "", "type": "string"}],
@@ -175,80 +182,11 @@ VALIDATION_ABI_MIN = [
     },
 ]
 
-# Agent Registry (ChaosChain SpoonAgentRegistry minimal)
-AGENT_REGISTRY_ABI = [
-    {
-        "inputs": [{"type": "bytes32"}, {"type": "string"}, {"type": "string"}, {"type": "bytes"}],
-        "name": "registerAgent",
-        "outputs": [{"type": "bool"}],
-        "stateMutability": "nonpayable",
-        "type": "function",
-    },
-    {
-        "inputs": [{"type": "bytes32"}],
-        "name": "resolveAgent",
-        "outputs": [
-            {
-                "components": [
-                    {"type": "address[]"},
-                    {"type": "string"},
-                    {"type": "string"},
-                    {"type": "string[]"},
-                    {"type": "uint256"},
-                    {"type": "bool"},
-                ],
-                "type": "tuple",
-            }
-        ],
-        "stateMutability": "view",
-        "type": "function",
-    },
-    {
-        "inputs": [{"type": "bytes32"}, {"type": "string[]"}],
-        "name": "updateCapabilities",
-        "outputs": [{"type": "bool"}],
-        "stateMutability": "nonpayable",
-        "type": "function",
-    },
-    # Events for event indexing
-    {
-        "anonymous": False,
-        "inputs": [
-            {"indexed": False, "internalType": "bytes32", "name": "didHash", "type": "bytes32"},
-            {"indexed": False, "internalType": "address", "name": "controller", "type": "address"},
-            {"indexed": False, "internalType": "string", "name": "agentCardURI", "type": "string"},
-            {"indexed": False, "internalType": "string", "name": "didDocURI", "type": "string"},
-        ],
-        "name": "AgentRegistered",
-        "type": "event",
-    },
-    {
-        "anonymous": False,
-        "inputs": [
-            {"indexed": False, "internalType": "bytes32", "name": "didHash", "type": "bytes32"},
-            {"indexed": False, "internalType": "string", "name": "agentCardURI", "type": "string"},
-            {"indexed": False, "internalType": "string", "name": "didDocURI", "type": "string"},
-        ],
-        "name": "URIsUpdated",
-        "type": "event",
-    },
-    {
-        "anonymous": False,
-        "inputs": [
-            {"indexed": False, "internalType": "bytes32", "name": "didHash", "type": "bytes32"},
-            {"indexed": False, "internalType": "string[]", "name": "capabilities", "type": "string[]"},
-        ],
-        "name": "CapabilitiesUpdated",
-        "type": "event",
-    },
-]
-
 
 def get_abi(contract_name: str):
     mapping = {
         "ERC8004IdentityRegistry": IDENTITY_ABI_WITH_METADATA_WRITE,
         "ERC8004ReputationRegistry": REPUTATION_ABI_MIN,
         "ERC8004ValidationRegistry": VALIDATION_ABI_MIN,
-        "SpoonAgentRegistry": AGENT_REGISTRY_ABI,
     }
     return mapping.get(contract_name)

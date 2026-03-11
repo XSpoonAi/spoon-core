@@ -130,11 +130,9 @@ class AgentDID(BaseModel):
         description="Verifiable attestations"
     )
 
-    # On-chain anchors
-    did_hash: Optional[str] = Field(None, alias="didHash", description="Keccak256 hash of DID")
-    agent_card_uri: Optional[str] = Field(None, alias="agentCardURI", description="NeoFS/IPFS URI")
-    did_doc_uri: Optional[str] = Field(None, alias="didDocURI", description="NeoFS/IPFS URI")
-    registered_at: Optional[datetime] = Field(None, alias="registeredAt")
+    # On-chain anchors (IdentityRegistry)
+    agent_card_uri: Optional[str] = Field(None, alias="agentCardURI", description="NeoFS/IPFS URI for agent card")
+    did_doc_uri: Optional[str] = Field(None, alias="didDocURI", description="NeoFS/IPFS URI for DID document")
 
     class Config:
         populate_by_name = True
@@ -144,7 +142,7 @@ class AgentDID(BaseModel):
         return self.model_dump(
             by_alias=True,
             exclude_none=True,
-            exclude={"did_hash", "agent_card_uri", "did_doc_uri", "registered_at"}
+            exclude={"agent_card_uri", "did_doc_uri"}
         )
 
     def to_agent_card(self) -> Dict[str, Any]:
