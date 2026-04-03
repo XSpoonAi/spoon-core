@@ -15,6 +15,7 @@ from spoon_ai.prompts.toolcall import \
 from spoon_ai.prompts.toolcall import SYSTEM_PROMPT as TOOLCALL_SYSTEM_PROMPT
 from spoon_ai.schema import TOOL_CHOICE_TYPE, AgentState, ToolCall, ToolChoice, Message, Role
 from spoon_ai.tools import ToolManager
+from spoon_ai.utils.streaming import build_output_queue_event
 from mcp.types import Tool as MCPTool
 
 logging.getLogger("spoon_ai").setLevel(logging.INFO)
@@ -238,7 +239,16 @@ class ToolCallAgent(ReActAgent):
 
         if self.output_queue:
             if response.content and not streamed_content:
-                self.output_queue.put_nowait({"content": response.content})
+                self.output_queue.put_nowait(
+                    build_output_queue_event(
+                        event_type="content",
+                        delta=response.content,
+                        metadata={
+                            "phase": "think",
+                            "source": "toolcall_agent",
+                        },
+                    )
+                )
             self.output_queue.put_nowait({"tool_calls": response.tool_calls})
 
         try:

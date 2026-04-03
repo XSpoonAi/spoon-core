@@ -21,6 +21,7 @@ from ..interface import LLMProviderInterface, LLMResponse, ProviderMetadata, Pro
 from ..errors import ProviderError, AuthenticationError, RateLimitError, ModelNotFoundError, NetworkError
 from spoon_ai.callbacks.base import BaseCallbackHandler
 from spoon_ai.callbacks.manager import CallbackManager
+from spoon_ai.utils.streaming import build_output_queue_event
 
 logger = getLogger(__name__)
 
@@ -980,7 +981,17 @@ class OpenAICompatibleProvider(LLMProviderInterface):
                         full_content += token
                         emitted_chunk_count += 1
                         try:
-                            output_queue.put_nowait({"content": token})
+                            output_queue.put_nowait(
+                                build_output_queue_event(
+                                    event_type="content",
+                                    delta=token,
+                                    metadata={
+                                        "phase": "think",
+                                        "provider": self.get_provider_name(),
+                                        "channel": "text",
+                                    },
+                                )
+                            )
                         except Exception:
                             pass
 
