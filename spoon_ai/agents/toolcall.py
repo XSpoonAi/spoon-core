@@ -22,6 +22,12 @@ logging.getLogger("spoon_ai").setLevel(logging.INFO)
 
 logger = getLogger("spoon_ai")
 
+FINAL_RESPONSE_PROMPT = (
+    "You have reached the tool budget. Do not call any more tools. "
+    "Using only the tool results already in memory, provide the final user-facing answer now. "
+    "Summarize the concrete results and do not describe future actions."
+)
+
 class ToolCallAgent(ReActAgent):
 
     name: str = "toolcall"
@@ -407,6 +413,9 @@ class ToolCallAgent(ReActAgent):
                 logger.info(f"Step {self.current_step}: {step_result}")
 
             if self.current_step >= self.max_steps:
+                final_content = await self._maybe_finalize_after_tool_budget()
+                if final_content:
+                    return final_content
                 results.append(f"Step {self.current_step}: Stuck in loop. Resetting state.")
 
             if self._middleware_pipeline:
@@ -616,6 +625,37 @@ class ToolCallAgent(ReActAgent):
         err = getattr(self, "last_tool_error", None)
         self.last_tool_error = None
         return err
+
+    async def _maybe_finalize_after_tool_budget(self) -> str:
+        """Allow one final, tool-free summary turn after the last tool step."""
+        last_message = self.memory.messages[-1] if self.memory.messages else None
+        if getattr(last_message, "role", None) != "tool":
+            return ""
+
+        original_tool_choices = self.tool_choices
+        original_tool_calls = list(self.tool_calls)
+        original_next_step_prompt = self.next_step_prompt
+        try:
+            self.tool_calls = []
+            self.next_step_prompt = FINAL_RESPONSE_PROMPT
+            await self.add_message("user", FINAL_RESPONSE_PROMPT)
+
+            final_content = await self.llm.ask(
+                messages=self.memory.messages,
+                system_msg=self.system_prompt,
+            )
+            final_content = (final_content or "").strip()
+            if not final_content:
+                return ""
+
+            await self.add_message("assistant", final_content)
+            if self.output_queue:
+                self.output_queue.put_nowait({"content": final_content})
+            return final_content
+        finally:
+            self.tool_choices = original_tool_choices
+            self.tool_calls = original_tool_calls
+            self.next_step_prompt = original_next_step_prompt
 
 
     def _handle_special_tool(self, name: str, result:Any, **kwargs):

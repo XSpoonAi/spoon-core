@@ -281,6 +281,53 @@ class TestAgentLLMIntegration:
             },
         }
         assert put_calls[1].args[0] == {"tool_calls": [mock_tool_call]}
+
+    @pytest.mark.asyncio
+    async def test_toolcall_agent_uses_final_tool_free_summary_after_budget_exhaustion(self, mock_chatbot_manager, tool_manager):
+        mock_tool_call = ToolCall(
+            id="call_123",
+            type="function",
+            function=Function(
+                name="test_tool",
+                arguments='{"param":"value"}',
+            ),
+        )
+        mock_chatbot_manager.ask_tool.side_effect = [
+            ManagerLLMResponse(
+                content="First I will use a tool.",
+                provider="openai",
+                model="gpt-4.1",
+                finish_reason="tool_calls",
+                native_finish_reason="tool_calls",
+                tool_calls=[mock_tool_call],
+                metadata={"streamed_content": False},
+            ),
+            ManagerLLMResponse(
+                content="Final summary after tool execution.",
+                provider="openai",
+                model="gpt-4.1",
+                finish_reason="stop",
+                native_finish_reason="stop",
+                tool_calls=[],
+            ),
+        ]
+        mock_chatbot_manager.ask.return_value = "Final summary after tool execution."
+
+        tool_manager.execute = AsyncMock(return_value="Tool executed successfully")
+        tool_manager.tool_map = {"test_tool": Mock()}
+
+        agent = ToolCallAgent(
+            name="streaming_agent",
+            llm=mock_chatbot_manager,
+            available_tools=tool_manager,
+            max_steps=1,
+        )
+
+        result = await agent.run("Use a tool and summarize")
+
+        assert result == "Final summary after tool execution."
+        assert mock_chatbot_manager.ask_tool.await_count == 1
+        mock_chatbot_manager.ask.assert_awaited_once()
     
     @pytest.mark.asyncio
     async def test_agent_memory_consistency(self, mock_chatbot_manager, tool_manager):
