@@ -986,7 +986,6 @@ class OpenAICompatibleProvider(LLMProviderInterface):
                                     event_type="content",
                                     delta=token,
                                     metadata={
-                                        "phase": "think",
                                         "provider": self.get_provider_name(),
                                         "channel": "text",
                                     },
