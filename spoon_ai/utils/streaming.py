@@ -65,3 +65,19 @@ def sanitize_stream_kwargs(kwargs: Dict[str, Any]) -> Dict[str, Any]:
     for key in ("callbacks", "stream"):
         sanitized.pop(key, None)
     return sanitized
+
+
+def build_output_queue_event(
+    *,
+    event_type: str,
+    delta: str = "",
+    metadata: Optional[Dict[str, Any]] = None,
+) -> Dict[str, Any]:
+    """Build a backward-compatible output queue event payload."""
+    payload: Dict[str, Any] = {
+        "type": event_type,
+        "delta": delta,
+        "content": delta,
+        "metadata": dict(metadata or {}),
+    }
+    return payload

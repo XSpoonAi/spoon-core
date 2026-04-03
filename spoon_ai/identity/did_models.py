@@ -5,7 +5,7 @@ Following W3C DID Core specification and ERC-8004 standard
 
 from typing import List, Dict, Optional, Any
 from datetime import datetime
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, ConfigDict, Field
 from enum import Enum
 
 
@@ -33,8 +33,7 @@ class VerificationMethod(BaseModel):
     public_key_base58: Optional[str] = Field(None, alias="publicKeyBase58")
     ethereum_address: Optional[str] = Field(None, alias="ethereumAddress")
 
-    class Config:
-        populate_by_name = True
+    model_config = ConfigDict(populate_by_name=True)
 
 
 class ServiceEndpoint(BaseModel):
@@ -44,8 +43,7 @@ class ServiceEndpoint(BaseModel):
     service_endpoint: str = Field(..., alias="serviceEndpoint", description="URL or URI")
     description: Optional[str] = Field(None, description="Human-readable description")
 
-    class Config:
-        populate_by_name = True
+    model_config = ConfigDict(populate_by_name=True)
 
 
 class ReputationScore(BaseModel):
@@ -64,8 +62,7 @@ class Attestation(BaseModel):
     issued_at: datetime = Field(default_factory=datetime.utcnow, alias="issuedAt")
     signature: Optional[str] = Field(None, description="Issuer's signature")
 
-    class Config:
-        populate_by_name = True
+    model_config = ConfigDict(populate_by_name=True)
 
 
 class AgentCard(BaseModel):
@@ -134,8 +131,7 @@ class AgentDID(BaseModel):
     agent_card_uri: Optional[str] = Field(None, alias="agentCardURI", description="NeoFS/IPFS URI for agent card")
     did_doc_uri: Optional[str] = Field(None, alias="didDocURI", description="NeoFS/IPFS URI for DID document")
 
-    class Config:
-        populate_by_name = True
+    model_config = ConfigDict(populate_by_name=True)
 
     def to_did_document(self) -> Dict[str, Any]:
         """Export as standard W3C DID Document"""
@@ -162,8 +158,7 @@ class DIDResolutionResult(BaseModel):
         alias="didResolutionMetadata"
     )
 
-    class Config:
-        populate_by_name = True
+    model_config = ConfigDict(populate_by_name=True)
 
 
 

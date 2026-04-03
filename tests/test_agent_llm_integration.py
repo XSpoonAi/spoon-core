@@ -237,6 +237,50 @@ class TestAgentLLMIntegration:
         assert should_continue is False
         put_calls = mock_queue.put_nowait.call_args_list
         assert all(call.args != ({"content": "already streamed full text"},) for call in put_calls)
+
+    @pytest.mark.asyncio
+    async def test_toolcall_agent_labels_non_streamed_pre_tool_content_with_think_phase(self, mock_chatbot_manager, tool_manager):
+        mock_tool_call = ToolCall(
+            id="call_123",
+            type="function",
+            function=Function(
+                name="test_tool",
+                arguments='{"param":"value"}',
+            ),
+        )
+        mock_chatbot_manager.ask_tool.return_value = ManagerLLMResponse(
+            content="First I will inspect the workspace.",
+            provider="openai",
+            model="gpt-4.1",
+            finish_reason="tool_calls",
+            native_finish_reason="tool_calls",
+            tool_calls=[mock_tool_call],
+            metadata={"streamed_content": False},
+        )
+
+        agent = ToolCallAgent(
+            name="streaming_agent",
+            llm=mock_chatbot_manager,
+            available_tools=tool_manager,
+        )
+        mock_queue = Mock()
+        agent.output_queue = mock_queue
+        await agent.add_message("user", "hello")
+
+        should_continue = await agent.think()
+
+        assert should_continue is True
+        put_calls = mock_queue.put_nowait.call_args_list
+        assert put_calls[0].args[0] == {
+            "type": "content",
+            "delta": "First I will inspect the workspace.",
+            "content": "First I will inspect the workspace.",
+            "metadata": {
+                "phase": "think",
+                "source": "toolcall_agent",
+            },
+        }
+        assert put_calls[1].args[0] == {"tool_calls": [mock_tool_call]}
     
     @pytest.mark.asyncio
     async def test_agent_memory_consistency(self, mock_chatbot_manager, tool_manager):

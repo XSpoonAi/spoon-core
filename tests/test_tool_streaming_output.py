@@ -136,11 +136,13 @@ async def test_openai_chat_with_tools_streams_deltas_to_output_queue():
         output_queue=q,
     )
 
-    chunks: list[str] = []
+    chunks: list[dict] = []
     while not q.empty():
-        chunks.append((await q.get())["content"])
+        chunks.append(await q.get())
 
-    assert chunks == ["Hel", "lo"]
+    assert [chunk["content"] for chunk in chunks] == ["Hel", "lo"]
+    assert all(chunk["type"] == "content" for chunk in chunks)
+    assert all(chunk["metadata"]["phase"] == "think" for chunk in chunks)
     assert response.content == "Hello"
     assert response.metadata.get("streamed_content") is True
 
@@ -234,15 +236,63 @@ async def test_anthropic_chat_with_tools_streams_deltas_to_output_queue():
         output_queue=q,
     )
 
-    deltas: list[str] = []
+    deltas: list[dict] = []
     while not q.empty():
-        deltas.append((await q.get())["content"])
+        deltas.append(await q.get())
 
-    assert deltas == ["Hel", "lo"]
+    assert [chunk["content"] for chunk in deltas] == ["Hel", "lo"]
+    assert all(chunk["type"] == "content" for chunk in deltas)
+    assert all(chunk["metadata"]["phase"] == "think" for chunk in deltas)
     assert response.content == "Hello"
     assert response.finish_reason == "stop"
     assert response.native_finish_reason == "end_turn"
     assert response.metadata.get("streamed_content") is True
+
+
+@pytest.mark.asyncio
+async def test_anthropic_chat_with_tools_streams_provider_thinking_to_output_queue():
+    provider = AnthropicProvider()
+    provider.model = "claude-sonnet-4-20250514"
+
+    chunks = [
+        SimpleNamespace(type="content_block_start", content_block=SimpleNamespace(type="thinking")),
+        SimpleNamespace(type="content_block_delta", delta=SimpleNamespace(type="thinking_delta", thinking="Plan: inspect files.")),
+        SimpleNamespace(type="content_block_stop"),
+        SimpleNamespace(type="content_block_start", content_block=SimpleNamespace(type="tool_use", id="call_1", name="shell")),
+        SimpleNamespace(type="content_block_delta", delta=SimpleNamespace(type="input_json_delta", partial_json='{"command":"pwd"}')),
+        SimpleNamespace(type="content_block_stop"),
+        SimpleNamespace(type="message_delta", delta=SimpleNamespace(stop_reason="tool_use")),
+        SimpleNamespace(type="message_stop", message=SimpleNamespace(stop_reason="tool_use")),
+    ]
+    provider.client = SimpleNamespace(
+        messages=SimpleNamespace(stream=lambda **_: _AsyncStreamContext(chunks))
+    )
+
+    q: asyncio.Queue = asyncio.Queue()
+    response = await provider.chat_with_tools(
+        messages=[Message(role="user", content="hi")],
+        tools=_tool_spec(),
+        output_queue=q,
+    )
+
+    streamed_events: list[dict] = []
+    while not q.empty():
+        streamed_events.append(await q.get())
+
+    assert streamed_events == [
+        {
+            "type": "thinking",
+            "delta": "Plan: inspect files.",
+            "content": "Plan: inspect files.",
+            "metadata": {
+                "phase": "think",
+                "provider": "anthropic",
+                "channel": "thinking",
+            },
+        }
+    ]
+    assert response.finish_reason == "tool_calls"
+    assert response.tool_calls[0].function.arguments == '{"command":"pwd"}'
 
 
 @pytest.mark.asyncio

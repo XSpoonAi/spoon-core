@@ -103,26 +103,32 @@ class MCPTool(BaseTool, MCPClientMixin):
             for key, value in env.items():
                 os.environ[key] = value
 
+            transport: StdioTransport
             if command == "npx":
                 if not args:
                     raise ValueError("No package specified for npx transport")
                 package = args[0]
-                return NpxStdioTransport(package=package, args=args[1:], env_vars=env)
+                transport = NpxStdioTransport(package=package, args=args[1:], env_vars=env)
             elif command == "uvx":
                 if not args:
                     raise ValueError("No package specified for uvx transport")
                 tool_name = args[0]
                 tool_args = args[1:] if len(args) > 1 else None
-                return UvxStdioTransport(tool_name=tool_name, tool_args=tool_args, env_vars=env)
+                transport = UvxStdioTransport(tool_name=tool_name, tool_args=tool_args, env_vars=env)
             elif command in ["python", "python3"]:
                 if not args:
                     raise ValueError("No script path specified for python transport")
                 script_path = args[0]
                 script_args = args[1:] if len(args) > 1 else None
-                return PythonStdioTransport(script_path=script_path, args=script_args, env=merged_env)
+                transport = PythonStdioTransport(script_path=script_path, args=script_args, env=merged_env)
             else:
                 full_command = [command] + args
-                return StdioTransport(command=full_command[0], args=full_command[1:], env=merged_env)
+                transport = StdioTransport(command=full_command[0], args=full_command[1:], env=merged_env)
+
+            if not config.get("verbose_server", False):
+                from pathlib import Path as _Path
+                transport.log_file = _Path(os.devnull)
+            return transport
 
         raise ValueError("Invalid mcp_config: must contain either 'url' or 'command'.")
 

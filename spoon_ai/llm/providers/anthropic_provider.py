@@ -16,6 +16,7 @@ from spoon_ai.schema import (
     TextContent, ImageContent, ImageUrlContent, DocumentContent, FileContent, ContentBlock
 )
 from spoon_ai.callbacks.manager import CallbackManager
+from spoon_ai.utils.streaming import build_output_queue_event
 from ..interface import LLMProviderInterface, LLMResponse, ProviderMetadata, ProviderCapability
 from ..errors import ProviderError, AuthenticationError, RateLimitError, ModelNotFoundError, NetworkError
 from ..registry import register_provider
@@ -603,10 +604,37 @@ class AnthropicProvider(LLMProviderInterface):
                             emitted_chunk_count += 1
                             if output_queue is not None:
                                 try:
-                                    output_queue.put_nowait({"content": chunk.delta.text})
+                                    output_queue.put_nowait(
+                                        build_output_queue_event(
+                                            event_type="content",
+                                            delta=chunk.delta.text,
+                                            metadata={
+                                                "phase": "think",
+                                                "provider": "anthropic",
+                                                "channel": "text",
+                                            },
+                                        )
+                                    )
                                 except Exception:
                                     pass
                         buffer += chunk.delta.text
+                        continue
+                    elif chunk.type == "content_block_delta" and chunk.delta.type == "thinking_delta":
+                        if output_queue is not None and getattr(chunk.delta, "thinking", ""):
+                            try:
+                                output_queue.put_nowait(
+                                    build_output_queue_event(
+                                        event_type="thinking",
+                                        delta=chunk.delta.thinking,
+                                        metadata={
+                                            "phase": "think",
+                                            "provider": "anthropic",
+                                            "channel": "thinking",
+                                        },
+                                    )
+                                )
+                            except Exception:
+                                pass
                         continue
                     elif chunk.type == "content_block_delta" and chunk.delta.type == "input_json_delta":
                         buffer += chunk.delta.partial_json
