@@ -239,7 +239,7 @@ class TestAgentLLMIntegration:
         assert all(call.args != ({"content": "already streamed full text"},) for call in put_calls)
 
     @pytest.mark.asyncio
-    async def test_toolcall_agent_labels_non_streamed_pre_tool_content_with_think_phase(self, mock_chatbot_manager, tool_manager):
+    async def test_toolcall_agent_emits_explicit_thinking_for_non_streamed_pre_tool_content(self, mock_chatbot_manager, tool_manager):
         mock_tool_call = ToolCall(
             id="call_123",
             type="function",
@@ -272,7 +272,7 @@ class TestAgentLLMIntegration:
         assert should_continue is True
         put_calls = mock_queue.put_nowait.call_args_list
         assert put_calls[0].args[0] == {
-            "type": "content",
+            "type": "thinking",
             "delta": "First I will inspect the workspace.",
             "content": "First I will inspect the workspace.",
             "metadata": {

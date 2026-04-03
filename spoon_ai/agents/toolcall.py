@@ -241,7 +241,7 @@ class ToolCallAgent(ReActAgent):
             if response.content and not streamed_content:
                 self.output_queue.put_nowait(
                     build_output_queue_event(
-                        event_type="content",
+                        event_type="thinking",
                         delta=response.content,
                         metadata={
                             "phase": "think",
