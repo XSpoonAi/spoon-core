@@ -142,7 +142,8 @@ async def test_openai_chat_with_tools_streams_deltas_to_output_queue():
 
     assert [chunk["content"] for chunk in chunks] == ["Hel", "lo"]
     assert all(chunk["type"] == "content" for chunk in chunks)
-    assert all(chunk["metadata"]["phase"] == "think" for chunk in chunks)
+    assert all(chunk["metadata"]["channel"] == "text" for chunk in chunks)
+    assert all("phase" not in chunk["metadata"] for chunk in chunks)
     assert response.content == "Hello"
     assert response.metadata.get("streamed_content") is True
 
@@ -242,7 +243,8 @@ async def test_anthropic_chat_with_tools_streams_deltas_to_output_queue():
 
     assert [chunk["content"] for chunk in deltas] == ["Hel", "lo"]
     assert all(chunk["type"] == "content" for chunk in deltas)
-    assert all(chunk["metadata"]["phase"] == "think" for chunk in deltas)
+    assert all(chunk["metadata"]["channel"] == "text" for chunk in deltas)
+    assert all("phase" not in chunk["metadata"] for chunk in deltas)
     assert response.content == "Hello"
     assert response.finish_reason == "stop"
     assert response.native_finish_reason == "end_turn"

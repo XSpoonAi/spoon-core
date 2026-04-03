@@ -609,7 +609,6 @@ class AnthropicProvider(LLMProviderInterface):
                                             event_type="content",
                                             delta=chunk.delta.text,
                                             metadata={
-                                                "phase": "think",
                                                 "provider": "anthropic",
                                                 "channel": "text",
                                             },
