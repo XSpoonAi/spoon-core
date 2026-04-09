@@ -502,11 +502,69 @@ class OpenAICompatibleProvider(LLMProviderInterface):
 
         return self._validate_and_fix_message_sequence(openai_messages)
 
+    @staticmethod
+    def _reorder_tool_messages(messages: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+        """Move tool results to immediately follow the assistant tool-call turn.
+
+        Some runtimes inject extra user guidance turns between the assistant
+        tool-call message and its tool responses. OpenAI-compatible APIs accept
+        only the adjacent sequence assistant(tool_calls) -> tool results.
+        """
+        if not messages:
+            return messages
+
+        claimed_tool_indices: set[int] = set()
+        tool_messages_by_assistant_index: Dict[int, List[Dict[str, Any]]] = {}
+
+        for index, message in enumerate(messages):
+            if message.get("role") != "tool":
+                continue
+
+            tool_call_id = message.get("tool_call_id")
+            if not tool_call_id:
+                continue
+
+            for candidate_index in range(index - 1, -1, -1):
+                candidate = messages[candidate_index]
+                if candidate.get("role") != "assistant":
+                    continue
+
+                tool_calls = candidate.get("tool_calls") or []
+                if any(tool_call.get("id") == tool_call_id for tool_call in tool_calls):
+                    tool_messages_by_assistant_index.setdefault(candidate_index, []).append(message)
+                    claimed_tool_indices.add(index)
+                    break
+
+        if not claimed_tool_indices:
+            return messages
+
+        reordered_messages: List[Dict[str, Any]] = []
+        for index, message in enumerate(messages):
+            if index in claimed_tool_indices:
+                continue
+
+            reordered_messages.append(message)
+            if message.get("role") != "assistant" or not message.get("tool_calls"):
+                continue
+
+            tool_order = {
+                tool_call.get("id"): position
+                for position, tool_call in enumerate(message.get("tool_calls", []))
+            }
+            matched_tool_messages = tool_messages_by_assistant_index.get(index, [])
+            matched_tool_messages.sort(
+                key=lambda item: tool_order.get(item.get("tool_call_id"), len(tool_order))
+            )
+            reordered_messages.extend(matched_tool_messages)
+
+        return reordered_messages
+
     def _validate_and_fix_message_sequence(self, messages: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
         """Validate and fix message sequence to comply with OpenAI API requirements."""
         if not messages:
             return messages
 
+        messages = self._reorder_tool_messages(messages)
         fixed_messages = []
         i = 0
 

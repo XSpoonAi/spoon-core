@@ -517,17 +517,25 @@ class GeminiProvider(LLMProviderInterface):
         """
         system_content = ""
         gemini_messages = []
+        normalized_messages = self._normalize_tool_message_sequence(messages)
+        index = 0
 
-        for message in messages:
+        while index < len(normalized_messages):
+            message = normalized_messages[index]
             if message.role == "system":
                 msg_text = message.text_content if message.is_multimodal else message.content
                 if system_content:
                     system_content += " " + msg_text
                 else:
                     system_content = msg_text or ""
+                index += 1
             elif message.role == "user":
-                # Handle both text and multimodal user messages
-                parts = self._convert_message_content_to_parts(message.content)
+                parts = []
+                while index < len(normalized_messages) and normalized_messages[index].role == "user":
+                    parts.extend(
+                        self._convert_message_content_to_parts(normalized_messages[index].content)
+                    )
+                    index += 1
                 gemini_messages.append(types.Content(
                     role="user",
                     parts=parts
@@ -555,36 +563,92 @@ class GeminiProvider(LLMProviderInterface):
                         role="model",
                         parts=[types.Part.from_text(text=message.content)]
                     ))
+                index += 1
             elif message.role == "tool":
-                # Convert tool response to Gemini format
-                # Gemini requires a non-empty name for function_response
-                tool_name = message.name
-                if not tool_name:
-                    # Fallback: try to extract tool name from tool_call_id or use a default
-                    if message.tool_call_id:
-                        # Try to find the corresponding tool call in previous messages
-                        for prev_msg in reversed(messages):
-                            if prev_msg.role == "assistant" and prev_msg.tool_calls:
-                                for tool_call in prev_msg.tool_calls:
-                                    if tool_call.id == message.tool_call_id:
-                                        tool_name = tool_call.function.name
-                                        break
-                                if tool_name:
-                                    break
-
-                    # If still no name found, use a default
-                    if not tool_name:
-                        tool_name = "unknown_function"
-
+                parts = []
+                while index < len(normalized_messages) and normalized_messages[index].role == "tool":
+                    tool_message = normalized_messages[index]
+                    tool_name = self._resolve_tool_response_name(normalized_messages, tool_message)
+                    parts.append(
+                        types.Part.from_function_response(
+                            name=tool_name,
+                            response={"result": tool_message.content}
+                        )
+                    )
+                    index += 1
                 gemini_messages.append(types.Content(
                     role="user",
-                    parts=[types.Part.from_function_response(
-                        name=tool_name,
-                        response={"result": message.content}
-                    )]
+                    parts=parts
                 ))
+            else:
+                index += 1
 
         return system_content, gemini_messages
+
+    @staticmethod
+    def _normalize_tool_message_sequence(messages: List[Message]) -> List[Message]:
+        """Reorder tool responses to immediately follow the issuing assistant turn."""
+        if not messages:
+            return messages
+
+        claimed_tool_indices: set[int] = set()
+        tool_messages_by_assistant_index: Dict[int, List[Message]] = {}
+
+        for index, message in enumerate(messages):
+            if message.role != "tool" or not getattr(message, "tool_call_id", None):
+                continue
+
+            for candidate_index in range(index - 1, -1, -1):
+                candidate = messages[candidate_index]
+                if candidate.role != "assistant" or not candidate.tool_calls:
+                    continue
+
+                if any(tool_call.id == message.tool_call_id for tool_call in candidate.tool_calls):
+                    tool_messages_by_assistant_index.setdefault(candidate_index, []).append(message)
+                    claimed_tool_indices.add(index)
+                    break
+
+        if not claimed_tool_indices:
+            return messages
+
+        normalized_messages: List[Message] = []
+        for index, message in enumerate(messages):
+            if index in claimed_tool_indices:
+                continue
+
+            normalized_messages.append(message)
+            if message.role != "assistant" or not message.tool_calls:
+                continue
+
+            tool_order = {
+                tool_call.id: position
+                for position, tool_call in enumerate(message.tool_calls)
+            }
+            matched_tool_messages = tool_messages_by_assistant_index.get(index, [])
+            matched_tool_messages.sort(
+                key=lambda item: tool_order.get(item.tool_call_id, len(tool_order))
+            )
+            normalized_messages.extend(matched_tool_messages)
+
+        return normalized_messages
+
+    @staticmethod
+    def _resolve_tool_response_name(messages: List[Message], message: Message) -> str:
+        """Resolve the function name for a Gemini function_response turn."""
+        tool_name = message.name
+        if tool_name:
+            return tool_name
+
+        tool_call_id = getattr(message, "tool_call_id", None)
+        if tool_call_id:
+            for previous_message in reversed(messages):
+                if previous_message.role != "assistant" or not previous_message.tool_calls:
+                    continue
+                for tool_call in previous_message.tool_calls:
+                    if tool_call.id == tool_call_id:
+                        return tool_call.function.name
+
+        return "unknown_function"
 
     def _sanitize_gemini_schema(self, schema: Dict[str, Any]) -> Dict[str, Any]:
         """Remove fields that are not supported by Gemini function declarations."""
