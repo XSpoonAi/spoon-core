@@ -117,7 +117,7 @@ class ToolCallAgent(ReActAgent):
 
 
 
-    async def think(self) -> bool:
+    async def think(self, thinking: bool = False) -> bool:
         if self.next_step_prompt:
             await self.add_message("user", self.next_step_prompt)
 
@@ -194,7 +194,8 @@ class ToolCallAgent(ReActAgent):
             if hasattr(self, '_middleware_pipeline') and self._middleware_pipeline:
                 response = await self._call_llm_with_middleware(
                     unique_tools_list,
-                    llm_timeout
+                    llm_timeout,
+                    thinking=thinking,
                 )
             else:
                 # Fallback: direct LLM call without middleware
@@ -205,6 +206,7 @@ class ToolCallAgent(ReActAgent):
                         tools=unique_tools_list,
                         tool_choice=self.tool_choices,
                         output_queue=self.output_queue,
+                        thinking=thinking,
                     ),
                     timeout=llm_timeout,
                 )
@@ -280,7 +282,12 @@ class ToolCallAgent(ReActAgent):
             await self.add_message("assistant", f"Error encountered while thinking: {e}")
             return False
 
-    async def run(self, request: Optional[str] = None, timeout: Optional[float] = None) -> str:
+    async def run(
+        self,
+        request: Optional[str] = None,
+        timeout: Optional[float] = None,
+        thinking: bool = False,
+    ) -> str:
         """
 
         This ensures:
@@ -383,7 +390,10 @@ class ToolCallAgent(ReActAgent):
                                 logger.info(f"Subagent detected: step_timeout={step_timeout}s")
                                 break
 
-                    step_result = await asyncio.wait_for(self.step(), timeout=step_timeout)
+                    step_result = await asyncio.wait_for(
+                        self.step(thinking=thinking),
+                        timeout=step_timeout,
+                    )
                     if await self.is_stuck():
                         await self.handle_stuck_state()
                 except asyncio.TimeoutError:
@@ -449,9 +459,9 @@ class ToolCallAgent(ReActAgent):
                 self.state = AgentState.IDLE
                 self.current_step = 0
 
-    async def step(self) -> str:
+    async def step(self, thinking: bool = False) -> str:
         """Override the step method to handle finish_reason termination properly."""
-        should_act = await self.think()
+        should_act = await self.think(thinking=thinking)
         if not should_act:
             if self.state == AgentState.FINISHED:
                 # For finish_reason termination, return a simple message
@@ -684,7 +694,13 @@ class ToolCallAgent(ReActAgent):
             return native_finish_reason in ["stop", "end_turn"]
         return False
 
-    async def _call_llm_with_middleware(self, tools: list, timeout: float):
+    async def _call_llm_with_middleware(
+        self,
+        tools: list,
+        timeout: float,
+        *,
+        thinking: bool = False,
+    ):
         """Call LLM through middleware pipeline for observability.
 
         """
@@ -707,7 +723,8 @@ class ToolCallAgent(ReActAgent):
             tools=tools,
             tool_choice=tool_choice,
             runtime=runtime,
-            phase=AgentPhase.THINK
+            phase=AgentPhase.THINK,
+            extra_params={"thinking": thinking} if thinking else {},
         )
 
         # Define base handler that calls the actual LLM
@@ -720,6 +737,7 @@ class ToolCallAgent(ReActAgent):
                     tools=req.tools,
                     tool_choice=req.tool_choice,
                     output_queue=self.output_queue,
+                    **req.extra_params,
                 ),
                 timeout=timeout,
             )

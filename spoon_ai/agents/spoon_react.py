@@ -187,7 +187,12 @@ class SpoonReactAI(MCPClientMixin, ToolCallAgent):
 
         self._x402_tools_initialized = True
 
-    async def run(self, request: Optional[str] = None, timeout: Optional[float] = None) -> str:
+    async def run(
+        self,
+        request: Optional[str] = None,
+        timeout: Optional[float] = None,
+        thinking: bool = False,
+    ) -> str:
         """Ensure prompts reflect current tools before running."""
         self._refresh_prompts()
         kwargs: dict = {}
@@ -195,4 +200,5 @@ class SpoonReactAI(MCPClientMixin, ToolCallAgent):
             kwargs["request"] = request
         if timeout is not None:
             kwargs["timeout"] = timeout
+        kwargs["thinking"] = thinking
         return await super().run(**kwargs)

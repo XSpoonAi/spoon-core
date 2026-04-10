@@ -89,7 +89,12 @@ class SpoonReactSkill(SkillEnabledMixin, SpoonReactAI):
 
         self._skill_manager_initialized = True
 
-    async def run(self, request: Optional[str] = None, timeout: Optional[float] = None) -> str:
+    async def run(
+        self,
+        request: Optional[str] = None,
+        timeout: Optional[float] = None,
+        thinking: bool = False,
+    ) -> str:
         """
         Execute agent with per-turn auto skill activation.
 
@@ -115,6 +120,7 @@ class SpoonReactSkill(SkillEnabledMixin, SpoonReactAI):
                 kwargs["request"] = req
             if timeout is not None:
                 kwargs["timeout"] = timeout
+            kwargs["thinking"] = thinking
             return await super(SpoonReactSkill, self).run(**kwargs)
 
         return await self._run_with_auto_skills(request, _runner)

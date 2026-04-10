@@ -2,11 +2,13 @@
 Integration tests for agents with the new LLM architecture.
 """
 
+import inspect
 import pytest
 import asyncio
 from unittest.mock import Mock, AsyncMock, patch
 from spoon_ai.agents.toolcall import ToolCallAgent
 from spoon_ai.agents.spoon_react import SpoonReactAI
+from spoon_ai.agents.spoon_react_skill import SpoonReactSkill
 from spoon_ai.chat import ChatBot
 from spoon_ai.schema import Message, LLMResponse, ToolCall, Function, AgentState
 from spoon_ai.llm.interface import LLMResponse as ManagerLLMResponse
@@ -64,6 +66,25 @@ class TestAgentLLMIntegration:
         # Verify agent used the ChatBot
         mock_chatbot_manager.ask_tool.assert_called()
         assert "I'll help you with that task." in result
+
+    @pytest.mark.asyncio
+    async def test_toolcall_agent_forwards_thinking_flag_to_llm(self, mock_chatbot_manager, tool_manager):
+        mock_chatbot_manager.ask_tool.return_value = LLMResponse(
+            content="I'll help you with that task.",
+            tool_calls=[],
+            finish_reason="stop",
+            native_finish_reason="stop",
+        )
+
+        agent = ToolCallAgent(
+            name="test_agent",
+            llm=mock_chatbot_manager,
+            available_tools=tool_manager,
+        )
+
+        await agent.run("Test request", thinking=True)
+
+        assert mock_chatbot_manager.ask_tool.await_args.kwargs["thinking"] is True
     
     @pytest.mark.asyncio
     async def test_toolcall_agent_with_tools(self, mock_chatbot_manager, tool_manager):
@@ -120,6 +141,10 @@ class TestAgentLLMIntegration:
             
             # Verify it uses the new architecture
             assert agent.llm.use_llm_manager is True
+
+    def test_spoon_react_run_signatures_accept_thinking(self):
+        assert "thinking" in inspect.signature(SpoonReactAI.run).parameters
+        assert "thinking" in inspect.signature(SpoonReactSkill.run).parameters
     
     @pytest.mark.asyncio
     async def test_spoon_react_ai_fallback_to_legacy(self):

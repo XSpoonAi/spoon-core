@@ -16,6 +16,7 @@ from spoon_ai.llm.providers.anthropic_provider import AnthropicProvider
 from spoon_ai.llm.providers.gemini_provider import GeminiProvider
 from spoon_ai.llm.providers.ollama_provider import OllamaProvider
 from spoon_ai.llm.providers.openai_compatible_provider import OpenAICompatibleProvider
+from spoon_ai.llm.providers.openrouter_provider import OpenRouterProvider
 
 
 class _AsyncItems:
@@ -145,6 +146,95 @@ async def test_openai_chat_with_tools_streams_deltas_to_output_queue():
     assert all(chunk["metadata"]["channel"] == "text" for chunk in chunks)
     assert all("phase" not in chunk["metadata"] for chunk in chunks)
     assert response.content == "Hello"
+    assert response.metadata.get("streamed_content") is True
+
+
+@pytest.mark.asyncio
+async def test_openrouter_chat_with_tools_streams_reasoning_to_output_queue():
+    provider = OpenRouterProvider()
+    provider.model = "google/gemini-3-flash-preview"
+
+    create_mock = AsyncMock()
+    stream_items = [
+        SimpleNamespace(
+            choices=[
+                SimpleNamespace(
+                    delta=SimpleNamespace(
+                        content="",
+                        reasoning="Plan: inspect files first.",
+                        reasoning_content=None,
+                        reasoning_details=[
+                            SimpleNamespace(
+                                type="reasoning.text",
+                                text="Plan: inspect files first.",
+                            )
+                        ],
+                        tool_calls=None,
+                    ),
+                    finish_reason=None,
+                )
+            ],
+            usage=None,
+        ),
+        SimpleNamespace(
+            choices=[
+                SimpleNamespace(
+                    delta=SimpleNamespace(
+                        content="Done.",
+                        reasoning=None,
+                        reasoning_content=None,
+                        reasoning_details=None,
+                        tool_calls=None,
+                    ),
+                    finish_reason="stop",
+                )
+            ],
+            usage=None,
+        ),
+    ]
+    create_mock.return_value = _AsyncItems(stream_items)
+    provider.client = SimpleNamespace(
+        chat=SimpleNamespace(
+            completions=SimpleNamespace(create=create_mock),
+        )
+    )
+
+    q: asyncio.Queue = asyncio.Queue()
+    response = await provider.chat_with_tools(
+        messages=[Message(role="user", content="hi")],
+        tools=_tool_spec(),
+        output_queue=q,
+        thinking=True,
+    )
+
+    streamed_events: list[dict] = []
+    while not q.empty():
+        streamed_events.append(await q.get())
+
+    assert streamed_events == [
+        {
+            "type": "thinking",
+            "delta": "Plan: inspect files first.",
+            "content": "Plan: inspect files first.",
+            "metadata": {
+                "phase": "think",
+                "provider": "openrouter",
+                "channel": "thinking",
+            },
+        },
+        {
+            "type": "content",
+            "delta": "Done.",
+            "content": "Done.",
+            "metadata": {
+                "provider": "openrouter",
+                "channel": "text",
+            },
+        },
+    ]
+    assert create_mock.call_args.kwargs["extra_body"]["reasoning"] == {"effort": "low"}
+    assert "thinking" not in create_mock.call_args.kwargs
+    assert response.content == "Done."
     assert response.metadata.get("streamed_content") is True
 
 
