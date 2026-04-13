@@ -110,6 +110,79 @@ async def test_chatbot_ask_tool_forwards_output_queue():
 
 
 @pytest.mark.asyncio
+async def test_chatbot_ask_tool_strips_disabled_thinking_flag():
+    mock_manager = SimpleNamespace(chat_with_tools=AsyncMock())
+    mock_manager.chat_with_tools.return_value = LLMResponse(
+        content="ok",
+        provider="anthropic",
+        model="claude-sonnet-4-20250514",
+        finish_reason="stop",
+        native_finish_reason="stop",
+    )
+
+    with patch("spoon_ai.chat.get_llm_manager", return_value=mock_manager):
+        bot = ChatBot(use_llm_manager=True, llm_provider="anthropic")
+        await bot.ask_tool(
+            [{"role": "user", "content": "hi"}],
+            tools=_tool_spec(),
+            thinking=False,
+        )
+
+    call = mock_manager.chat_with_tools.call_args
+    assert "thinking" not in call.kwargs
+
+
+@pytest.mark.asyncio
+async def test_chatbot_ask_tool_normalizes_anthropic_boolean_thinking():
+    mock_manager = SimpleNamespace(chat_with_tools=AsyncMock())
+    mock_manager.chat_with_tools.return_value = LLMResponse(
+        content="ok",
+        provider="anthropic",
+        model="claude-sonnet-4-20250514",
+        finish_reason="stop",
+        native_finish_reason="stop",
+    )
+
+    with patch("spoon_ai.chat.get_llm_manager", return_value=mock_manager):
+        bot = ChatBot(use_llm_manager=True, llm_provider="anthropic")
+        await bot.ask_tool(
+            [{"role": "user", "content": "hi"}],
+            tools=_tool_spec(),
+            thinking=True,
+        )
+
+    call = mock_manager.chat_with_tools.call_args
+    assert call.kwargs["thinking"] == {
+        "type": "enabled",
+        "budget_tokens": 1024,
+    }
+
+
+@pytest.mark.asyncio
+async def test_chatbot_ask_tool_normalizes_gemini_boolean_thinking():
+    mock_manager = SimpleNamespace(chat_with_tools=AsyncMock())
+    mock_manager.chat_with_tools.return_value = LLMResponse(
+        content="ok",
+        provider="gemini",
+        model="gemini-3-flash-preview",
+        finish_reason="stop",
+        native_finish_reason="stop",
+    )
+
+    with patch("spoon_ai.chat.get_llm_manager", return_value=mock_manager):
+        bot = ChatBot(use_llm_manager=True, llm_provider="gemini")
+        await bot.ask_tool(
+            [{"role": "user", "content": "hi"}],
+            tools=_tool_spec(),
+            thinking=True,
+        )
+
+    call = mock_manager.chat_with_tools.call_args
+    assert "thinking" not in call.kwargs
+    assert call.kwargs["thinking_budget"] == 32
+
+
+@pytest.mark.asyncio
 async def test_openai_chat_with_tools_streams_deltas_to_output_queue():
     provider = OpenAICompatibleProvider()
     provider.model = "gpt-4.1"
@@ -385,6 +458,41 @@ async def test_anthropic_chat_with_tools_streams_provider_thinking_to_output_que
     ]
     assert response.finish_reason == "tool_calls"
     assert response.tool_calls[0].function.arguments == '{"command":"pwd"}'
+
+
+@pytest.mark.asyncio
+async def test_anthropic_chat_with_tools_normalizes_boolean_thinking_before_request():
+    provider = AnthropicProvider()
+    provider.model = "claude-sonnet-4-20250514"
+
+    captured_kwargs: dict = {}
+    chunks = [
+        SimpleNamespace(type="content_block_start", content_block=SimpleNamespace(type="text")),
+        SimpleNamespace(type="content_block_delta", delta=SimpleNamespace(type="text_delta", text="ok")),
+        SimpleNamespace(type="content_block_stop"),
+        SimpleNamespace(type="message_delta", delta=SimpleNamespace(stop_reason="end_turn")),
+        SimpleNamespace(type="message_stop", message=SimpleNamespace(stop_reason="end_turn")),
+    ]
+
+    def _stream(**request_kwargs):
+        captured_kwargs.update(request_kwargs)
+        return _AsyncStreamContext(chunks)
+
+    provider.client = SimpleNamespace(
+        messages=SimpleNamespace(stream=_stream)
+    )
+
+    response = await provider.chat_with_tools(
+        messages=[Message(role="user", content="hi")],
+        tools=_tool_spec(),
+        thinking=True,
+    )
+
+    assert captured_kwargs["thinking"] == {
+        "type": "enabled",
+        "budget_tokens": 1024,
+    }
+    assert response.content == "ok"
 
 
 @pytest.mark.asyncio

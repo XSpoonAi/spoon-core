@@ -199,15 +199,17 @@ class ToolCallAgent(ReActAgent):
                 )
             else:
                 # Fallback: direct LLM call without middleware
+                ask_tool_kwargs = {
+                    "messages": self.memory.messages,
+                    "system_msg": self.system_prompt,
+                    "tools": unique_tools_list,
+                    "tool_choice": self.tool_choices,
+                    "output_queue": self.output_queue,
+                }
+                if thinking:
+                    ask_tool_kwargs["thinking"] = True
                 response = await asyncio.wait_for(
-                    self.llm.ask_tool(
-                        messages=self.memory.messages,
-                        system_msg=self.system_prompt,
-                        tools=unique_tools_list,
-                        tool_choice=self.tool_choices,
-                        output_queue=self.output_queue,
-                        thinking=thinking,
-                    ),
+                    self.llm.ask_tool(**ask_tool_kwargs),
                     timeout=llm_timeout,
                 )
         except asyncio.TimeoutError:

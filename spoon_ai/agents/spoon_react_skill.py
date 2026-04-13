@@ -120,7 +120,8 @@ class SpoonReactSkill(SkillEnabledMixin, SpoonReactAI):
                 kwargs["request"] = req
             if timeout is not None:
                 kwargs["timeout"] = timeout
-            kwargs["thinking"] = thinking
+            if thinking:
+                kwargs["thinking"] = True
             return await super(SpoonReactSkill, self).run(**kwargs)
 
         return await self._run_with_auto_skills(request, _runner)

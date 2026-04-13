@@ -341,6 +341,22 @@ class AnthropicProvider(LLMProviderInterface):
     def get_cache_metrics(self) -> Dict[str, int]:
         """Get current cache performance metrics."""
         return self.cache_metrics.copy()
+
+    @staticmethod
+    def _normalize_thinking_param(thinking: Any) -> Optional[Dict[str, Any]]:
+        """Accept a boolean alias but send Anthropic the structured thinking object."""
+        if isinstance(thinking, dict):
+            normalized = dict(thinking)
+            if normalized.get("type") != "disabled":
+                normalized.setdefault("type", "enabled")
+                normalized.setdefault("budget_tokens", 1024)
+            return normalized
+        if thinking is True:
+            return {
+                "type": "enabled",
+                "budget_tokens": 1024,
+            }
+        return None
     
     async def chat(self, messages: List[Message], **kwargs) -> LLMResponse:
         """Send chat request to Anthropic."""
@@ -363,13 +379,22 @@ class AnthropicProvider(LLMProviderInterface):
                 model = self.model or "claude-sonnet-4-20250514"
             
             # Prepare request parameters
+            extra_request_kwargs = {
+                k: v for k, v in kwargs.items() if k not in ['model', 'max_tokens', 'temperature']
+            }
+            thinking_config = self._normalize_thinking_param(
+                extra_request_kwargs.pop("thinking", None)
+            )
+
             request_params = {
                 'model': model,
                 'max_tokens': max_tokens,
                 'temperature': temperature,
                 'messages': anthropic_messages,
-                **{k: v for k, v in kwargs.items() if k not in ['model', 'max_tokens', 'temperature']}
+                **extra_request_kwargs,
             }
+            if thinking_config is not None:
+                request_params['thinking'] = thinking_config
             
             # Only add system parameter if we have system content
             if system_content is not None:
@@ -417,14 +442,23 @@ class AnthropicProvider(LLMProviderInterface):
             )
             
             # Prepare request parameters
+            extra_request_kwargs = {
+                k: v for k, v in kwargs.items()
+                if k not in ['model', 'max_tokens', 'temperature', 'callbacks']
+            }
+            thinking_config = self._normalize_thinking_param(
+                extra_request_kwargs.pop("thinking", None)
+            )
+
             request_params = {
                 'model': model,
                 'max_tokens': max_tokens,
                 'temperature': temperature,
                 'messages': anthropic_messages,
-                **{k: v for k, v in kwargs.items() 
-                   if k not in ['model', 'max_tokens', 'temperature', 'callbacks']}
+                **extra_request_kwargs,
             }
+            if thinking_config is not None:
+                request_params['thinking'] = thinking_config
             
             # Only add system parameter if we have system content
             if system_content is not None:
@@ -547,14 +581,24 @@ class AnthropicProvider(LLMProviderInterface):
             emitted_chunk_count = 0
 
             # Prepare request parameters
+            extra_request_kwargs = {
+                k: v for k, v in kwargs.items()
+                if k not in ['model', 'max_tokens', 'temperature', 'tool_choice', 'output_queue']
+            }
+            thinking_config = self._normalize_thinking_param(
+                extra_request_kwargs.pop("thinking", None)
+            )
+
             request_params = {
                 'model': model,
                 'max_tokens': max_tokens,
                 'temperature': temperature,
                 'messages': anthropic_messages,
                 'tools': anthropic_tools,
-                **{k: v for k, v in kwargs.items() if k not in ['model', 'max_tokens', 'temperature', 'tool_choice', 'output_queue']}
+                **extra_request_kwargs,
             }
+            if thinking_config is not None:
+                request_params['thinking'] = thinking_config
 
             # Anthropic expects tool_choice as an object, not a plain string/enum
             if tool_choice:

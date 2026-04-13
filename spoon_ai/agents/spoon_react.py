@@ -200,5 +200,6 @@ class SpoonReactAI(MCPClientMixin, ToolCallAgent):
             kwargs["request"] = request
         if timeout is not None:
             kwargs["timeout"] = timeout
-        kwargs["thinking"] = thinking
+        if thinking:
+            kwargs["thinking"] = True
         return await super().run(**kwargs)
