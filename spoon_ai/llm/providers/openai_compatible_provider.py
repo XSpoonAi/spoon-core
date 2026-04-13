@@ -147,6 +147,71 @@ class OpenAICompatibleProvider(LLMProviderInterface):
         """Get the default model. Should be overridden by subclasses."""
         return self.default_model
 
+    def _is_openrouter_request(self) -> bool:
+        """Detect whether the current request targets OpenRouter semantics."""
+        provider_name = (self.get_provider_name() or "").lower()
+        if provider_name == "openrouter":
+            return True
+
+        base_url = (self.config.get("base_url") or self.get_default_base_url() or "").lower()
+        return "openrouter.ai" in base_url
+
+    def _apply_reasoning_defaults(
+        self,
+        request_kwargs: Dict[str, Any],
+        overrides: Dict[str, Any],
+    ) -> None:
+        """Enable low-effort reasoning for OpenRouter when thinking is requested."""
+        if not overrides.get("thinking") or not self._is_openrouter_request():
+            return
+
+        if request_kwargs.get("reasoning") is not None:
+            return
+
+        extra_body = request_kwargs.get("extra_body")
+        if extra_body is not None and not isinstance(extra_body, dict):
+            return
+        if isinstance(extra_body, dict) and extra_body.get("reasoning") is not None:
+            return
+
+        merged_extra_body = dict(extra_body or {})
+        merged_extra_body["reasoning"] = {"effort": "low"}
+        request_kwargs["extra_body"] = merged_extra_body
+
+    @staticmethod
+    def _extract_reasoning_text(
+        *,
+        reasoning: Any = None,
+        reasoning_content: Any = None,
+        reasoning_details: Any = None,
+    ) -> str:
+        """Extract plaintext reasoning while avoiding duplicate fields."""
+        primary = reasoning if reasoning is not None else reasoning_content
+        if isinstance(primary, str) and primary:
+            return primary
+
+        texts: List[str] = []
+        seen: set[str] = set()
+        details = reasoning_details or []
+        for detail in details:
+            if isinstance(detail, dict):
+                detail_type = detail.get("type")
+                text = detail.get("text")
+            else:
+                detail_type = getattr(detail, "type", None)
+                text = getattr(detail, "text", None)
+
+            if not text or detail_type != "reasoning.text":
+                continue
+
+            text = str(text)
+            if text in seen:
+                continue
+            seen.add(text)
+            texts.append(text)
+
+        return "".join(texts)
+
     def get_additional_headers(self, config: Dict[str, Any]) -> Dict[str, str]:
         """Get additional headers for the provider. Can be overridden by subclasses."""
         return {}
@@ -644,6 +709,11 @@ class OpenAICompatibleProvider(LLMProviderInterface):
         """Convert OpenAI-compatible response to standardized LLMResponse."""
         choice = response.choices[0]
         message = choice.message
+        reasoning_text = self._extract_reasoning_text(
+            reasoning=getattr(message, "reasoning", None),
+            reasoning_content=getattr(message, "reasoning_content", None),
+            reasoning_details=getattr(message, "reasoning_details", None),
+        )
 
         # Convert tool calls
         tool_calls = []
@@ -686,6 +756,14 @@ class OpenAICompatibleProvider(LLMProviderInterface):
                 "total_tokens": response.usage.total_tokens
             }
 
+        metadata = {
+            "response_id": response.id,
+            "created": response.created,
+            "system_fingerprint": getattr(response, 'system_fingerprint', None)
+        }
+        if reasoning_text:
+            metadata["reasoning"] = reasoning_text
+
         return LLMResponse(
             content=message.content or "",
             provider=self.get_provider_name(),
@@ -695,11 +773,7 @@ class OpenAICompatibleProvider(LLMProviderInterface):
             tool_calls=tool_calls,
             usage=usage,
             duration=duration,
-            metadata={
-                "response_id": response.id,
-                "created": response.created,
-                "system_fingerprint": getattr(response, 'system_fingerprint', None)
-            }
+            metadata=metadata
         )
 
     async def chat(self, messages: List[Message], **kwargs) -> LLMResponse:
@@ -738,8 +812,9 @@ class OpenAICompatibleProvider(LLMProviderInterface):
                 request_kwargs["tools"] = tools
                 request_kwargs["tool_choice"] = tool_choice
 
-            extra_keys = {'model', 'max_tokens', 'max_completion_tokens', 'temperature', 'tools', 'tool_choice'}
+            extra_keys = {'model', 'max_tokens', 'max_completion_tokens', 'temperature', 'thinking', 'tools', 'tool_choice'}
             request_kwargs.update({k: v for k, v in kwargs.items() if k not in extra_keys})
+            self._apply_reasoning_defaults(request_kwargs, kwargs)
 
             response = await self.client.chat.completions.create(**request_kwargs)
 
@@ -797,8 +872,9 @@ class OpenAICompatibleProvider(LLMProviderInterface):
                 request_kwargs["tools"] = tools
                 request_kwargs["tool_choice"] = tool_choice
 
-            extra_keys = {'model', 'max_tokens', 'max_completion_tokens', 'temperature', 'callbacks', 'tools', 'tool_choice'}
+            extra_keys = {'model', 'max_tokens', 'max_completion_tokens', 'temperature', 'thinking', 'callbacks', 'tools', 'tool_choice'}
             request_kwargs.update({k: v for k, v in kwargs.items() if k not in extra_keys})
+            self._apply_reasoning_defaults(request_kwargs, kwargs)
 
             stream = await self.client.chat.completions.create(**request_kwargs)
             # Process streaming response
@@ -1007,8 +1083,9 @@ class OpenAICompatibleProvider(LLMProviderInterface):
                 request_kwargs["tools"] = tools
                 request_kwargs["tool_choice"] = tool_choice
 
-            extra_keys = {'model', 'max_tokens', 'max_completion_tokens', 'temperature', 'tool_choice', 'output_queue'}
+            extra_keys = {'model', 'max_tokens', 'max_completion_tokens', 'temperature', 'thinking', 'tool_choice', 'output_queue'}
             request_kwargs.update({k: v for k, v in kwargs.items() if k not in extra_keys})
+            self._apply_reasoning_defaults(request_kwargs, kwargs)
 
             if output_queue is not None:
                 request_kwargs["stream"] = True
@@ -1034,6 +1111,26 @@ class OpenAICompatibleProvider(LLMProviderInterface):
 
                     choice = chunk.choices[0]
                     delta = choice.delta
+                    reasoning_token = self._extract_reasoning_text(
+                        reasoning=getattr(delta, "reasoning", None),
+                        reasoning_content=getattr(delta, "reasoning_content", None),
+                        reasoning_details=getattr(delta, "reasoning_details", None),
+                    )
+                    if reasoning_token:
+                        try:
+                            output_queue.put_nowait(
+                                build_output_queue_event(
+                                    event_type="thinking",
+                                    delta=reasoning_token,
+                                    metadata={
+                                        "phase": "think",
+                                        "provider": self.get_provider_name(),
+                                        "channel": "thinking",
+                                    },
+                                )
+                            )
+                        except Exception:
+                            pass
                     token = delta.content or ""
                     if token:
                         full_content += token

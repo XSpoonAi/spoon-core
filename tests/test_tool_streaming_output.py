@@ -16,6 +16,7 @@ from spoon_ai.llm.providers.anthropic_provider import AnthropicProvider
 from spoon_ai.llm.providers.gemini_provider import GeminiProvider
 from spoon_ai.llm.providers.ollama_provider import OllamaProvider
 from spoon_ai.llm.providers.openai_compatible_provider import OpenAICompatibleProvider
+from spoon_ai.llm.providers.openrouter_provider import OpenRouterProvider
 
 
 class _AsyncItems:
@@ -109,6 +110,79 @@ async def test_chatbot_ask_tool_forwards_output_queue():
 
 
 @pytest.mark.asyncio
+async def test_chatbot_ask_tool_strips_disabled_thinking_flag():
+    mock_manager = SimpleNamespace(chat_with_tools=AsyncMock())
+    mock_manager.chat_with_tools.return_value = LLMResponse(
+        content="ok",
+        provider="anthropic",
+        model="claude-sonnet-4-20250514",
+        finish_reason="stop",
+        native_finish_reason="stop",
+    )
+
+    with patch("spoon_ai.chat.get_llm_manager", return_value=mock_manager):
+        bot = ChatBot(use_llm_manager=True, llm_provider="anthropic")
+        await bot.ask_tool(
+            [{"role": "user", "content": "hi"}],
+            tools=_tool_spec(),
+            thinking=False,
+        )
+
+    call = mock_manager.chat_with_tools.call_args
+    assert "thinking" not in call.kwargs
+
+
+@pytest.mark.asyncio
+async def test_chatbot_ask_tool_normalizes_anthropic_boolean_thinking():
+    mock_manager = SimpleNamespace(chat_with_tools=AsyncMock())
+    mock_manager.chat_with_tools.return_value = LLMResponse(
+        content="ok",
+        provider="anthropic",
+        model="claude-sonnet-4-20250514",
+        finish_reason="stop",
+        native_finish_reason="stop",
+    )
+
+    with patch("spoon_ai.chat.get_llm_manager", return_value=mock_manager):
+        bot = ChatBot(use_llm_manager=True, llm_provider="anthropic")
+        await bot.ask_tool(
+            [{"role": "user", "content": "hi"}],
+            tools=_tool_spec(),
+            thinking=True,
+        )
+
+    call = mock_manager.chat_with_tools.call_args
+    assert call.kwargs["thinking"] == {
+        "type": "enabled",
+        "budget_tokens": 1024,
+    }
+
+
+@pytest.mark.asyncio
+async def test_chatbot_ask_tool_normalizes_gemini_boolean_thinking():
+    mock_manager = SimpleNamespace(chat_with_tools=AsyncMock())
+    mock_manager.chat_with_tools.return_value = LLMResponse(
+        content="ok",
+        provider="gemini",
+        model="gemini-3-flash-preview",
+        finish_reason="stop",
+        native_finish_reason="stop",
+    )
+
+    with patch("spoon_ai.chat.get_llm_manager", return_value=mock_manager):
+        bot = ChatBot(use_llm_manager=True, llm_provider="gemini")
+        await bot.ask_tool(
+            [{"role": "user", "content": "hi"}],
+            tools=_tool_spec(),
+            thinking=True,
+        )
+
+    call = mock_manager.chat_with_tools.call_args
+    assert "thinking" not in call.kwargs
+    assert call.kwargs["thinking_budget"] == 32
+
+
+@pytest.mark.asyncio
 async def test_openai_chat_with_tools_streams_deltas_to_output_queue():
     provider = OpenAICompatibleProvider()
     provider.model = "gpt-4.1"
@@ -145,6 +219,95 @@ async def test_openai_chat_with_tools_streams_deltas_to_output_queue():
     assert all(chunk["metadata"]["channel"] == "text" for chunk in chunks)
     assert all("phase" not in chunk["metadata"] for chunk in chunks)
     assert response.content == "Hello"
+    assert response.metadata.get("streamed_content") is True
+
+
+@pytest.mark.asyncio
+async def test_openrouter_chat_with_tools_streams_reasoning_to_output_queue():
+    provider = OpenRouterProvider()
+    provider.model = "google/gemini-3-flash-preview"
+
+    create_mock = AsyncMock()
+    stream_items = [
+        SimpleNamespace(
+            choices=[
+                SimpleNamespace(
+                    delta=SimpleNamespace(
+                        content="",
+                        reasoning="Plan: inspect files first.",
+                        reasoning_content=None,
+                        reasoning_details=[
+                            SimpleNamespace(
+                                type="reasoning.text",
+                                text="Plan: inspect files first.",
+                            )
+                        ],
+                        tool_calls=None,
+                    ),
+                    finish_reason=None,
+                )
+            ],
+            usage=None,
+        ),
+        SimpleNamespace(
+            choices=[
+                SimpleNamespace(
+                    delta=SimpleNamespace(
+                        content="Done.",
+                        reasoning=None,
+                        reasoning_content=None,
+                        reasoning_details=None,
+                        tool_calls=None,
+                    ),
+                    finish_reason="stop",
+                )
+            ],
+            usage=None,
+        ),
+    ]
+    create_mock.return_value = _AsyncItems(stream_items)
+    provider.client = SimpleNamespace(
+        chat=SimpleNamespace(
+            completions=SimpleNamespace(create=create_mock),
+        )
+    )
+
+    q: asyncio.Queue = asyncio.Queue()
+    response = await provider.chat_with_tools(
+        messages=[Message(role="user", content="hi")],
+        tools=_tool_spec(),
+        output_queue=q,
+        thinking=True,
+    )
+
+    streamed_events: list[dict] = []
+    while not q.empty():
+        streamed_events.append(await q.get())
+
+    assert streamed_events == [
+        {
+            "type": "thinking",
+            "delta": "Plan: inspect files first.",
+            "content": "Plan: inspect files first.",
+            "metadata": {
+                "phase": "think",
+                "provider": "openrouter",
+                "channel": "thinking",
+            },
+        },
+        {
+            "type": "content",
+            "delta": "Done.",
+            "content": "Done.",
+            "metadata": {
+                "provider": "openrouter",
+                "channel": "text",
+            },
+        },
+    ]
+    assert create_mock.call_args.kwargs["extra_body"]["reasoning"] == {"effort": "low"}
+    assert "thinking" not in create_mock.call_args.kwargs
+    assert response.content == "Done."
     assert response.metadata.get("streamed_content") is True
 
 
@@ -295,6 +458,41 @@ async def test_anthropic_chat_with_tools_streams_provider_thinking_to_output_que
     ]
     assert response.finish_reason == "tool_calls"
     assert response.tool_calls[0].function.arguments == '{"command":"pwd"}'
+
+
+@pytest.mark.asyncio
+async def test_anthropic_chat_with_tools_normalizes_boolean_thinking_before_request():
+    provider = AnthropicProvider()
+    provider.model = "claude-sonnet-4-20250514"
+
+    captured_kwargs: dict = {}
+    chunks = [
+        SimpleNamespace(type="content_block_start", content_block=SimpleNamespace(type="text")),
+        SimpleNamespace(type="content_block_delta", delta=SimpleNamespace(type="text_delta", text="ok")),
+        SimpleNamespace(type="content_block_stop"),
+        SimpleNamespace(type="message_delta", delta=SimpleNamespace(stop_reason="end_turn")),
+        SimpleNamespace(type="message_stop", message=SimpleNamespace(stop_reason="end_turn")),
+    ]
+
+    def _stream(**request_kwargs):
+        captured_kwargs.update(request_kwargs)
+        return _AsyncStreamContext(chunks)
+
+    provider.client = SimpleNamespace(
+        messages=SimpleNamespace(stream=_stream)
+    )
+
+    response = await provider.chat_with_tools(
+        messages=[Message(role="user", content="hi")],
+        tools=_tool_spec(),
+        thinking=True,
+    )
+
+    assert captured_kwargs["thinking"] == {
+        "type": "enabled",
+        "budget_tokens": 1024,
+    }
+    assert response.content == "ok"
 
 
 @pytest.mark.asyncio

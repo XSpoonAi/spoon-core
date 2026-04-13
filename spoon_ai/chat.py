@@ -656,6 +656,37 @@ class ChatBot:
         except Exception as exc:
             logger.warning("Failed to store interaction in Mem0: %s", exc)
 
+    def _normalize_tool_request_kwargs(self, kwargs: Dict[str, Any]) -> Dict[str, Any]:
+        """Convert high-level thinking toggles into provider-specific tool kwargs."""
+        normalized = dict(kwargs)
+        if "thinking" not in normalized:
+            return normalized
+
+        thinking = normalized.get("thinking")
+        if not thinking:
+            normalized.pop("thinking", None)
+            return normalized
+
+        provider = (self.llm_provider or "").strip().lower()
+        if provider == "anthropic":
+            if isinstance(thinking, dict):
+                thinking_config = dict(thinking)
+                if thinking_config.get("type") != "disabled":
+                    thinking_config.setdefault("type", "enabled")
+                    thinking_config.setdefault("budget_tokens", 1024)
+                normalized["thinking"] = thinking_config
+            else:
+                normalized["thinking"] = {
+                    "type": "enabled",
+                    "budget_tokens": 1024,
+                }
+        elif provider == "gemini":
+            normalized.pop("thinking", None)
+            if "thinking_config" not in normalized and "thinking_budget" not in normalized:
+                normalized["thinking_budget"] = 32
+
+        return normalized
+
     async def ask(self, messages: List[Union[dict, Message]], system_msg: Optional[str] = None, output_queue: Optional[asyncio.Queue] = None) -> str:
         """Ask method using the LLM manager architecture.
         
@@ -688,6 +719,7 @@ class ChatBot:
             messages_with_long_term,
             model=self.model_name,
         )
+        request_kwargs = self._normalize_tool_request_kwargs(kwargs)
 
         response = await self.llm_manager.chat_with_tools(
             messages=processed_messages,
@@ -695,7 +727,7 @@ class ChatBot:
             provider=self.llm_provider,
             tool_choice=tool_choice,
             output_queue=output_queue,
-            **kwargs
+            **request_kwargs
         )
 
         await self._store_long_term_memory(user_query, response.content)
