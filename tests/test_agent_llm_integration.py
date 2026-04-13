@@ -104,6 +104,31 @@ class TestAgentLLMIntegration:
         await agent.run("Test request")
 
         assert "thinking" not in mock_chatbot_manager.ask_tool.await_args.kwargs
+
+    @pytest.mark.asyncio
+    async def test_toolcall_agent_does_not_append_next_step_prompt_after_user_message(self, mock_chatbot_manager, tool_manager):
+        mock_chatbot_manager.ask_tool.return_value = LLMResponse(
+            content="I'll help you with that task.",
+            tool_calls=[],
+            finish_reason="stop",
+            native_finish_reason="stop",
+        )
+
+        agent = ToolCallAgent(
+            name="test_agent",
+            llm=mock_chatbot_manager,
+            available_tools=tool_manager,
+            next_step_prompt="Think step-by-step before choosing tools.",
+        )
+        await agent.add_message("user", "Test request")
+
+        await agent.think(thinking=True)
+
+        messages = mock_chatbot_manager.ask_tool.await_args.kwargs["messages"]
+        user_messages = [msg for msg in messages if getattr(msg, "role", None) == "user"]
+
+        assert len(user_messages) == 1
+        assert getattr(user_messages[0], "content", None) == "Test request"
     
     @pytest.mark.asyncio
     async def test_toolcall_agent_with_tools(self, mock_chatbot_manager, tool_manager):

@@ -118,7 +118,8 @@ class ToolCallAgent(ReActAgent):
 
 
     async def think(self, thinking: bool = False) -> bool:
-        if self.next_step_prompt:
+        last_role = getattr(self.memory.messages[-1], "role", None) if self.memory.messages else None
+        if self.next_step_prompt and last_role != "user":
             await self.add_message("user", self.next_step_prompt)
 
         # Use cached MCP tools to avoid repeated server calls
