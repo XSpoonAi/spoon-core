@@ -19,6 +19,7 @@ from spoon_ai.schema import (
 )
 from ..interface import LLMProviderInterface, LLMResponse, ProviderMetadata, ProviderCapability
 from ..errors import ProviderError, AuthenticationError, RateLimitError, ModelNotFoundError, NetworkError
+from ..message_utils import drop_orphaned_tool_messages
 from spoon_ai.callbacks.base import BaseCallbackHandler
 from spoon_ai.callbacks.manager import CallbackManager
 from spoon_ai.utils.streaming import build_output_queue_event
@@ -519,6 +520,8 @@ class OpenAICompatibleProvider(LLMProviderInterface):
 
         Handles both text-only and multimodal messages seamlessly.
         """
+        messages = drop_orphaned_tool_messages(messages)
+
         openai_messages = []
 
         for i, message in enumerate(messages):

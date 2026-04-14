@@ -36,6 +36,7 @@ import re
 from spoon_ai.callbacks.manager import CallbackManager
 from ..interface import LLMProviderInterface, LLMResponse, ProviderMetadata, ProviderCapability
 from ..errors import ProviderError, AuthenticationError, RateLimitError, ModelNotFoundError, NetworkError
+from ..message_utils import drop_orphaned_tool_messages
 from ..registry import register_provider
 
 logger = getLogger(__name__)
@@ -515,6 +516,8 @@ class GeminiProvider(LLMProviderInterface):
 
         Handles both text-only and multimodal messages seamlessly.
         """
+        messages = drop_orphaned_tool_messages(messages)
+
         system_content = ""
         gemini_messages = []
         normalized_messages = self._normalize_tool_message_sequence(messages)

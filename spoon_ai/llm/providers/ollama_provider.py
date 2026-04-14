@@ -25,6 +25,7 @@ from spoon_ai.schema import Function, LLMResponseChunk, Message, ToolCall
 
 from ..errors import NetworkError, ProviderError
 from ..interface import LLMProviderInterface, LLMResponse, ProviderCapability, ProviderMetadata
+from ..message_utils import drop_orphaned_tool_messages
 from ..registry import register_provider
 
 logger = getLogger(__name__)
@@ -121,6 +122,8 @@ class OllamaProvider(LLMProviderInterface):
         return out
 
     def _convert_messages(self, messages: List[Message]) -> List[Dict[str, Any]]:
+        messages = drop_orphaned_tool_messages(messages)
+
         out: List[Dict[str, Any]] = []
         tool_call_id_to_name: Dict[str, str] = {}
 
