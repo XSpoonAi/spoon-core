@@ -18,6 +18,7 @@ from spoon_ai.schema import (
 from spoon_ai.callbacks.manager import CallbackManager
 from spoon_ai.utils.streaming import build_output_queue_event
 from ..interface import LLMProviderInterface, LLMResponse, ProviderMetadata, ProviderCapability
+from ..message_utils import drop_orphaned_tool_messages
 from ..errors import ProviderError, AuthenticationError, RateLimitError, ModelNotFoundError, NetworkError
 from ..registry import register_provider
 
@@ -213,6 +214,8 @@ class AnthropicProvider(LLMProviderInterface):
 
         Handles both text-only and multimodal messages seamlessly.
         """
+        messages = drop_orphaned_tool_messages(messages)
+
         system_content = None
         anthropic_messages = []
 

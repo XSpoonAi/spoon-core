@@ -19,6 +19,7 @@ from spoon_ai.schema import (
 )
 from ..interface import LLMProviderInterface, LLMResponse, ProviderMetadata, ProviderCapability
 from ..errors import ProviderError, AuthenticationError, RateLimitError, ModelNotFoundError, NetworkError
+from ..message_utils import drop_orphaned_tool_messages
 from spoon_ai.callbacks.base import BaseCallbackHandler
 from spoon_ai.callbacks.manager import CallbackManager
 from spoon_ai.utils.streaming import build_output_queue_event
@@ -519,6 +520,8 @@ class OpenAICompatibleProvider(LLMProviderInterface):
 
         Handles both text-only and multimodal messages seamlessly.
         """
+        messages = drop_orphaned_tool_messages(messages)
+
         openai_messages = []
 
         for i, message in enumerate(messages):
@@ -638,6 +641,17 @@ class OpenAICompatibleProvider(LLMProviderInterface):
 
             # Handle tool messages
             if current_msg["role"] == "tool":
+                tool_call_id = current_msg.get("tool_call_id")
+
+                # Drop tool messages with no tool_call_id — they are
+                # malformed and will always be rejected by the API.
+                if not tool_call_id:
+                    logger.warning(
+                        "Dropping tool message with missing tool_call_id"
+                    )
+                    i += 1
+                    continue
+
                 # Find the preceding assistant message with tool_calls
                 assistant_msg_idx = -1
                 for j in range(len(fixed_messages) - 1, -1, -1):
@@ -646,16 +660,24 @@ class OpenAICompatibleProvider(LLMProviderInterface):
                         break
 
                 if assistant_msg_idx == -1:
-                    # No preceding assistant message with tool_calls found, but don't skip
-                    # This might be a tool response that should be kept
-                    logger.debug(f"Tool message without preceding assistant tool_calls - keeping: {current_msg.get('tool_call_id', 'unknown')}")
-                else:
-                    # Check if this tool message corresponds to any tool_call in the assistant message
-                    assistant_msg = fixed_messages[assistant_msg_idx]
-                    tool_call_ids = [tc["id"] for tc in assistant_msg.get("tool_calls", [])]
+                    logger.warning(
+                        f"Dropping orphaned tool message (tool_call_id={tool_call_id}): "
+                        f"no preceding assistant message with tool_calls"
+                    )
+                    i += 1
+                    continue
 
-                    if current_msg.get("tool_call_id") not in tool_call_ids:
-                        logger.debug(f"Tool message tool_call_id {current_msg.get('tool_call_id')} not found in assistant tool_calls - keeping anyway.")
+                # Verify this tool_call_id exists in the assistant's tool_calls
+                assistant_msg = fixed_messages[assistant_msg_idx]
+                tool_call_ids = [tc["id"] for tc in assistant_msg.get("tool_calls", [])]
+
+                if tool_call_id not in tool_call_ids:
+                    logger.warning(
+                        f"Dropping tool message with unmatched tool_call_id={tool_call_id} "
+                        f"(expected one of {tool_call_ids})"
+                    )
+                    i += 1
+                    continue
 
             # Handle system messages - they should be at the beginning
             elif current_msg["role"] == "system":
