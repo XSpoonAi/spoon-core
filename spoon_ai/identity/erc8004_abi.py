@@ -56,6 +56,16 @@ IDENTITY_ABI_MIN = [
     },
 ]
 
+IDENTITY_ABI_MIN.append(
+    {
+        "inputs": [{"internalType": "address", "name": "user", "type": "address"}],
+        "name": "getUserAgentId",
+        "outputs": [{"internalType": "uint256", "name": "agentId", "type": "uint256"}],
+        "stateMutability": "view",
+        "type": "function",
+    }
+)
+
 IDENTITY_ABI_WITH_REGISTER = IDENTITY_ABI_MIN + [
     {
         "inputs": [{"internalType": "string", "name": "tokenURI_", "type": "string"}],

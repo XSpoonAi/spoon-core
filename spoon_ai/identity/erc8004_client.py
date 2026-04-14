@@ -55,6 +55,14 @@ class ERC8004Client:
         return self.w3.eth.contract(address=to_checksum_address(address), abi=abi)
 
     # ---------------- Identity ----------------
+    def get_agent_id_for_address(self, address: str) -> int:
+        """Look up the agent ID (ERC-721 token) owned by *address*.
+
+        Returns 0 if the address has no registered agent identity.
+        """
+        checksum = to_checksum_address(address)
+        return int(self.identity_registry.functions.getUserAgentId(checksum).call())
+
     def register_agent(self, token_uri: str, metadata: Optional[List[Tuple[str, bytes]]] = None) -> int:
         """Register agent on IdentityRegistry; returns agentId."""
         if not self.account:
