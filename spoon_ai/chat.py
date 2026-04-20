@@ -656,34 +656,216 @@ class ChatBot:
         except Exception as exc:
             logger.warning("Failed to store interaction in Mem0: %s", exc)
 
+    @staticmethod
+    def _reasoning_effort_alias(value: Any) -> Optional[str]:
+        """Normalize user-facing effort aliases into provider-neutral values."""
+        if value is None:
+            return None
+        if not isinstance(value, str):
+            return str(value)
+
+        normalized = value.strip().lower()
+        if not normalized:
+            return None
+
+        aliases = {
+            "off": "none",
+            "disabled": "none",
+            "basic": "low",
+            "standard": "medium",
+            "on": "medium",
+            "extended": "high",
+        }
+        return aliases.get(normalized, normalized)
+
+    @staticmethod
+    def _canonical_model_name(model: str) -> str:
+        normalized = (model or "").strip().lower().replace("_", "-").replace(".", "-")
+        return normalized.rsplit("/", 1)[-1]
+
+    @classmethod
+    def _anthropic_supports_effort(cls, model: str) -> bool:
+        canonical = cls._canonical_model_name(model)
+        return canonical.startswith(
+            (
+                "claude-mythos-preview",
+                "claude-opus-4-5",
+                "claude-opus-4-6",
+                "claude-opus-4-7",
+                "claude-sonnet-4-6",
+            )
+        )
+
+    @classmethod
+    def _anthropic_supports_adaptive_thinking(cls, model: str) -> bool:
+        canonical = cls._canonical_model_name(model)
+        return canonical.startswith(
+            (
+                "claude-mythos-preview",
+                "claude-opus-4-6",
+                "claude-opus-4-7",
+                "claude-sonnet-4-6",
+            )
+        )
+
+    @classmethod
+    def _anthropic_supports_xhigh_effort(cls, model: str) -> bool:
+        canonical = cls._canonical_model_name(model)
+        return canonical.startswith("claude-opus-4-7")
+
+    @classmethod
+    def _openai_supports_none_effort(cls, model: str) -> bool:
+        canonical = cls._canonical_model_name(model)
+        return canonical.startswith(("gpt-5-2", "gpt-5-4"))
+
+    @classmethod
+    def _openai_supports_xhigh_effort(cls, model: str) -> bool:
+        canonical = cls._canonical_model_name(model)
+        return canonical.startswith(("gpt-5-2", "gpt-5-4"))
+
+    @classmethod
+    def _normalize_openai_reasoning_effort(cls, value: Any, model: str) -> Optional[str]:
+        effort = cls._reasoning_effort_alias(value)
+        if effort is None:
+            return None
+
+        if effort == "max":
+            effort = "xhigh" if cls._openai_supports_xhigh_effort(model) else "high"
+        if effort == "none" and not cls._openai_supports_none_effort(model):
+            return "minimal"
+        if effort == "xhigh" and not cls._openai_supports_xhigh_effort(model):
+            return "high"
+        return effort
+
+    @classmethod
+    def _normalize_openrouter_reasoning_effort(cls, value: Any) -> Optional[str]:
+        effort = cls._reasoning_effort_alias(value)
+        if effort == "max":
+            return "xhigh"
+        return effort
+
+    @classmethod
+    def _normalize_anthropic_effort(cls, value: Any, model: str) -> Optional[str]:
+        effort = cls._reasoning_effort_alias(value)
+        if effort in {None, "none"}:
+            return None
+        if effort == "minimal":
+            return "low"
+        if effort == "xhigh":
+            if cls._anthropic_supports_xhigh_effort(model):
+                return "xhigh"
+            return "max" if cls._anthropic_supports_effort(model) else "high"
+        if effort == "max" and not cls._anthropic_supports_effort(model):
+            return "high"
+        return effort
+
+    @classmethod
+    def _normalize_gemini_reasoning_level(cls, value: Any) -> Optional[str]:
+        effort = cls._reasoning_effort_alias(value)
+        if effort is None:
+            return None
+
+        mapping = {
+            "none": "minimal",
+            "minimal": "minimal",
+            "low": "low",
+            "medium": "medium",
+            "high": "high",
+            "max": "high",
+            "xhigh": "high",
+        }
+        return mapping.get(effort, "medium")
+
+    @classmethod
+    def _gemini_reasoning_budget(cls, model: str, value: Any) -> Optional[int]:
+        level = cls._normalize_gemini_reasoning_level(value)
+        if level is None:
+            return None
+
+        normalized_model = (model or "").strip().lower()
+        if "gemini-2.5-pro" in normalized_model:
+            mapping = {
+                "minimal": 128,
+                "low": 512,
+                "medium": 2048,
+                "high": -1,
+            }
+            return mapping[level]
+
+        if "gemini-2.5" in normalized_model:
+            mapping = {
+                "minimal": 32,
+                "low": 128,
+                "medium": 512,
+                "high": -1,
+            }
+            return mapping[level]
+
+        return None
+
     def _normalize_tool_request_kwargs(self, kwargs: Dict[str, Any]) -> Dict[str, Any]:
         """Convert high-level thinking toggles into provider-specific tool kwargs."""
         normalized = dict(kwargs)
-        if "thinking" not in normalized:
-            return normalized
-
-        thinking = normalized.get("thinking")
-        if not thinking:
-            normalized.pop("thinking", None)
-            return normalized
-
         provider = (self.llm_provider or "").strip().lower()
+        model = str(normalized.get("model") or self.model_name or "")
+        thinking = normalized.get("thinking")
+        reasoning_effort = normalized.get("reasoning_effort")
+
+        if "thinking" in normalized and not thinking:
+            normalized.pop("thinking", None)
+            thinking = None
+
+        if thinking is None and reasoning_effort is None:
+            return normalized
+
         if provider == "anthropic":
-            if isinstance(thinking, dict):
-                thinking_config = dict(thinking)
-                if thinking_config.get("type") != "disabled":
-                    thinking_config.setdefault("type", "enabled")
-                    thinking_config.setdefault("budget_tokens", 1024)
-                normalized["thinking"] = thinking_config
-            else:
-                normalized["thinking"] = {
-                    "type": "enabled",
-                    "budget_tokens": 1024,
-                }
+            anthropic_effort = self._normalize_anthropic_effort(reasoning_effort, model)
+            if anthropic_effort and self._anthropic_supports_effort(model):
+                output_config = dict(normalized.get("output_config") or {})
+                output_config["effort"] = anthropic_effort
+                normalized["output_config"] = output_config
+
+            if thinking:
+                if isinstance(thinking, dict):
+                    thinking_config = dict(thinking)
+                    thinking_type = str(thinking_config.get("type") or "").strip().lower()
+                    if thinking_type == "adaptive":
+                        normalized["thinking"] = {"type": "adaptive"}
+                    elif thinking_type != "disabled":
+                        thinking_config.setdefault("type", "enabled")
+                        thinking_config.setdefault("budget_tokens", 1024)
+                        normalized["thinking"] = thinking_config
+                elif anthropic_effort and self._anthropic_supports_adaptive_thinking(model):
+                    normalized["thinking"] = {"type": "adaptive"}
+                else:
+                    normalized["thinking"] = {
+                        "type": "enabled",
+                        "budget_tokens": 1024,
+                    }
+
         elif provider == "gemini":
             normalized.pop("thinking", None)
-            if "thinking_config" not in normalized and "thinking_budget" not in normalized:
+            if reasoning_effort is not None and "thinking_config" not in normalized and "thinking_budget" not in normalized:
+                if "gemini-3" in model.lower():
+                    normalized["thinking_config"] = {
+                        "thinking_level": self._normalize_gemini_reasoning_level(reasoning_effort),
+                    }
+                else:
+                    thinking_budget = self._gemini_reasoning_budget(model, reasoning_effort)
+                    if thinking_budget is not None:
+                        normalized["thinking_budget"] = thinking_budget
+            elif thinking and "thinking_config" not in normalized and "thinking_budget" not in normalized:
                 normalized["thinking_budget"] = 32
+
+        elif provider == "openai":
+            openai_effort = self._normalize_openai_reasoning_effort(reasoning_effort, model)
+            if openai_effort:
+                normalized["reasoning_effort"] = openai_effort
+
+        elif provider == "openrouter":
+            openrouter_effort = self._normalize_openrouter_reasoning_effort(reasoning_effort)
+            if openrouter_effort:
+                normalized["reasoning_effort"] = openrouter_effort
 
         return normalized
 
@@ -894,7 +1076,9 @@ class ChatBot:
         prepared_messages, all_callbacks = await self._prepare_run(
             messages, system_msg, callbacks
         )
-        stream_kwargs = sanitize_stream_kwargs(kwargs)
+        stream_kwargs = sanitize_stream_kwargs(
+            self._normalize_tool_request_kwargs(kwargs)
+        )
 
         async for chunk in self._stream_chat(
             prepared_messages, all_callbacks, stream_kwargs
@@ -985,7 +1169,9 @@ class ChatBot:
         processed_messages, all_callbacks = await self._prepare_run(
             messages, system_msg, callbacks
         )
-        stream_kwargs = sanitize_stream_kwargs(kwargs)
+        stream_kwargs = sanitize_stream_kwargs(
+            self._normalize_tool_request_kwargs(kwargs)
+        )
         
         # Chain start event
         yield StreamEventBuilder.chain_start(

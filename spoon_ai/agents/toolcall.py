@@ -117,7 +117,11 @@ class ToolCallAgent(ReActAgent):
 
 
 
-    async def think(self, thinking: bool = False) -> bool:
+    async def think(
+        self,
+        thinking: bool = False,
+        reasoning_effort: Optional[str] = None,
+    ) -> bool:
         last_role = getattr(self.memory.messages[-1], "role", None) if self.memory.messages else None
         if self.next_step_prompt and last_role != "user":
             await self.add_message("user", self.next_step_prompt)
@@ -209,6 +213,8 @@ class ToolCallAgent(ReActAgent):
                 }
                 if thinking:
                     ask_tool_kwargs["thinking"] = True
+                if reasoning_effort:
+                    ask_tool_kwargs["reasoning_effort"] = reasoning_effort
                 response = await asyncio.wait_for(
                     self.llm.ask_tool(**ask_tool_kwargs),
                     timeout=llm_timeout,
@@ -290,6 +296,7 @@ class ToolCallAgent(ReActAgent):
         request: Optional[str] = None,
         timeout: Optional[float] = None,
         thinking: bool = False,
+        reasoning_effort: Optional[str] = None,
     ) -> str:
         """
 
@@ -394,7 +401,7 @@ class ToolCallAgent(ReActAgent):
                                 break
 
                     step_result = await asyncio.wait_for(
-                        self.step(thinking=thinking),
+                        self.step(thinking=thinking, reasoning_effort=reasoning_effort),
                         timeout=step_timeout,
                     )
                     if await self.is_stuck():
@@ -462,9 +469,16 @@ class ToolCallAgent(ReActAgent):
                 self.state = AgentState.IDLE
                 self.current_step = 0
 
-    async def step(self, thinking: bool = False) -> str:
+    async def step(
+        self,
+        thinking: bool = False,
+        reasoning_effort: Optional[str] = None,
+    ) -> str:
         """Override the step method to handle finish_reason termination properly."""
-        should_act = await self.think(thinking=thinking)
+        should_act = await self.think(
+            thinking=thinking,
+            reasoning_effort=reasoning_effort,
+        )
         if not should_act:
             if self.state == AgentState.FINISHED:
                 # For finish_reason termination, return a simple message

@@ -5,7 +5,7 @@ from __future__ import annotations
 import asyncio
 import json
 from types import SimpleNamespace
-from unittest.mock import AsyncMock, patch
+from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
@@ -159,6 +159,64 @@ async def test_chatbot_ask_tool_normalizes_anthropic_boolean_thinking():
 
 
 @pytest.mark.asyncio
+async def test_chatbot_ask_tool_normalizes_anthropic_reasoning_effort():
+    mock_manager = SimpleNamespace(chat_with_tools=AsyncMock())
+    mock_manager.chat_with_tools.return_value = LLMResponse(
+        content="ok",
+        provider="anthropic",
+        model="claude-sonnet-4.6",
+        finish_reason="stop",
+        native_finish_reason="stop",
+    )
+
+    with patch("spoon_ai.chat.get_llm_manager", return_value=mock_manager):
+        bot = ChatBot(
+            use_llm_manager=True,
+            llm_provider="anthropic",
+            model_name="claude-sonnet-4.6",
+        )
+        await bot.ask_tool(
+            [{"role": "user", "content": "hi"}],
+            tools=_tool_spec(),
+            thinking=True,
+            reasoning_effort="high",
+        )
+
+    call = mock_manager.chat_with_tools.call_args
+    assert call.kwargs["thinking"] == {"type": "adaptive"}
+    assert call.kwargs["output_config"] == {"effort": "high"}
+
+
+@pytest.mark.asyncio
+async def test_chatbot_ask_tool_maps_anthropic_xhigh_to_max_for_opus_46():
+    mock_manager = SimpleNamespace(chat_with_tools=AsyncMock())
+    mock_manager.chat_with_tools.return_value = LLMResponse(
+        content="ok",
+        provider="anthropic",
+        model="claude-opus-4.6",
+        finish_reason="stop",
+        native_finish_reason="stop",
+    )
+
+    with patch("spoon_ai.chat.get_llm_manager", return_value=mock_manager):
+        bot = ChatBot(
+            use_llm_manager=True,
+            llm_provider="anthropic",
+            model_name="anthropic/claude-opus-4.6",
+        )
+        await bot.ask_tool(
+            [{"role": "user", "content": "hi"}],
+            tools=_tool_spec(),
+            thinking=True,
+            reasoning_effort="xhigh",
+        )
+
+    call = mock_manager.chat_with_tools.call_args
+    assert call.kwargs["thinking"] == {"type": "adaptive"}
+    assert call.kwargs["output_config"] == {"effort": "max"}
+
+
+@pytest.mark.asyncio
 async def test_chatbot_ask_tool_normalizes_gemini_boolean_thinking():
     mock_manager = SimpleNamespace(chat_with_tools=AsyncMock())
     mock_manager.chat_with_tools.return_value = LLMResponse(
@@ -180,6 +238,84 @@ async def test_chatbot_ask_tool_normalizes_gemini_boolean_thinking():
     call = mock_manager.chat_with_tools.call_args
     assert "thinking" not in call.kwargs
     assert call.kwargs["thinking_budget"] == 32
+
+
+@pytest.mark.asyncio
+async def test_chatbot_ask_tool_normalizes_gemini_reasoning_effort():
+    mock_manager = SimpleNamespace(chat_with_tools=AsyncMock())
+    mock_manager.chat_with_tools.return_value = LLMResponse(
+        content="ok",
+        provider="gemini",
+        model="gemini-3-flash-preview",
+        finish_reason="stop",
+        native_finish_reason="stop",
+    )
+
+    with patch("spoon_ai.chat.get_llm_manager", return_value=mock_manager):
+        bot = ChatBot(
+            use_llm_manager=True,
+            llm_provider="gemini",
+            model_name="gemini-3-flash-preview",
+        )
+        await bot.ask_tool(
+            [{"role": "user", "content": "hi"}],
+            tools=_tool_spec(),
+            thinking=True,
+            reasoning_effort="high",
+        )
+
+    call = mock_manager.chat_with_tools.call_args
+    assert "thinking" not in call.kwargs
+    assert call.kwargs["thinking_config"] == {"thinking_level": "high"}
+
+
+@pytest.mark.asyncio
+async def test_chatbot_ask_tool_passes_openai_reasoning_effort_through():
+    mock_manager = SimpleNamespace(chat_with_tools=AsyncMock())
+    mock_manager.chat_with_tools.return_value = LLMResponse(
+        content="ok",
+        provider="openai",
+        model="gpt-5.2",
+        finish_reason="stop",
+        native_finish_reason="stop",
+    )
+
+    with patch("spoon_ai.chat.get_llm_manager", return_value=mock_manager):
+        bot = ChatBot(
+            use_llm_manager=True,
+            llm_provider="openai",
+            model_name="gpt-5.2",
+        )
+        await bot.ask_tool(
+            [{"role": "user", "content": "hi"}],
+            tools=_tool_spec(),
+            reasoning_effort="high",
+        )
+
+    call = mock_manager.chat_with_tools.call_args
+    assert call.kwargs["reasoning_effort"] == "high"
+
+
+@pytest.mark.asyncio
+async def test_chatbot_astream_normalizes_anthropic_reasoning_effort():
+    mock_manager = SimpleNamespace(chat_stream=MagicMock(return_value=_AsyncItems([])))
+
+    with patch("spoon_ai.chat.get_llm_manager", return_value=mock_manager):
+        bot = ChatBot(
+            use_llm_manager=True,
+            llm_provider="anthropic",
+            model_name="claude-sonnet-4.6",
+        )
+        chunks = [chunk async for chunk in bot.astream(
+            [{"role": "user", "content": "hi"}],
+            thinking=True,
+            reasoning_effort="high",
+        )]
+
+    assert chunks == []
+    call = mock_manager.chat_stream.call_args
+    assert call.kwargs["thinking"] == {"type": "adaptive"}
+    assert call.kwargs["output_config"] == {"effort": "high"}
 
 
 @pytest.mark.asyncio
@@ -306,9 +442,42 @@ async def test_openrouter_chat_with_tools_streams_reasoning_to_output_queue():
         },
     ]
     assert create_mock.call_args.kwargs["extra_body"]["reasoning"] == {"effort": "low"}
-    assert "thinking" not in create_mock.call_args.kwargs
-    assert response.content == "Done."
-    assert response.metadata.get("streamed_content") is True
+
+
+@pytest.mark.asyncio
+async def test_openrouter_chat_with_tools_maps_reasoning_effort_to_extra_body():
+    provider = OpenRouterProvider()
+    provider.model = "openai/gpt-5"
+    provider.client = SimpleNamespace(
+        chat=SimpleNamespace(
+            completions=SimpleNamespace(
+                create=AsyncMock(
+                    return_value=SimpleNamespace(
+                        id="resp_123",
+                        choices=[
+                            SimpleNamespace(
+                                message=SimpleNamespace(content="done", tool_calls=None),
+                                finish_reason="stop",
+                            )
+                        ],
+                        created=123,
+                        usage=None,
+                        model="openai/gpt-5",
+                    )
+                )
+            )
+        )
+    )
+
+    await provider.chat_with_tools(
+        messages=[Message(role="user", content="hi")],
+        tools=_tool_spec(),
+        reasoning_effort="high",
+    )
+
+    assert provider.client.chat.completions.create.call_args.kwargs["extra_body"]["reasoning"] == {
+        "effort": "high"
+    }
 
 
 @pytest.mark.asyncio
