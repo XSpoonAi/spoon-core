@@ -87,6 +87,26 @@ class TestAgentLLMIntegration:
         assert mock_chatbot_manager.ask_tool.await_args.kwargs["thinking"] is True
 
     @pytest.mark.asyncio
+    async def test_toolcall_agent_forwards_reasoning_effort_to_llm(self, mock_chatbot_manager, tool_manager):
+        mock_chatbot_manager.ask_tool.return_value = LLMResponse(
+            content="I'll help you with that task.",
+            tool_calls=[],
+            finish_reason="stop",
+            native_finish_reason="stop",
+        )
+
+        agent = ToolCallAgent(
+            name="test_agent",
+            llm=mock_chatbot_manager,
+            available_tools=tool_manager,
+        )
+
+        await agent.run("Test request", thinking=True, reasoning_effort="high")
+
+        assert mock_chatbot_manager.ask_tool.await_args.kwargs["thinking"] is True
+        assert mock_chatbot_manager.ask_tool.await_args.kwargs["reasoning_effort"] == "high"
+
+    @pytest.mark.asyncio
     async def test_toolcall_agent_omits_disabled_thinking_flag_for_llm(self, mock_chatbot_manager, tool_manager):
         mock_chatbot_manager.ask_tool.return_value = LLMResponse(
             content="I'll help you with that task.",

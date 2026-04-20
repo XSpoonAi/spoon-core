@@ -350,7 +350,10 @@ class AnthropicProvider(LLMProviderInterface):
         """Accept a boolean alias but send Anthropic the structured thinking object."""
         if isinstance(thinking, dict):
             normalized = dict(thinking)
-            if normalized.get("type") != "disabled":
+            thinking_type = str(normalized.get("type") or "").strip().lower()
+            if thinking_type == "adaptive":
+                return {"type": "adaptive"}
+            if thinking_type != "disabled":
                 normalized.setdefault("type", "enabled")
                 normalized.setdefault("budget_tokens", 1024)
             return normalized

@@ -162,21 +162,28 @@ class OpenAICompatibleProvider(LLMProviderInterface):
         request_kwargs: Dict[str, Any],
         overrides: Dict[str, Any],
     ) -> None:
-        """Enable low-effort reasoning for OpenRouter when thinking is requested."""
-        if not overrides.get("thinking") or not self._is_openrouter_request():
+        """Normalize OpenRouter reasoning fields while preserving legacy thinking defaults."""
+        if not self._is_openrouter_request():
             return
 
-        if request_kwargs.get("reasoning") is not None:
-            return
+        requested_effort = request_kwargs.pop("reasoning_effort", None) or overrides.get("reasoning_effort")
 
         extra_body = request_kwargs.get("extra_body")
         if extra_body is not None and not isinstance(extra_body, dict):
             return
-        if isinstance(extra_body, dict) and extra_body.get("reasoning") is not None:
-            return
 
         merged_extra_body = dict(extra_body or {})
-        merged_extra_body["reasoning"] = {"effort": "low"}
+        reasoning_payload = dict(merged_extra_body.get("reasoning") or {})
+
+        if requested_effort:
+            reasoning_payload["effort"] = requested_effort
+        elif overrides.get("thinking") and not reasoning_payload:
+            reasoning_payload["effort"] = "low"
+
+        if not reasoning_payload:
+            return
+
+        merged_extra_body["reasoning"] = reasoning_payload
         request_kwargs["extra_body"] = merged_extra_body
 
     @staticmethod
