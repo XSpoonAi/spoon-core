@@ -55,16 +55,25 @@ class OpenAICompatibleProvider(LLMProviderInterface):
         tail = model_lower.split("/")[-1]  # strip any provider prefix like openrouter
         return tail.startswith("gpt-5") or tail.startswith("o1") or tail.startswith("o3") or tail.startswith("o4")
 
-    def _supports_temperature(self, model: str) -> bool:
+    def _supports_temperature(self, model: str, reasoning_effort: str | None = None) -> bool:
         """Whether this model supports custom temperature values.
 
-        Some newer OpenAI models (gpt-5.1*, o1*, o3*, o4*) only support the 
-        default temperature value (1.0) and will error on other values.
+        GPT-5 reasoning models reject explicit temperature settings more often
+        than the legacy chat-completions family:
+        - `gpt-5` and size-suffixed variants like `gpt-5-mini`: no temperature support
+        - versioned GPT-5 models like `gpt-5.4`: temperature only when reasoning is disabled
+        - `o*`: no temperature support
         """
         model_lower = (model or "").lower()
         tail = model_lower.split("/")[-1]  # strip any provider prefix
-        # gpt-5.1 and reasoning models don't support custom temperature
-        return not (tail.startswith("gpt-5.1") or tail.startswith("o1") or tail.startswith("o3") or tail.startswith("o4"))
+        if tail.startswith("o1") or tail.startswith("o3") or tail.startswith("o4"):
+            return False
+        if tail.startswith("gpt-5."):
+            normalized_effort = str(reasoning_effort or "").strip().lower()
+            return normalized_effort in {"", "none"}
+        if tail == "gpt-5" or tail.startswith("gpt-5-"):
+            return False
+        return True
 
     def _max_token_kwargs(self, model: str, max_tokens: int, overrides: Dict[str, Any]) -> Dict[str, Any]:
         """
@@ -833,7 +842,7 @@ class OpenAICompatibleProvider(LLMProviderInterface):
                 "stream": False,
             }
             # Only add temperature for models that support it
-            if self._supports_temperature(model):
+            if self._supports_temperature(model, kwargs.get("reasoning_effort")):
                 request_kwargs["temperature"] = temperature
             request_kwargs.update(self._max_token_kwargs(model, max_tokens, kwargs))
 
@@ -841,7 +850,10 @@ class OpenAICompatibleProvider(LLMProviderInterface):
                 request_kwargs["tools"] = tools
                 request_kwargs["tool_choice"] = tool_choice
 
-            extra_keys = {'model', 'max_tokens', 'max_completion_tokens', 'temperature', 'thinking', 'tools', 'tool_choice'}
+            extra_keys = {
+                'model', 'max_tokens', 'max_completion_tokens', 'temperature',
+                'thinking', 'reasoning_effort', 'tools', 'tool_choice'
+            }
             request_kwargs.update({k: v for k, v in kwargs.items() if k not in extra_keys})
             self._apply_reasoning_defaults(request_kwargs, kwargs)
 
@@ -893,7 +905,7 @@ class OpenAICompatibleProvider(LLMProviderInterface):
                 "stream_options": {"include_usage": True},
             }
             # Only add temperature for models that support it
-            if self._supports_temperature(model):
+            if self._supports_temperature(model, kwargs.get("reasoning_effort")):
                 request_kwargs["temperature"] = temperature
             request_kwargs.update(self._max_token_kwargs(model, max_tokens, kwargs))
 
@@ -901,7 +913,10 @@ class OpenAICompatibleProvider(LLMProviderInterface):
                 request_kwargs["tools"] = tools
                 request_kwargs["tool_choice"] = tool_choice
 
-            extra_keys = {'model', 'max_tokens', 'max_completion_tokens', 'temperature', 'thinking', 'callbacks', 'tools', 'tool_choice'}
+            extra_keys = {
+                'model', 'max_tokens', 'max_completion_tokens', 'temperature',
+                'thinking', 'reasoning_effort', 'callbacks', 'tools', 'tool_choice'
+            }
             request_kwargs.update({k: v for k, v in kwargs.items() if k not in extra_keys})
             self._apply_reasoning_defaults(request_kwargs, kwargs)
 
@@ -1104,7 +1119,7 @@ class OpenAICompatibleProvider(LLMProviderInterface):
                 "messages": openai_messages,
             }
             # Only add temperature for models that support it
-            if self._supports_temperature(model):
+            if self._supports_temperature(model, kwargs.get("reasoning_effort")):
                 request_kwargs["temperature"] = temperature
             request_kwargs.update(self._max_token_kwargs(model, max_tokens, kwargs))
 
@@ -1112,7 +1127,10 @@ class OpenAICompatibleProvider(LLMProviderInterface):
                 request_kwargs["tools"] = tools
                 request_kwargs["tool_choice"] = tool_choice
 
-            extra_keys = {'model', 'max_tokens', 'max_completion_tokens', 'temperature', 'thinking', 'tool_choice', 'output_queue'}
+            extra_keys = {
+                'model', 'max_tokens', 'max_completion_tokens', 'temperature',
+                'thinking', 'reasoning_effort', 'tool_choice', 'output_queue'
+            }
             request_kwargs.update({k: v for k, v in kwargs.items() if k not in extra_keys})
             self._apply_reasoning_defaults(request_kwargs, kwargs)
 

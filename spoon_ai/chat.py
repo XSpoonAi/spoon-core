@@ -824,6 +824,8 @@ class ChatBot:
                 output_config = dict(normalized.get("output_config") or {})
                 output_config["effort"] = anthropic_effort
                 normalized["output_config"] = output_config
+                if not thinking and self._anthropic_supports_adaptive_thinking(model):
+                    normalized["thinking"] = {"type": "adaptive"}
 
             if thinking:
                 if isinstance(thinking, dict):

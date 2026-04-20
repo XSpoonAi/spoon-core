@@ -34,6 +34,7 @@ from spoon_ai.schema import (
 import base64
 import re
 from spoon_ai.callbacks.manager import CallbackManager
+from spoon_ai.utils.streaming import build_output_queue_event
 from ..interface import LLMProviderInterface, LLMResponse, ProviderMetadata, ProviderCapability
 from ..errors import ProviderError, AuthenticationError, RateLimitError, ModelNotFoundError, NetworkError
 from ..message_utils import drop_orphaned_tool_messages
@@ -243,8 +244,12 @@ class GeminiProvider(LLMProviderInterface):
             if budget_int < min_thinking_budget:
                 budget_int = min_thinking_budget
 
+            include_thoughts = getattr(thinking_cfg, "include_thoughts", None)
+            if include_thoughts is None:
+                include_thoughts = True
+
             return max_tokens, types.ThinkingConfig(
-                include_thoughts=getattr(thinking_cfg, "include_thoughts", None),
+                include_thoughts=include_thoughts,
                 thinking_level=getattr(thinking_cfg, "thinking_level", None),
                 thinking_budget=budget_int,
             )
@@ -262,7 +267,96 @@ class GeminiProvider(LLMProviderInterface):
         if thinking_budget_int < min_thinking_budget:
             thinking_budget_int = min_thinking_budget
 
-        return max_tokens, types.ThinkingConfig(thinking_budget=thinking_budget_int)
+        return max_tokens, types.ThinkingConfig(
+            thinking_budget=thinking_budget_int,
+            include_thoughts=True,
+        )
+
+    @staticmethod
+    def _encode_thought_signature(thought_signature: Any) -> Optional[str]:
+        if thought_signature is None:
+            return None
+        if isinstance(thought_signature, str):
+            return thought_signature
+        if isinstance(thought_signature, (bytes, bytearray)):
+            return base64.b64encode(bytes(thought_signature)).decode("ascii")
+        return None
+
+    @staticmethod
+    def _decode_thought_signature(thought_signature: Any) -> Optional[bytes]:
+        if thought_signature is None:
+            return None
+        if isinstance(thought_signature, bytes):
+            return thought_signature
+        if isinstance(thought_signature, bytearray):
+            return bytes(thought_signature)
+        if isinstance(thought_signature, str):
+            try:
+                return base64.b64decode(thought_signature)
+            except Exception:
+                return None
+        return None
+
+    @classmethod
+    def _tool_call_from_function_call(
+        cls,
+        function_call: Any,
+        *,
+        thought_signature: Any = None,
+    ) -> ToolCall:
+        arguments_json = json.dumps(function_call.args) if function_call.args else "{}"
+        encoded_signature = cls._encode_thought_signature(thought_signature)
+        metadata = {"thought_signature": encoded_signature} if encoded_signature else None
+        return ToolCall(
+            id=f"call_{uuid.uuid4().hex[:8]}",
+            type="function",
+            function=Function(
+                name=function_call.name,
+                arguments=arguments_json,
+            ),
+            metadata=metadata,
+        )
+
+    @classmethod
+    def _function_call_part_from_tool_call(cls, tool_call: ToolCall) -> types.Part:
+        part = types.Part.from_function_call(
+            name=tool_call.function.name,
+            args=tool_call.function.get_arguments_dict(),
+        )
+        thought_signature = cls._decode_thought_signature(
+            getattr(tool_call, "metadata", None) and tool_call.metadata.get("thought_signature")
+        )
+        if thought_signature is not None:
+            part.thought_signature = thought_signature
+        return part
+
+    @classmethod
+    def _extract_stream_parts(
+        cls,
+        parts: List[Any],
+    ) -> tuple[str, str, List[ToolCall]]:
+        thought_delta = ""
+        visible_delta = ""
+        tool_calls: List[ToolCall] = []
+
+        for part in parts:
+            text = getattr(part, "text", None)
+            if text:
+                if getattr(part, "thought", False):
+                    thought_delta += text
+                else:
+                    visible_delta += text
+
+            function_call = getattr(part, "function_call", None)
+            if function_call:
+                tool_calls.append(
+                    cls._tool_call_from_function_call(
+                        function_call,
+                        thought_signature=getattr(part, "thought_signature", None),
+                    )
+                )
+
+        return thought_delta, visible_delta, tool_calls
 
     async def initialize(self, config: Dict[str, Any]) -> None:
         """Initialize the Gemini provider with configuration."""
@@ -551,11 +645,7 @@ class GeminiProvider(LLMProviderInterface):
                         parts.append(types.Part.from_text(text=message.content))
 
                     for tool_call in message.tool_calls:
-                        args = tool_call.function.get_arguments_dict()
-                        parts.append(types.Part.from_function_call(
-                            name=tool_call.function.name,
-                            args=args
-                        ))
+                        parts.append(self._function_call_part_from_tool_call(tool_call))
 
                     gemini_messages.append(types.Content(
                         role="model",
@@ -834,6 +924,7 @@ class GeminiProvider(LLMProviderInterface):
 
             # Process streaming response
             full_content = ""
+            full_reasoning = ""
             chunk_index = 0
             finish_reason = None
             native_finish_reason = None
@@ -853,6 +944,7 @@ class GeminiProvider(LLMProviderInterface):
                 )
 
                 async for part_response in stream:
+                    thinking_chunk = ""
                     chunk = ""
                     try:
                         if (
@@ -862,19 +954,41 @@ class GeminiProvider(LLMProviderInterface):
                             and getattr(part_response.candidates[0].content, "parts", None)
                         ):
                             parts = part_response.candidates[0].content.parts
-                            chunk = "".join(
-                                [p.text for p in parts if getattr(p, "text", None)]
-                            )
+                            thinking_chunk, chunk, _ = self._extract_stream_parts(parts)
                     except Exception:
+                        thinking_chunk = ""
                         chunk = ""
 
                     # Fallback: some SDK responses expose streaming text via `part_response.text`
-                    if not chunk:
+                    if not thinking_chunk and not chunk:
                         maybe_text = getattr(part_response, "text", None)
                         if isinstance(maybe_text, str):
                             chunk = maybe_text
 
+                    if thinking_chunk:
+                        full_reasoning += thinking_chunk
+                        yield LLMResponseChunk(
+                            content=full_reasoning,
+                            delta=thinking_chunk,
+                            provider="gemini",
+                            model=model,
+                            finish_reason=None,
+                            tool_calls=[],
+                            usage=usage_data,
+                            metadata={
+                                "chunk_index": chunk_index,
+                                "type": "thinking",
+                                "phase": "think",
+                                "provider": "gemini",
+                                "channel": "thinking",
+                            },
+                            chunk_index=chunk_index,
+                        )
+                        chunk_index += 1
+
                     if not chunk:
+                        if thinking_chunk:
+                            continue
                         continue
 
                     full_content += chunk
@@ -1013,13 +1127,14 @@ class GeminiProvider(LLMProviderInterface):
                     )
 
                     full_content = ""
+                    full_reasoning = ""
                     emitted_chunk_count = 0
                     tool_calls: List[ToolCall] = []
                     finish_reason = "stop"
                     native_finish_reason = "stop"
 
                     async for part_response in stream:
-                        # Incremental text
+                        thinking_text = ""
                         delta_text = ""
                         try:
                             if (
@@ -1028,37 +1143,52 @@ class GeminiProvider(LLMProviderInterface):
                                 and getattr(part_response.candidates[0], "content", None) is not None
                                 and getattr(part_response.candidates[0].content, "parts", None)
                             ):
-                                for part in part_response.candidates[0].content.parts:
-                                    text = getattr(part, "text", None)
-                                    if text:
-                                        delta_text += text
-                                    function_call = getattr(part, "function_call", None)
-                                    if function_call:
-                                        arguments_json = json.dumps(function_call.args) if function_call.args else "{}"
-                                        tool_calls.append(
-                                            ToolCall(
-                                                id=f"call_{uuid.uuid4().hex[:8]}",
-                                                type="function",
-                                                function=Function(
-                                                    name=function_call.name,
-                                                    arguments=arguments_json,
-                                                ),
-                                            )
-                                        )
-                                        finish_reason = "tool_calls"
+                                thinking_text, delta_text, new_tool_calls = self._extract_stream_parts(
+                                    part_response.candidates[0].content.parts
+                                )
+                                if new_tool_calls:
+                                    tool_calls.extend(new_tool_calls)
+                                    finish_reason = "tool_calls"
                         except Exception:
+                            thinking_text = ""
                             delta_text = ""
 
-                        if not delta_text:
+                        if not thinking_text and not delta_text:
                             maybe_text = getattr(part_response, "text", None)
                             if isinstance(maybe_text, str):
                                 delta_text = maybe_text
+
+                        if thinking_text:
+                            full_reasoning += thinking_text
+                            try:
+                                output_queue.put_nowait(
+                                    build_output_queue_event(
+                                        event_type="thinking",
+                                        delta=thinking_text,
+                                        metadata={
+                                            "phase": "think",
+                                            "provider": "gemini",
+                                            "channel": "thinking",
+                                        },
+                                    )
+                                )
+                            except Exception:
+                                pass
 
                         if delta_text:
                             full_content += delta_text
                             emitted_chunk_count += 1
                             try:
-                                output_queue.put_nowait({"content": delta_text})
+                                output_queue.put_nowait(
+                                    build_output_queue_event(
+                                        event_type="content",
+                                        delta=delta_text,
+                                        metadata={
+                                            "provider": "gemini",
+                                            "channel": "text",
+                                        },
+                                    )
+                                )
                             except Exception:
                                 pass
 
@@ -1084,6 +1214,7 @@ class GeminiProvider(LLMProviderInterface):
                         metadata={
                             "streamed_content": emitted_chunk_count > 0,
                             "stream_chunk_count": emitted_chunk_count,
+                            **({"reasoning": full_reasoning} if full_reasoning else {}),
                         },
                     )
 
@@ -1142,6 +1273,8 @@ class GeminiProvider(LLMProviderInterface):
         response_text = ""
         image_paths = []
         tool_calls = []
+        reasoning = ""
+        saw_parts = False
 
         # Check if there are candidate results
         if hasattr(response, "candidates") and response.candidates:
@@ -1149,10 +1282,16 @@ class GeminiProvider(LLMProviderInterface):
             if hasattr(candidate, "content") and candidate.content:
                 # Iterate through all parts
                 parts = getattr(candidate.content, "parts", None) or []
+                saw_parts = bool(parts)
                 for part in parts:
                     # Check if there is text content
                     if hasattr(part, "text") and part.text:
-                        if content:
+                        if getattr(part, "thought", False):
+                            if reasoning:
+                                reasoning += "\n" + part.text
+                            else:
+                                reasoning = part.text
+                        elif content:
                             content += "\n" + part.text
                         else:
                             content = part.text
@@ -1205,7 +1344,7 @@ class GeminiProvider(LLMProviderInterface):
         # If no text content was obtained, fall back to response.text (if available).
         # Some Gemini SDK responses keep `response.text` populated even when
         # `candidates[0].content.parts` is empty.
-        if not content:
+        if not content and not saw_parts and not reasoning:
             fallback_text = self._safe_get_response_text(response)
             if fallback_text:
                 response_text = fallback_text
@@ -1229,7 +1368,8 @@ class GeminiProvider(LLMProviderInterface):
             duration=duration,
             metadata={
                 "image_paths": image_paths,
-                "has_images": len(image_paths) > 0
+                "has_images": len(image_paths) > 0,
+                **({"reasoning": reasoning} if reasoning else {}),
             }
         )
 
@@ -1238,6 +1378,8 @@ class GeminiProvider(LLMProviderInterface):
         content = ""
         tool_calls = []
         finish_reason = "stop"
+        reasoning = ""
+        saw_parts = False
 
         # Check if there are candidate results
         if hasattr(response, "candidates") and response.candidates:
@@ -1245,39 +1387,30 @@ class GeminiProvider(LLMProviderInterface):
             if hasattr(candidate, "content") and candidate.content:
                 # Iterate through all parts
                 parts = getattr(candidate.content, "parts", None) or []
+                saw_parts = bool(parts)
                 for part in parts:
                     # Check if there is text content
                     if hasattr(part, "text") and part.text:
-                        if content:
+                        if getattr(part, "thought", False):
+                            if reasoning:
+                                reasoning += "\n" + part.text
+                            else:
+                                reasoning = part.text
+                        elif content:
                             content += "\n" + part.text
                         else:
                             content = part.text
                     # Check if there is a function call
                     elif hasattr(part, "function_call") and part.function_call:
-                        # Convert Gemini function call to our ToolCall format
-                        function_call = part.function_call
-
-                        # Generate a unique ID for the tool call
-                        import uuid
-                        tool_call_id = f"call_{uuid.uuid4().hex[:8]}"
-
-                        # Convert arguments to JSON string
-                        import json
-                        arguments_json = json.dumps(function_call.args) if function_call.args else "{}"
-
-                        tool_call = ToolCall(
-                            id=tool_call_id,
-                            type="function",
-                            function=Function(
-                                name=function_call.name,
-                                arguments=arguments_json
-                            )
+                        tool_call = self._tool_call_from_function_call(
+                            part.function_call,
+                            thought_signature=getattr(part, "thought_signature", None),
                         )
                         tool_calls.append(tool_call)
                         finish_reason = "tool_calls"
 
         # If no content was obtained, fall back to response.text (if available).
-        if not content:
+        if not content and not saw_parts and not reasoning:
             fallback_text = self._safe_get_response_text(response)
             if fallback_text:
                 content = fallback_text
@@ -1290,7 +1423,9 @@ class GeminiProvider(LLMProviderInterface):
             native_finish_reason=finish_reason,
             tool_calls=tool_calls,
             duration=duration,
-            metadata={}
+            metadata={
+                **({"reasoning": reasoning} if reasoning else {}),
+            }
         )
 
     def get_metadata(self) -> ProviderMetadata:

@@ -346,22 +346,68 @@ class AnthropicProvider(LLMProviderInterface):
         return self.cache_metrics.copy()
 
     @staticmethod
-    def _normalize_thinking_param(thinking: Any) -> Optional[Dict[str, Any]]:
+    def _canonical_model_name(model: str) -> str:
+        normalized = (model or "").strip().lower().replace("_", "-").replace(".", "-")
+        return normalized.rsplit("/", 1)[-1]
+
+    @classmethod
+    def _requires_adaptive_thinking(cls, model: str) -> bool:
+        canonical = cls._canonical_model_name(model)
+        return canonical.startswith("claude-opus-4-7")
+
+    @staticmethod
+    def _thinking_enabled(thinking_config: Optional[Dict[str, Any]]) -> bool:
+        if not isinstance(thinking_config, dict):
+            return False
+        return str(thinking_config.get("type") or "").strip().lower() != "disabled"
+
+    @staticmethod
+    def _tool_choice_forces_tools(tool_choice: Any) -> bool:
+        if not tool_choice:
+            return False
+
+        if isinstance(tool_choice, str):
+            return tool_choice.strip().lower() not in {"auto", "none"}
+
+        if isinstance(tool_choice, dict):
+            return str(tool_choice.get("type") or "").strip().lower() not in {"", "auto", "none"}
+
+        return True
+
+    @classmethod
+    def _normalize_thinking_param(
+        cls,
+        thinking: Any,
+        *,
+        model: Optional[str] = None,
+        output_config: Any = None,
+    ) -> Optional[Dict[str, Any]]:
         """Accept a boolean alias but send Anthropic the structured thinking object."""
+        requires_adaptive = bool(model) and cls._requires_adaptive_thinking(model)
+        has_effort = isinstance(output_config, dict) and bool(output_config.get("effort"))
+
         if isinstance(thinking, dict):
             normalized = dict(thinking)
             thinking_type = str(normalized.get("type") or "").strip().lower()
             if thinking_type == "adaptive":
+                return {"type": "adaptive"}
+            if thinking_type == "disabled":
+                return normalized
+            if requires_adaptive or has_effort:
                 return {"type": "adaptive"}
             if thinking_type != "disabled":
                 normalized.setdefault("type", "enabled")
                 normalized.setdefault("budget_tokens", 1024)
             return normalized
         if thinking is True:
+            if requires_adaptive or has_effort:
+                return {"type": "adaptive"}
             return {
                 "type": "enabled",
                 "budget_tokens": 1024,
             }
+        if thinking is None and has_effort:
+            return {"type": "adaptive"}
         return None
     
     async def chat(self, messages: List[Message], **kwargs) -> LLMResponse:
@@ -389,16 +435,22 @@ class AnthropicProvider(LLMProviderInterface):
                 k: v for k, v in kwargs.items() if k not in ['model', 'max_tokens', 'temperature']
             }
             thinking_config = self._normalize_thinking_param(
-                extra_request_kwargs.pop("thinking", None)
+                extra_request_kwargs.pop("thinking", None),
+                model=model,
+                output_config=extra_request_kwargs.get("output_config"),
             )
+            thinking_enabled = self._thinking_enabled(thinking_config)
+            if thinking_enabled:
+                extra_request_kwargs.pop("top_k", None)
 
             request_params = {
                 'model': model,
                 'max_tokens': max_tokens,
-                'temperature': temperature,
                 'messages': anthropic_messages,
                 **extra_request_kwargs,
             }
+            if not thinking_enabled:
+                request_params['temperature'] = temperature
             if thinking_config is not None:
                 request_params['thinking'] = thinking_config
             
@@ -453,16 +505,22 @@ class AnthropicProvider(LLMProviderInterface):
                 if k not in ['model', 'max_tokens', 'temperature', 'callbacks']
             }
             thinking_config = self._normalize_thinking_param(
-                extra_request_kwargs.pop("thinking", None)
+                extra_request_kwargs.pop("thinking", None),
+                model=model,
+                output_config=extra_request_kwargs.get("output_config"),
             )
+            thinking_enabled = self._thinking_enabled(thinking_config)
+            if thinking_enabled:
+                extra_request_kwargs.pop("top_k", None)
 
             request_params = {
                 'model': model,
                 'max_tokens': max_tokens,
-                'temperature': temperature,
                 'messages': anthropic_messages,
                 **extra_request_kwargs,
             }
+            if not thinking_enabled:
+                request_params['temperature'] = temperature
             if thinking_config is not None:
                 request_params['thinking'] = thinking_config
             
@@ -472,6 +530,7 @@ class AnthropicProvider(LLMProviderInterface):
             
             # Process streaming response
             full_content = ""
+            full_reasoning = ""
             chunk_index = 0
             finish_reason = None
             usage_data = None
@@ -506,6 +565,30 @@ class AnthropicProvider(LLMProviderInterface):
                         )
                         chunk_index += 1
                         yield response_chunk
+                    elif chunk.type == "content_block_delta" and chunk.delta.type == "thinking_delta":
+                        token = getattr(chunk.delta, "thinking", "") or ""
+                        if not token:
+                            continue
+                        full_reasoning += token
+                        yield LLMResponseChunk(
+                            content=full_reasoning,
+                            delta=token,
+                            provider="anthropic",
+                            model=model,
+                            finish_reason=finish_reason,
+                            tool_calls=[],
+                            usage=usage_data,
+                            metadata={
+                                "chunk_index": chunk_index,
+                                "chunk_type": chunk.type,
+                                "type": "thinking",
+                                "phase": "think",
+                                "provider": "anthropic",
+                                "channel": "thinking",
+                            },
+                            chunk_index=chunk_index,
+                        )
+                        chunk_index += 1
                         
                     elif chunk.type == "message_start":
                         if hasattr(chunk, 'message') and hasattr(chunk.message, 'usage'):
@@ -592,22 +675,34 @@ class AnthropicProvider(LLMProviderInterface):
                 if k not in ['model', 'max_tokens', 'temperature', 'tool_choice', 'output_queue']
             }
             thinking_config = self._normalize_thinking_param(
-                extra_request_kwargs.pop("thinking", None)
+                extra_request_kwargs.pop("thinking", None),
+                model=model,
+                output_config=extra_request_kwargs.get("output_config"),
             )
+            thinking_enabled = self._thinking_enabled(thinking_config)
+            if thinking_enabled:
+                extra_request_kwargs.pop("top_k", None)
 
             request_params = {
                 'model': model,
                 'max_tokens': max_tokens,
-                'temperature': temperature,
                 'messages': anthropic_messages,
                 'tools': anthropic_tools,
                 **extra_request_kwargs,
             }
+            if not thinking_enabled:
+                request_params['temperature'] = temperature
             if thinking_config is not None:
                 request_params['thinking'] = thinking_config
 
             # Anthropic expects tool_choice as an object, not a plain string/enum
             if tool_choice:
+                if thinking_enabled and self._tool_choice_forces_tools(tool_choice):
+                    logger.warning(
+                        "Anthropic thinking mode does not support forced tool_choice=%r; falling back to auto",
+                        tool_choice,
+                    )
+                    tool_choice = None
                 if isinstance(tool_choice, str):
                     request_params['tool_choice'] = {"type": tool_choice}
                 elif isinstance(tool_choice, dict):

@@ -16,6 +16,7 @@ from spoon_ai.llm.providers.anthropic_provider import AnthropicProvider
 from spoon_ai.llm.providers.gemini_provider import GeminiProvider
 from spoon_ai.llm.providers.ollama_provider import OllamaProvider
 from spoon_ai.llm.providers.openai_compatible_provider import OpenAICompatibleProvider
+from spoon_ai.llm.providers.openai_provider import OpenAIProvider
 from spoon_ai.llm.providers.openrouter_provider import OpenRouterProvider
 
 
@@ -179,6 +180,34 @@ async def test_chatbot_ask_tool_normalizes_anthropic_reasoning_effort():
             [{"role": "user", "content": "hi"}],
             tools=_tool_spec(),
             thinking=True,
+            reasoning_effort="high",
+        )
+
+    call = mock_manager.chat_with_tools.call_args
+    assert call.kwargs["thinking"] == {"type": "adaptive"}
+    assert call.kwargs["output_config"] == {"effort": "high"}
+
+
+@pytest.mark.asyncio
+async def test_chatbot_ask_tool_enables_anthropic_adaptive_thinking_from_reasoning_effort_alone():
+    mock_manager = SimpleNamespace(chat_with_tools=AsyncMock())
+    mock_manager.chat_with_tools.return_value = LLMResponse(
+        content="ok",
+        provider="anthropic",
+        model="claude-sonnet-4.6",
+        finish_reason="stop",
+        native_finish_reason="stop",
+    )
+
+    with patch("spoon_ai.chat.get_llm_manager", return_value=mock_manager):
+        bot = ChatBot(
+            use_llm_manager=True,
+            llm_provider="anthropic",
+            model_name="claude-sonnet-4.6",
+        )
+        await bot.ask_tool(
+            [{"role": "user", "content": "hi"}],
+            tools=_tool_spec(),
             reasoning_effort="high",
         )
 
@@ -358,6 +387,252 @@ async def test_openai_chat_with_tools_streams_deltas_to_output_queue():
     assert response.metadata.get("streamed_content") is True
 
 
+def test_openai_supports_temperature_for_gpt_54_only_without_reasoning():
+    provider = OpenAICompatibleProvider()
+
+    assert provider._supports_temperature("gpt-5.4", reasoning_effort="none") is True
+    assert provider._supports_temperature("gpt-5.4", reasoning_effort=None) is True
+    assert provider._supports_temperature("gpt-5.4", reasoning_effort="high") is False
+    assert provider._supports_temperature("gpt-5.4", reasoning_effort="medium") is False
+
+
+@pytest.mark.asyncio
+async def test_openai_chat_with_tools_uses_responses_reasoning_summary_when_effort_requested():
+    provider = OpenAIProvider()
+    provider.model = "gpt-5.4"
+
+    completed_response = SimpleNamespace(
+        id="resp_123",
+        created_at=123.0,
+        model="gpt-5.4",
+        output=[
+            SimpleNamespace(
+                type="reasoning",
+                summary=[
+                    SimpleNamespace(
+                        text="Plan: inspect the latest game state before choosing a move."
+                    )
+                ],
+            ),
+            SimpleNamespace(
+                type="function_call",
+                id="fc_123",
+                call_id="call_123",
+                name="echo_tool",
+                arguments='{"text":"hello"}',
+            ),
+        ],
+        usage=SimpleNamespace(
+            input_tokens=10,
+            output_tokens=7,
+            total_tokens=17,
+        ),
+    )
+    stream_items = [
+        SimpleNamespace(
+            type="response.reasoning_summary_text.delta",
+            delta="Plan: inspect the latest game state before choosing a move.",
+            output_index=0,
+            summary_index=0,
+            item_id="rs_123",
+        ),
+        SimpleNamespace(
+            type="response.output_item.done",
+            output_index=1,
+            item=SimpleNamespace(
+                type="function_call",
+                id="fc_123",
+                call_id="call_123",
+                name="echo_tool",
+                arguments='{"text":"hello"}',
+            ),
+        ),
+        SimpleNamespace(
+            type="response.completed",
+            response=completed_response,
+        ),
+    ]
+    provider.client = SimpleNamespace(
+        responses=SimpleNamespace(create=AsyncMock(return_value=_AsyncItems(stream_items))),
+        chat=SimpleNamespace(
+            completions=SimpleNamespace(create=AsyncMock()),
+        ),
+    )
+
+    q: asyncio.Queue = asyncio.Queue()
+    response = await provider.chat_with_tools(
+        messages=[Message(role="user", content="hi")],
+        tools=_tool_spec(),
+        output_queue=q,
+        reasoning_effort="high",
+    )
+
+    streamed_events: list[dict] = []
+    while not q.empty():
+        streamed_events.append(await q.get())
+
+    assert streamed_events == [
+        {
+            "type": "thinking",
+            "delta": "Plan: inspect the latest game state before choosing a move.",
+            "content": "Plan: inspect the latest game state before choosing a move.",
+            "metadata": {
+                "phase": "think",
+                "provider": "openai",
+                "channel": "thinking",
+            },
+        }
+    ]
+    assert response.content == ""
+    assert response.tool_calls[0].id == "call_123"
+    assert response.tool_calls[0].function.name == "echo_tool"
+    assert response.tool_calls[0].function.arguments == '{"text":"hello"}'
+    assert response.metadata["reasoning"] == (
+        "Plan: inspect the latest game state before choosing a move."
+    )
+    assert provider.client.responses.create.await_count == 1
+    assert provider.client.chat.completions.create.await_count == 0
+    request_kwargs = provider.client.responses.create.await_args.kwargs
+    assert request_kwargs["reasoning"] == {"effort": "high", "summary": "detailed"}
+    assert "temperature" not in request_kwargs
+    assert request_kwargs["tools"] == [
+        {
+            "type": "function",
+            "name": "echo_tool",
+            "description": "Echo text",
+            "parameters": {
+                "type": "object",
+                "properties": {"text": {"type": "string"}},
+                "required": ["text"],
+            },
+        }
+    ]
+
+
+@pytest.mark.asyncio
+async def test_openai_chat_stream_uses_responses_reasoning_summary_when_effort_requested():
+    provider = OpenAIProvider()
+    provider.model = "gpt-5.4"
+
+    completed_response = SimpleNamespace(
+        id="resp_stream_123",
+        created_at=456.0,
+        model="gpt-5.4",
+        output=[
+            SimpleNamespace(
+                type="reasoning",
+                summary=[
+                    SimpleNamespace(
+                        text="Plan: inspect the wallet before attempting to join."
+                    )
+                ],
+            ),
+            SimpleNamespace(
+                type="function_call",
+                id="fc_stream_123",
+                call_id="call_stream_123",
+                name="echo_tool",
+                arguments='{"text":"hello"}',
+            ),
+        ],
+        usage=SimpleNamespace(
+            input_tokens=12,
+            output_tokens=8,
+            total_tokens=20,
+        ),
+    )
+    stream_items = [
+        SimpleNamespace(
+            type="response.reasoning_summary_text.delta",
+            delta="Plan: inspect the wallet before attempting to join.",
+            output_index=0,
+            summary_index=0,
+            item_id="rs_stream_123",
+        ),
+        SimpleNamespace(
+            type="response.output_text.delta",
+            delta="Wallet looks ready.",
+        ),
+        SimpleNamespace(
+            type="response.output_item.done",
+            output_index=1,
+            item=SimpleNamespace(
+                type="function_call",
+                id="fc_stream_123",
+                call_id="call_stream_123",
+                name="echo_tool",
+                arguments='{"text":"hello"}',
+            ),
+        ),
+        SimpleNamespace(
+            type="response.completed",
+            response=completed_response,
+        ),
+    ]
+    provider.client = SimpleNamespace(
+        responses=SimpleNamespace(create=AsyncMock(return_value=_AsyncItems(stream_items))),
+        chat=SimpleNamespace(
+            completions=SimpleNamespace(create=AsyncMock()),
+        ),
+    )
+
+    chunks = [
+        chunk
+        async for chunk in provider.chat_stream(
+            messages=[Message(role="user", content="hi")],
+            tools=_tool_spec(),
+            reasoning_effort="high",
+        )
+    ]
+
+    assert chunks[0].delta == "Plan: inspect the wallet before attempting to join."
+    assert chunks[0].metadata == {
+        "type": "thinking",
+        "phase": "think",
+        "provider": "openai",
+        "channel": "thinking",
+    }
+    assert chunks[1].delta == "Wallet looks ready."
+    assert chunks[1].metadata == {
+        "provider": "openai",
+        "channel": "text",
+    }
+    assert chunks[2].tool_calls[0].id == "call_stream_123"
+    assert chunks[2].tool_calls[0].function.name == "echo_tool"
+    assert chunks[2].tool_call_chunks == [
+        {
+            "index": 1,
+            "id": "call_stream_123",
+            "type": "function",
+            "function": {
+                "name": "echo_tool",
+                "arguments": '{"text":"hello"}',
+            },
+        }
+    ]
+    assert chunks[-1].finish_reason == "tool_calls"
+    assert chunks[-1].metadata["reasoning"] == (
+        "Plan: inspect the wallet before attempting to join."
+    )
+    assert provider.client.responses.create.await_count == 1
+    assert provider.client.chat.completions.create.await_count == 0
+    request_kwargs = provider.client.responses.create.await_args.kwargs
+    assert request_kwargs["reasoning"] == {"effort": "high", "summary": "detailed"}
+    assert "temperature" not in request_kwargs
+    assert request_kwargs["tools"] == [
+        {
+            "type": "function",
+            "name": "echo_tool",
+            "description": "Echo text",
+            "parameters": {
+                "type": "object",
+                "properties": {"text": {"type": "string"}},
+                "required": ["text"],
+            },
+        }
+    ]
+
+
 @pytest.mark.asyncio
 async def test_openrouter_chat_with_tools_streams_reasoning_to_output_queue():
     provider = OpenRouterProvider()
@@ -478,6 +753,43 @@ async def test_openrouter_chat_with_tools_maps_reasoning_effort_to_extra_body():
     assert provider.client.chat.completions.create.call_args.kwargs["extra_body"]["reasoning"] == {
         "effort": "high"
     }
+    assert "reasoning_effort" not in provider.client.chat.completions.create.call_args.kwargs
+
+
+@pytest.mark.asyncio
+async def test_openai_compatible_chat_with_tools_drops_top_level_reasoning_effort_for_non_openrouter_requests():
+    provider = OpenAICompatibleProvider()
+    provider.model = "gpt-4.1"
+    provider.client = SimpleNamespace(
+        chat=SimpleNamespace(
+            completions=SimpleNamespace(
+                create=AsyncMock(
+                    return_value=SimpleNamespace(
+                        id="resp_456",
+                        choices=[
+                            SimpleNamespace(
+                                message=SimpleNamespace(content="done", tool_calls=None),
+                                finish_reason="stop",
+                            )
+                        ],
+                        created=456,
+                        usage=None,
+                        model="gpt-4.1",
+                    )
+                )
+            )
+        )
+    )
+
+    await provider.chat_with_tools(
+        messages=[Message(role="user", content="hi")],
+        tools=_tool_spec(),
+        reasoning_effort="high",
+    )
+
+    request_kwargs = provider.client.chat.completions.create.call_args.kwargs
+    assert "reasoning_effort" not in request_kwargs
+    assert "extra_body" not in request_kwargs
 
 
 @pytest.mark.asyncio
@@ -665,6 +977,44 @@ async def test_anthropic_chat_with_tools_normalizes_boolean_thinking_before_requ
 
 
 @pytest.mark.asyncio
+async def test_anthropic_chat_with_tools_strips_temperature_top_k_and_forced_tool_choice_when_thinking_enabled():
+    provider = AnthropicProvider()
+    provider.model = "claude-opus-4.7"
+
+    captured_kwargs: dict = {}
+    chunks = [
+        SimpleNamespace(type="content_block_start", content_block=SimpleNamespace(type="text")),
+        SimpleNamespace(type="content_block_delta", delta=SimpleNamespace(type="text_delta", text="ok")),
+        SimpleNamespace(type="content_block_stop"),
+        SimpleNamespace(type="message_delta", delta=SimpleNamespace(stop_reason="end_turn")),
+        SimpleNamespace(type="message_stop", message=SimpleNamespace(stop_reason="end_turn")),
+    ]
+
+    def _stream(**request_kwargs):
+        captured_kwargs.update(request_kwargs)
+        return _AsyncStreamContext(chunks)
+
+    provider.client = SimpleNamespace(
+        messages=SimpleNamespace(stream=_stream)
+    )
+
+    response = await provider.chat_with_tools(
+        messages=[Message(role="user", content="hi")],
+        tools=_tool_spec(),
+        thinking=True,
+        temperature=0.7,
+        top_k=5,
+        tool_choice="required",
+    )
+
+    assert captured_kwargs["thinking"] == {"type": "adaptive"}
+    assert "temperature" not in captured_kwargs
+    assert "top_k" not in captured_kwargs
+    assert "tool_choice" not in captured_kwargs
+    assert response.content == "ok"
+
+
+@pytest.mark.asyncio
 async def test_gemini_chat_with_tools_streams_deltas_to_output_queue():
     provider = GeminiProvider()
     provider.api_key = "test-key"
@@ -718,6 +1068,87 @@ async def test_gemini_chat_with_tools_streams_deltas_to_output_queue():
     assert response.finish_reason == "stop"
     assert response.native_finish_reason == "STOP"
     assert response.metadata.get("streamed_content") is True
+
+
+@pytest.mark.asyncio
+async def test_gemini_chat_with_tools_streams_provider_thinking_and_preserves_tool_call_signature():
+    provider = GeminiProvider()
+    provider.api_key = "test-key"
+    provider.model = "gemini-2.5-pro"
+
+    signature = b"sig-123"
+    responses = [
+        SimpleNamespace(
+            candidates=[
+                SimpleNamespace(
+                    content=SimpleNamespace(
+                        parts=[
+                            SimpleNamespace(text="Plan: inspect files.", thought=True),
+                            SimpleNamespace(
+                                function_call=SimpleNamespace(
+                                    name="get_weather",
+                                    args={"city": "Paris"},
+                                ),
+                                thought_signature=signature,
+                            ),
+                        ]
+                    ),
+                    finish_reason="STOP",
+                )
+            ]
+        ),
+    ]
+
+    class _FakeGeminiClient:
+        captured_config = None
+
+        def __init__(self, api_key: str):
+            self.aio = SimpleNamespace(
+                models=SimpleNamespace(
+                    generate_content_stream=AsyncMock(side_effect=self._generate_content_stream)
+                ),
+                aclose=AsyncMock(return_value=None),
+            )
+
+        async def _generate_content_stream(self, *, config, **kwargs):
+            type(self).captured_config = config
+            return _AsyncItems(responses)
+
+        def close(self):
+            return None
+
+    with patch("spoon_ai.llm.providers.gemini_provider.genai.Client", _FakeGeminiClient):
+        q: asyncio.Queue = asyncio.Queue()
+        response = await provider.chat_with_tools(
+            messages=[Message(role="user", content="hi")],
+            tools=_tool_spec(),
+            output_queue=q,
+            thinking_budget=128,
+        )
+
+    streamed_events: list[dict] = []
+    while not q.empty():
+        streamed_events.append(await q.get())
+
+    assert streamed_events == [
+        {
+            "type": "thinking",
+            "delta": "Plan: inspect files.",
+            "content": "Plan: inspect files.",
+            "metadata": {
+                "phase": "think",
+                "provider": "gemini",
+                "channel": "thinking",
+            },
+        }
+    ]
+    assert _FakeGeminiClient.captured_config.thinking_config.include_thoughts is True
+    assert response.finish_reason == "tool_calls"
+    assert response.metadata["reasoning"] == "Plan: inspect files."
+    assert response.tool_calls[0].function.name == "get_weather"
+    assert response.tool_calls[0].metadata == {
+        "thought_signature": "c2lnLTEyMw=="
+    }
 
 
 @pytest.mark.asyncio
@@ -784,6 +1215,36 @@ async def test_gemini_chat_with_tools_emits_first_chunk_before_completion():
     assert response.metadata.get("streamed_content") is True
 
 
+def test_gemini_convert_messages_for_tools_reuses_thought_signature():
+    provider = GeminiProvider()
+
+    system_content, gemini_messages = provider._convert_messages_for_tools(
+        [
+            Message(
+                role="assistant",
+                content="Working on it.",
+                tool_calls=[
+                    {
+                        "id": "call_123",
+                        "type": "function",
+                        "function": {
+                            "name": "get_weather",
+                            "arguments": '{"city":"Paris"}',
+                        },
+                        "metadata": {
+                            "thought_signature": "c2lnLTEyMw==",
+                        },
+                    }
+                ],
+            )
+        ]
+    )
+
+    assert system_content == ""
+    assert gemini_messages[0].parts[1].function_call.name == "get_weather"
+    assert gemini_messages[0].parts[1].thought_signature == b"sig-123"
+
+
 @pytest.mark.asyncio
 async def test_gemini_chat_stream_yields_incrementally():
     provider = GeminiProvider()
@@ -833,6 +1294,65 @@ async def test_gemini_chat_stream_yields_incrementally():
     assert first.delta == "Hel"
     assert second.delta == "lo"
     assert second.finish_reason == "stop"
+
+
+@pytest.mark.asyncio
+async def test_gemini_chat_stream_yields_thinking_before_visible_content():
+    provider = GeminiProvider()
+    provider.api_key = "test-key"
+    provider.model = "gemini-2.5-pro"
+
+    responses = [
+        SimpleNamespace(
+            candidates=[
+                SimpleNamespace(
+                    content=SimpleNamespace(
+                        parts=[
+                            SimpleNamespace(text="Plan: inspect.", thought=True),
+                            SimpleNamespace(text="Done."),
+                        ]
+                    ),
+                    finish_reason="STOP",
+                )
+            ],
+            usage_metadata=None,
+        ),
+    ]
+
+    class _FakeGeminiClient:
+        def __init__(self, api_key: str):
+            self.aio = SimpleNamespace(
+                models=SimpleNamespace(
+                    generate_content_stream=AsyncMock(return_value=_AsyncItems(responses))
+                ),
+                aclose=AsyncMock(return_value=None),
+            )
+
+        def close(self):
+            return None
+
+    with patch("spoon_ai.llm.providers.gemini_provider.genai.Client", _FakeGeminiClient):
+        chunks = [
+            chunk
+            async for chunk in provider.chat_stream(
+                messages=[Message(role="user", content="hi")],
+                thinking_budget=128,
+            )
+        ]
+
+    assert chunks[0].delta == "Plan: inspect."
+    assert chunks[0].metadata == {
+        "chunk_index": 0,
+        "type": "thinking",
+        "phase": "think",
+        "provider": "gemini",
+        "channel": "thinking",
+    }
+    assert chunks[1].delta == "Done."
+    assert chunks[1].metadata == {
+        "chunk_index": 1,
+        "finish_reason": "stop",
+    }
 
 
 @pytest.mark.asyncio
