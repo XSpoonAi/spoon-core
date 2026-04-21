@@ -50,6 +50,7 @@ class ToolCallAgent(ReActAgent):
 
     # Track last tool error for higher-level fallbacks
     last_tool_error: Optional[str] = Field(default=None, exclude=True)
+    last_reasoning_summary: Optional[str] = Field(default=None, exclude=True)
 
     # Reduced default timeout as per user request (blockchain operations will focus on submission)
     _default_timeout: float = 120.0
@@ -122,6 +123,7 @@ class ToolCallAgent(ReActAgent):
         thinking: bool = False,
         reasoning_effort: Optional[str] = None,
     ) -> bool:
+        self.last_reasoning_summary = None
         last_role = getattr(self.memory.messages[-1], "role", None) if self.memory.messages else None
         if self.next_step_prompt and last_role != "user":
             await self.add_message("user", self.next_step_prompt)
@@ -228,6 +230,8 @@ class ToolCallAgent(ReActAgent):
 
         self.tool_calls = response.tool_calls
         response_metadata = getattr(response, "metadata", {}) or {}
+        if isinstance(response_metadata, dict):
+            self.last_reasoning_summary = response_metadata.get("reasoning")
         streamed_content = bool(
             isinstance(response_metadata, dict)
             and response_metadata.get("streamed_content")
@@ -259,10 +263,10 @@ class ToolCallAgent(ReActAgent):
             if response.content and not streamed_content:
                 self.output_queue.put_nowait(
                     build_output_queue_event(
-                        event_type="thinking",
+                        event_type="content",
                         delta=response.content,
                         metadata={
-                            "phase": "think",
+                            "phase": "progress",
                             "source": "toolcall_agent",
                         },
                     )

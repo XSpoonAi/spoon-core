@@ -52,6 +52,10 @@ class ToolCall(BaseModel):
     id: str
     type: str = "function"
     function: Function
+    metadata: Optional[dict[str, Any]] = Field(
+        default=None,
+        description="Optional provider-specific metadata for preserving tool-call context",
+    )
 
 class AgentState(str, Enum):
     """

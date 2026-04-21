@@ -191,6 +191,33 @@ class TestAgentLLMIntegration:
             tool_input={"param": "value"}
         )
         assert "Tool executed successfully" in result
+
+    @pytest.mark.asyncio
+    async def test_toolcall_agent_preserves_tool_call_metadata_in_memory(self, mock_chatbot_manager, tool_manager):
+        agent = ToolCallAgent(
+            name="test_agent",
+            llm=mock_chatbot_manager,
+            available_tools=tool_manager,
+        )
+
+        await agent.add_message(
+            "assistant",
+            "I'll use a tool.",
+            tool_calls=[
+                ToolCall(
+                    id="call_sig",
+                    type="function",
+                    function=Function(
+                        name="test_tool",
+                        arguments='{"param":"value"}',
+                    ),
+                    metadata={"thought_signature": "c2lnLTEyMw=="},
+                )
+            ],
+        )
+
+        stored = agent.memory.messages[-1].tool_calls[0]
+        assert stored.metadata == {"thought_signature": "c2lnLTEyMw=="}
     
     @pytest.mark.asyncio
     async def test_spoon_react_ai_initialization(self):
@@ -206,9 +233,11 @@ class TestAgentLLMIntegration:
             # Verify it uses the new architecture
             assert agent.llm.use_llm_manager is True
 
-    def test_spoon_react_run_signatures_accept_thinking(self):
+    def test_spoon_react_run_signatures_accept_reasoning_kwargs(self):
         assert "thinking" in inspect.signature(SpoonReactAI.run).parameters
         assert "thinking" in inspect.signature(SpoonReactSkill.run).parameters
+        assert "reasoning_effort" in inspect.signature(SpoonReactAI.run).parameters
+        assert "reasoning_effort" in inspect.signature(SpoonReactSkill.run).parameters
     
     @pytest.mark.asyncio
     async def test_spoon_react_ai_fallback_to_legacy(self):
@@ -328,7 +357,7 @@ class TestAgentLLMIntegration:
         assert all(call.args != ({"content": "already streamed full text"},) for call in put_calls)
 
     @pytest.mark.asyncio
-    async def test_toolcall_agent_emits_explicit_thinking_for_non_streamed_pre_tool_content(self, mock_chatbot_manager, tool_manager):
+    async def test_toolcall_agent_emits_progress_content_for_non_streamed_pre_tool_content(self, mock_chatbot_manager, tool_manager):
         mock_tool_call = ToolCall(
             id="call_123",
             type="function",
@@ -361,11 +390,11 @@ class TestAgentLLMIntegration:
         assert should_continue is True
         put_calls = mock_queue.put_nowait.call_args_list
         assert put_calls[0].args[0] == {
-            "type": "thinking",
+            "type": "content",
             "delta": "First I will inspect the workspace.",
             "content": "First I will inspect the workspace.",
             "metadata": {
-                "phase": "think",
+                "phase": "progress",
                 "source": "toolcall_agent",
             },
         }

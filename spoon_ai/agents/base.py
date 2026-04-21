@@ -257,15 +257,24 @@ class BaseAgent(BaseModel, ABC):
                     elif role == "assistant":
                         if tool_calls:
                             formatted_tool_calls = [
-                                {
-                                    "id": toolcall.id,
-                                    "type": "function",
-                                    "function": (
-                                        toolcall.function.model_dump()
-                                        if isinstance(toolcall.function, BaseModel)
-                                        else toolcall.function
-                                    )
-                                }
+                                (
+                                    toolcall.model_dump()
+                                    if isinstance(toolcall, BaseModel)
+                                    else {
+                                        "id": toolcall.id,
+                                        "type": "function",
+                                        "function": (
+                                            toolcall.function.model_dump()
+                                            if isinstance(toolcall.function, BaseModel)
+                                            else toolcall.function
+                                        ),
+                                        **(
+                                            {"metadata": getattr(toolcall, "metadata", None)}
+                                            if getattr(toolcall, "metadata", None) is not None
+                                            else {}
+                                        ),
+                                    }
+                                )
                                 for toolcall in tool_calls
                             ]
                             message = Message(
