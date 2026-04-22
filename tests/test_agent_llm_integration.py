@@ -68,6 +68,32 @@ class TestAgentLLMIntegration:
         assert "I'll help you with that task." in result
 
     @pytest.mark.asyncio
+    async def test_toolcall_agent_terminates_on_stop_even_when_native_reason_is_completed(
+        self,
+        mock_chatbot_manager,
+        tool_manager,
+    ):
+        """Responses API may use native status values like 'completed' for terminal answers."""
+        mock_chatbot_manager.ask_tool.return_value = LLMResponse(
+            content="FINAL_OK",
+            tool_calls=[],
+            finish_reason="stop",
+            native_finish_reason="completed",
+        )
+
+        agent = ToolCallAgent(
+            name="test_agent",
+            llm=mock_chatbot_manager,
+            available_tools=tool_manager,
+            max_steps=1,
+        )
+
+        result = await agent.run("Reply with exactly: FINAL_OK")
+
+        assert result == "FINAL_OK"
+        assert mock_chatbot_manager.ask_tool.await_count == 1
+
+    @pytest.mark.asyncio
     async def test_toolcall_agent_forwards_thinking_flag_to_llm(self, mock_chatbot_manager, tool_manager):
         mock_chatbot_manager.ask_tool.return_value = LLMResponse(
             content="I'll help you with that task.",
@@ -446,6 +472,17 @@ class TestAgentLLMIntegration:
         assert result == "Final summary after tool execution."
         assert mock_chatbot_manager.ask_tool.await_count == 1
         mock_chatbot_manager.ask.assert_awaited_once()
+        final_messages = mock_chatbot_manager.ask.await_args.kwargs["messages"]
+        assert any(
+            "Follow the latest user's requested output format exactly." in msg.content
+            for msg in final_messages
+            if isinstance(getattr(msg, "content", None), str)
+        )
+        assert any(
+            "Do not replace it with a recap or progress summary" in msg.content
+            for msg in final_messages
+            if isinstance(getattr(msg, "content", None), str)
+        )
     
     @pytest.mark.asyncio
     async def test_agent_memory_consistency(self, mock_chatbot_manager, tool_manager):
