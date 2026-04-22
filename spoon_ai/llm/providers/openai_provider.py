@@ -8,6 +8,7 @@ import asyncio
 import json
 from datetime import datetime
 from logging import getLogger
+from types import SimpleNamespace
 from typing import Any, AsyncIterator, Dict, List, Optional
 from uuid import uuid4
 
@@ -238,21 +239,25 @@ class OpenAIProvider(OpenAICompatibleProvider):
         return "\n\n".join(parts)
 
     @staticmethod
+    def _responses_tool_call_from_item(item: Any) -> ToolCall | None:
+        if getattr(item, "type", None) != "function_call":
+            return None
+        return ToolCall(
+            id=getattr(item, "call_id", None) or getattr(item, "id", ""),
+            type="function",
+            function=Function(
+                name=getattr(item, "name", None) or "unknown",
+                arguments=getattr(item, "arguments", None) or "{}",
+            ),
+        )
+
+    @staticmethod
     def _extract_responses_tool_calls(response: Any) -> List[ToolCall]:
         tool_calls: List[ToolCall] = []
         for item in getattr(response, "output", []) or []:
-            if getattr(item, "type", None) != "function_call":
-                continue
-            tool_calls.append(
-                ToolCall(
-                    id=getattr(item, "call_id", None) or getattr(item, "id", ""),
-                    type="function",
-                    function=Function(
-                        name=getattr(item, "name", None) or "unknown",
-                        arguments=getattr(item, "arguments", None) or "{}",
-                    ),
-                )
-            )
+            tool_call = OpenAIProvider._responses_tool_call_from_item(item)
+            if tool_call is not None:
+                tool_calls.append(tool_call)
         return tool_calls
 
     @staticmethod
@@ -266,6 +271,74 @@ class OpenAIProvider(OpenAICompatibleProvider):
         if reason == "content_filter":
             return "content_filter"
         return "stop"
+
+    @staticmethod
+    def _responses_native_finish_reason(response: Any, tool_calls: List[ToolCall]) -> str:
+        if tool_calls:
+            return "tool_calls"
+        incomplete = getattr(response, "incomplete_details", None)
+        reason = getattr(incomplete, "reason", None)
+        if reason:
+            return str(reason)
+        status = getattr(response, "status", None)
+        if status:
+            return str(status)
+        return OpenAIProvider._responses_finish_reason(response, tool_calls)
+
+    @staticmethod
+    def _coalesce_responses_terminal_response(
+        *,
+        latest_response: Any | None,
+        model: str,
+        full_content: str,
+        full_reasoning: str,
+        tool_calls: List[ToolCall],
+        fallback_status: str = "incomplete",
+        fallback_reason: str | None = None,
+    ) -> Any | None:
+        if latest_response is not None:
+            return latest_response
+        if not (full_content or full_reasoning or tool_calls):
+            return None
+
+        output: List[Any] = []
+        if full_reasoning:
+            output.append(
+                SimpleNamespace(
+                    type="reasoning",
+                    summary=[SimpleNamespace(text=full_reasoning)],
+                )
+            )
+        if full_content:
+            output.append(
+                SimpleNamespace(
+                    type="message",
+                    content=[SimpleNamespace(type="output_text", text=full_content)],
+                )
+            )
+        for tool_call in tool_calls:
+            output.append(
+                SimpleNamespace(
+                    type="function_call",
+                    id=tool_call.id,
+                    call_id=tool_call.id,
+                    name=tool_call.function.name,
+                    arguments=tool_call.function.arguments,
+                )
+            )
+
+        return SimpleNamespace(
+            id="",
+            created_at=None,
+            model=model,
+            output=output,
+            output_text=full_content,
+            usage=None,
+            status=fallback_status,
+            incomplete_details=(
+                SimpleNamespace(reason=fallback_reason) if fallback_reason else None
+            ),
+        )
 
     @staticmethod
     def _responses_usage(response: Any) -> Dict[str, int] | None:
@@ -287,10 +360,18 @@ class OpenAIProvider(OpenAICompatibleProvider):
         tool_calls = self._extract_responses_tool_calls(response)
         reasoning_text = self._extract_responses_reasoning(response)
         finish_reason = self._responses_finish_reason(response, tool_calls)
+        native_finish_reason = self._responses_native_finish_reason(response, tool_calls)
         metadata = {
             "response_id": getattr(response, "id", ""),
             "created": getattr(response, "created_at", None),
         }
+        status = getattr(response, "status", None)
+        if status:
+            metadata["status"] = status
+        incomplete = getattr(response, "incomplete_details", None)
+        incomplete_reason = getattr(incomplete, "reason", None)
+        if incomplete_reason:
+            metadata["incomplete_reason"] = incomplete_reason
         if reasoning_text:
             metadata["reasoning"] = reasoning_text
 
@@ -299,7 +380,7 @@ class OpenAIProvider(OpenAICompatibleProvider):
             provider=self.get_provider_name(),
             model=getattr(response, "model", self.model),
             finish_reason=finish_reason,
-            native_finish_reason=finish_reason,
+            native_finish_reason=native_finish_reason,
             tool_calls=tool_calls,
             usage=self._responses_usage(response),
             duration=duration,
@@ -476,7 +557,19 @@ class OpenAIProvider(OpenAICompatibleProvider):
 
                 if event_type == "response.completed":
                     latest_response = getattr(event, "response", None)
+                    continue
 
+                if event_type == "response.incomplete":
+                    latest_response = getattr(event, "response", None)
+
+            latest_response = self._coalesce_responses_terminal_response(
+                latest_response=latest_response,
+                model=model,
+                full_content=full_content,
+                full_reasoning=full_reasoning,
+                tool_calls=tool_calls,
+                fallback_reason="stream_ended_without_terminal_event",
+            )
             if latest_response is None:
                 raise RuntimeError("OpenAI Responses stream completed without a final response")
 
@@ -486,11 +579,22 @@ class OpenAIProvider(OpenAICompatibleProvider):
 
             final_tool_calls = self._extract_responses_tool_calls(latest_response) or tool_calls
             finish_reason = self._responses_finish_reason(latest_response, final_tool_calls)
+            native_finish_reason = self._responses_native_finish_reason(
+                latest_response,
+                final_tool_calls,
+            )
             usage = self._responses_usage(latest_response)
             final_metadata: Dict[str, Any] = {
                 "response_id": getattr(latest_response, "id", ""),
                 "created": getattr(latest_response, "created_at", None),
             }
+            status = getattr(latest_response, "status", None)
+            if status:
+                final_metadata["status"] = status
+            incomplete = getattr(latest_response, "incomplete_details", None)
+            incomplete_reason = getattr(incomplete, "reason", None)
+            if incomplete_reason:
+                final_metadata["incomplete_reason"] = incomplete_reason
             if full_reasoning:
                 final_metadata["reasoning"] = full_reasoning
 
@@ -513,7 +617,7 @@ class OpenAIProvider(OpenAICompatibleProvider):
                     provider=self.get_provider_name(),
                     model=getattr(latest_response, "model", model),
                     finish_reason=finish_reason,
-                    native_finish_reason=finish_reason,
+                    native_finish_reason=native_finish_reason,
                     tool_calls=final_tool_calls,
                     usage=usage,
                     duration=duration,
@@ -548,7 +652,9 @@ class OpenAIProvider(OpenAICompatibleProvider):
 
         stream = await self.client.responses.create(**request_kwargs)
         latest_response = None
+        full_content = ""
         full_reasoning = ""
+        tool_calls: List[ToolCall] = []
 
         async for event in stream:
             event_type = getattr(event, "type", None)
@@ -573,6 +679,7 @@ class OpenAIProvider(OpenAICompatibleProvider):
             elif event_type == "response.output_text.delta":
                 delta = getattr(event, "delta", "") or ""
                 if delta:
+                    full_content += delta
                     try:
                         output_queue.put_nowait(
                             build_output_queue_event(
@@ -586,9 +693,23 @@ class OpenAIProvider(OpenAICompatibleProvider):
                         )
                     except Exception:
                         pass
+            elif event_type == "response.output_item.done":
+                tool_call = self._responses_tool_call_from_item(getattr(event, "item", None))
+                if tool_call is not None:
+                    tool_calls.append(tool_call)
             elif event_type == "response.completed":
                 latest_response = getattr(event, "response", None)
+            elif event_type == "response.incomplete":
+                latest_response = getattr(event, "response", None)
 
+        latest_response = self._coalesce_responses_terminal_response(
+            latest_response=latest_response,
+            model=request_kwargs.get("model", self.model),
+            full_content=full_content,
+            full_reasoning=full_reasoning,
+            tool_calls=tool_calls,
+            fallback_reason="stream_ended_without_terminal_event",
+        )
         if latest_response is None:
             raise RuntimeError("OpenAI Responses stream completed without a final response")
 
@@ -596,7 +717,7 @@ class OpenAIProvider(OpenAICompatibleProvider):
         result = self._convert_responses_response(latest_response, duration)
         if full_reasoning:
             result.metadata["reasoning"] = full_reasoning
-        result.metadata["streamed_content"] = bool(result.content)
+        result.metadata["streamed_content"] = bool(full_content or result.content)
         result.metadata["stream_chunk_count"] = 0
         return result
 

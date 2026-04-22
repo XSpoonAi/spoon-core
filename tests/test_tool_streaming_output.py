@@ -510,6 +510,112 @@ async def test_openai_chat_with_tools_uses_responses_reasoning_summary_when_effo
 
 
 @pytest.mark.asyncio
+async def test_openai_chat_with_tools_accepts_response_incomplete_terminal_event():
+    provider = OpenAIProvider()
+    provider.model = "gpt-5.4"
+
+    incomplete_response = SimpleNamespace(
+        id="resp_incomplete_123",
+        created_at=223.0,
+        model="gpt-5.4",
+        status="incomplete",
+        incomplete_details=SimpleNamespace(reason="max_output_tokens"),
+        output=[
+            SimpleNamespace(
+                type="message",
+                content=[SimpleNamespace(type="output_text", text="Partial answer")],
+            ),
+        ],
+        usage=SimpleNamespace(
+            input_tokens=10,
+            output_tokens=7,
+            total_tokens=17,
+        ),
+    )
+    stream_items = [
+        SimpleNamespace(
+            type="response.reasoning_summary_text.delta",
+            delta="Plan: keep the partial answer stable.",
+        ),
+        SimpleNamespace(
+            type="response.output_text.delta",
+            delta="Partial answer",
+        ),
+        SimpleNamespace(
+            type="response.incomplete",
+            response=incomplete_response,
+        ),
+    ]
+    provider.client = SimpleNamespace(
+        responses=SimpleNamespace(create=AsyncMock(return_value=_AsyncItems(stream_items))),
+        chat=SimpleNamespace(
+            completions=SimpleNamespace(create=AsyncMock()),
+        ),
+    )
+
+    q: asyncio.Queue = asyncio.Queue()
+    response = await provider.chat_with_tools(
+        messages=[Message(role="user", content="hi")],
+        tools=_tool_spec(),
+        output_queue=q,
+        reasoning_effort="high",
+    )
+
+    streamed_events: list[dict] = []
+    while not q.empty():
+        streamed_events.append(await q.get())
+
+    assert [event["type"] for event in streamed_events] == ["thinking", "content"]
+    assert response.content == "Partial answer"
+    assert response.finish_reason == "length"
+    assert response.native_finish_reason == "max_output_tokens"
+    assert response.metadata["status"] == "incomplete"
+    assert response.metadata["incomplete_reason"] == "max_output_tokens"
+
+
+@pytest.mark.asyncio
+async def test_openai_chat_with_tools_falls_back_to_streamed_tool_call_when_terminal_event_is_missing():
+    provider = OpenAIProvider()
+    provider.model = "gpt-5.4"
+
+    stream_items = [
+        SimpleNamespace(
+            type="response.output_item.done",
+            output_index=0,
+            item=SimpleNamespace(
+                type="function_call",
+                id="fc_fallback_123",
+                call_id="call_fallback_123",
+                name="echo_tool",
+                arguments='{"text":"hello"}',
+            ),
+        ),
+    ]
+    provider.client = SimpleNamespace(
+        responses=SimpleNamespace(create=AsyncMock(return_value=_AsyncItems(stream_items))),
+        chat=SimpleNamespace(
+            completions=SimpleNamespace(create=AsyncMock()),
+        ),
+    )
+
+    q: asyncio.Queue = asyncio.Queue()
+    response = await provider.chat_with_tools(
+        messages=[Message(role="user", content="hi")],
+        tools=_tool_spec(),
+        output_queue=q,
+        reasoning_effort="high",
+    )
+
+    assert q.empty()
+    assert response.finish_reason == "tool_calls"
+    assert response.native_finish_reason == "tool_calls"
+    assert len(response.tool_calls) == 1
+    assert response.tool_calls[0].function.name == "echo_tool"
+    assert response.metadata["status"] == "incomplete"
+    assert response.metadata["incomplete_reason"] == "stream_ended_without_terminal_event"
+
+
+@pytest.mark.asyncio
 async def test_openai_chat_stream_uses_responses_reasoning_summary_when_effort_requested():
     provider = OpenAIProvider()
     provider.model = "gpt-5.4"
@@ -631,6 +737,48 @@ async def test_openai_chat_stream_uses_responses_reasoning_summary_when_effort_r
             },
         }
     ]
+
+
+@pytest.mark.asyncio
+async def test_openai_chat_stream_synthesizes_partial_terminal_chunk_when_terminal_event_is_missing():
+    provider = OpenAIProvider()
+    provider.model = "gpt-5.4"
+    provider.client = SimpleNamespace(
+        responses=SimpleNamespace(
+            create=AsyncMock(
+                return_value=_AsyncItems(
+                    [
+                        SimpleNamespace(
+                            type="response.reasoning_summary_text.delta",
+                            delta="Plan: keep working from the partial output.",
+                        ),
+                        SimpleNamespace(
+                            type="response.output_text.delta",
+                            delta="Partial stream result",
+                        ),
+                    ]
+                )
+            )
+        ),
+        chat=SimpleNamespace(
+            completions=SimpleNamespace(create=AsyncMock()),
+        ),
+    )
+
+    chunks = [
+        chunk
+        async for chunk in provider.chat_stream(
+            messages=[Message(role="user", content="hi")],
+            tools=_tool_spec(),
+            reasoning_effort="high",
+        )
+    ]
+
+    assert chunks[-1].content == "Partial stream result"
+    assert chunks[-1].finish_reason == "stop"
+    assert chunks[-1].metadata["status"] == "incomplete"
+    assert chunks[-1].metadata["incomplete_reason"] == "stream_ended_without_terminal_event"
+    assert chunks[-1].metadata["reasoning"] == "Plan: keep working from the partial output."
 
 
 @pytest.mark.asyncio
