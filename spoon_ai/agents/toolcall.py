@@ -25,7 +25,9 @@ logger = getLogger("spoon_ai")
 FINAL_RESPONSE_PROMPT = (
     "You have reached the tool budget. Do not call any more tools. "
     "Using only the tool results already in memory, provide the final user-facing answer now. "
-    "Summarize the concrete results and do not describe future actions."
+    "Follow the latest user's requested output format exactly. "
+    "Do not replace it with a recap or progress summary unless the user explicitly asked for one. "
+    "Do not describe future actions."
 )
 
 class ToolCallAgent(ReActAgent):
@@ -706,17 +708,12 @@ class ToolCallAgent(ReActAgent):
 
     def _should_terminate_on_finish_reason(self, response) -> bool:
         """Check if agent should terminate based on finish_reason signals."""
-        # For Anthropic: native_finish_reason="end_turn" maps to finish_reason="stop"
-        # For OpenAI: both finish_reason and native_finish_reason are "stop"
         finish_reason = getattr(response, 'finish_reason', None)
-        native_finish_reason = getattr(response, 'native_finish_reason', None)
-
-        if finish_reason == "stop":
-            # Accept provider-native successful terminal states that map to
-            # the canonical "stop" finish reason. OpenAI Responses uses the
-            # response status "completed" rather than a chat finish reason.
-            return native_finish_reason in [None, "", "stop", "end_turn", "completed"]
-        return False
+        # The normalized finish_reason is the contract spoon-core relies on.
+        # Native provider reasons differ across APIs (e.g. Responses API may
+        # surface "completed"), so requiring a legacy native value can turn a
+        # valid final answer into a repeated loop.
+        return finish_reason == "stop"
 
     async def _call_llm_with_middleware(
         self,
