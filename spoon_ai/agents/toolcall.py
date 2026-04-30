@@ -263,12 +263,13 @@ class ToolCallAgent(ReActAgent):
 
         if self.output_queue:
             if response.content and not streamed_content:
+                pre_tool_content = bool(self.tool_calls)
                 self.output_queue.put_nowait(
                     build_output_queue_event(
-                        event_type="content",
+                        event_type="thinking" if pre_tool_content else "content",
                         delta=response.content,
                         metadata={
-                            "phase": "progress",
+                            "phase": "pre_tool" if pre_tool_content else "final",
                             "source": "toolcall_agent",
                         },
                     )
