@@ -261,12 +261,13 @@ class ToolCallAgent(ReActAgent):
 
         if self.output_queue:
             if response.content and not streamed_content:
+                pre_tool_content = bool(self.tool_calls)
                 self.output_queue.put_nowait(
                     build_output_queue_event(
-                        event_type="content",
+                        event_type="thinking" if pre_tool_content else "content",
                         delta=response.content,
                         metadata={
-                            "phase": "progress",
+                            "phase": "pre_tool" if pre_tool_content else "final",
                             "source": "toolcall_agent",
                         },
                     )
@@ -711,8 +712,10 @@ class ToolCallAgent(ReActAgent):
         native_finish_reason = getattr(response, 'native_finish_reason', None)
 
         if finish_reason == "stop":
-            # Accept either "stop" (OpenAI) or "end_turn" (Anthropic) as valid termination signals
-            return native_finish_reason in ["stop", "end_turn"]
+            # Accept provider-native successful terminal states that map to
+            # the canonical "stop" finish reason. OpenAI Responses uses the
+            # response status "completed" rather than a chat finish reason.
+            return native_finish_reason in [None, "", "stop", "end_turn", "completed"]
         return False
 
     async def _call_llm_with_middleware(

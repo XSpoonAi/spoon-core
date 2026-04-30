@@ -60,11 +60,13 @@ class SpoonReactAI(MCPClientMixin, ToolCallAgent):
         """Initialize SpoonReactAI with both ToolCallAgent and MCPClientMixin initialization"""
         # Track whether the caller supplied custom prompts so _refresh_prompts()
         # does not overwrite them on init or before run().
-        self._custom_system_prompt = "system_prompt" in kwargs and kwargs["system_prompt"] is not None
-        self._custom_next_step_prompt = "next_step_prompt" in kwargs and kwargs["next_step_prompt"] is not None
+        custom_system_prompt = "system_prompt" in kwargs and kwargs["system_prompt"] is not None
+        custom_next_step_prompt = "next_step_prompt" in kwargs and kwargs["next_step_prompt"] is not None
 
         # Call parent class initializers
         ToolCallAgent.__init__(self, **kwargs)
+        object.__setattr__(self, "_custom_system_prompt", custom_system_prompt)
+        object.__setattr__(self, "_custom_next_step_prompt", custom_next_step_prompt)
 
         # Initialize MCP client mixin
         MCPClientMixin.__init__(self, self.mcp_transport)

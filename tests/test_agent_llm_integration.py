@@ -57,7 +57,7 @@ class TestAgentLLMIntegration:
         agent = ToolCallAgent(
             name="test_agent",
             llm=mock_chatbot_manager,
-            available_tools=tool_manager
+            available_tools=tool_manager,
         )
         
         # Test agent run
@@ -105,6 +105,31 @@ class TestAgentLLMIntegration:
 
         assert mock_chatbot_manager.ask_tool.await_args.kwargs["thinking"] is True
         assert mock_chatbot_manager.ask_tool.await_args.kwargs["reasoning_effort"] == "high"
+
+    @pytest.mark.asyncio
+    async def test_toolcall_agent_treats_openai_responses_completed_as_terminal(
+        self,
+        mock_chatbot_manager,
+        tool_manager,
+    ):
+        mock_chatbot_manager.ask_tool.return_value = LLMResponse(
+            content="Done.",
+            tool_calls=[],
+            finish_reason="stop",
+            native_finish_reason="completed",
+        )
+
+        agent = ToolCallAgent(
+            name="test_agent",
+            llm=mock_chatbot_manager,
+            available_tools=tool_manager,
+            max_steps=3,
+        )
+
+        result = await agent.run("Test request")
+
+        assert result == "Done."
+        assert mock_chatbot_manager.ask_tool.await_count == 1
 
     @pytest.mark.asyncio
     async def test_toolcall_agent_omits_disabled_thinking_flag_for_llm(self, mock_chatbot_manager, tool_manager):
@@ -170,6 +195,7 @@ class TestAgentLLMIntegration:
             native_finish_reason="tool_calls"
         )
         mock_chatbot_manager.ask_tool.return_value = mock_response
+        mock_chatbot_manager.ask.return_value = "Tool executed successfully"
         
         # Mock tool execution
         tool_manager.execute = AsyncMock(return_value="Tool executed successfully")
@@ -179,7 +205,8 @@ class TestAgentLLMIntegration:
         agent = ToolCallAgent(
             name="test_agent",
             llm=mock_chatbot_manager,
-            available_tools=tool_manager
+            available_tools=tool_manager,
+            max_steps=1,
         )
         
         # Test agent run
@@ -191,6 +218,40 @@ class TestAgentLLMIntegration:
             tool_input={"param": "value"}
         )
         assert "Tool executed successfully" in result
+
+    @pytest.mark.asyncio
+    async def test_toolcall_agent_streams_text_with_tool_calls_as_thinking(self, mock_chatbot_manager, tool_manager):
+        mock_tool_call = ToolCall(
+            id="call_123",
+            type="function",
+            function=Function(
+                name="test_tool",
+                arguments='{"param": "value"}',
+            ),
+        )
+        mock_chatbot_manager.ask_tool.return_value = LLMResponse(
+            content="Need to inspect the file first.",
+            tool_calls=[mock_tool_call],
+            finish_reason="tool_calls",
+            native_finish_reason="tool_calls",
+        )
+
+        agent = ToolCallAgent(
+            name="test_agent",
+            llm=mock_chatbot_manager,
+            available_tools=tool_manager,
+        )
+        await agent.add_message("user", "Use a tool")
+
+        should_act = await agent.think()
+
+        assert should_act is True
+        pre_tool_event = agent.output_queue.get_nowait()
+        assert pre_tool_event["type"] == "thinking"
+        assert pre_tool_event["delta"] == "Need to inspect the file first."
+        assert pre_tool_event["metadata"]["phase"] == "pre_tool"
+        tool_event = agent.output_queue.get_nowait()
+        assert tool_event["tool_calls"] == [mock_tool_call]
 
     @pytest.mark.asyncio
     async def test_toolcall_agent_preserves_tool_call_metadata_in_memory(self, mock_chatbot_manager, tool_manager):
@@ -240,20 +301,14 @@ class TestAgentLLMIntegration:
         assert "reasoning_effort" in inspect.signature(SpoonReactSkill.run).parameters
     
     @pytest.mark.asyncio
-    async def test_spoon_react_ai_fallback_to_legacy(self):
-        """Test SpoonReactAI fallback to legacy mode on initialization failure."""
-        with patch('spoon_ai.agents.spoon_react.create_configured_chatbot') as mock_create:
-            # First call fails (new architecture), second succeeds (legacy)
-            mock_create.side_effect = [
-                Exception("LLM manager initialization failed"),
-                Mock(spec=ChatBot, use_llm_manager=False)
-            ]
-            
-            # This should not raise an exception due to fallback
-            agent = SpoonReactAI(name="spoon_agent")
-            
-            # Verify it fell back to legacy mode
-            assert agent.llm.use_llm_manager is False
+    async def test_spoon_react_ai_accepts_legacy_llm_instance(self):
+        """Test SpoonReactAI can still be constructed with a legacy ChatBot."""
+        mock_chatbot = Mock(spec=ChatBot)
+        mock_chatbot.use_llm_manager = False
+
+        agent = SpoonReactAI(name="spoon_agent", llm=mock_chatbot)
+
+        assert agent.llm.use_llm_manager is False
     
     @pytest.mark.asyncio
     async def test_agent_backward_compatibility(self, mock_chatbot_legacy, tool_manager):
@@ -357,7 +412,7 @@ class TestAgentLLMIntegration:
         assert all(call.args != ({"content": "already streamed full text"},) for call in put_calls)
 
     @pytest.mark.asyncio
-    async def test_toolcall_agent_emits_progress_content_for_non_streamed_pre_tool_content(self, mock_chatbot_manager, tool_manager):
+    async def test_toolcall_agent_emits_thinking_for_non_streamed_pre_tool_content(self, mock_chatbot_manager, tool_manager):
         mock_tool_call = ToolCall(
             id="call_123",
             type="function",
@@ -390,11 +445,11 @@ class TestAgentLLMIntegration:
         assert should_continue is True
         put_calls = mock_queue.put_nowait.call_args_list
         assert put_calls[0].args[0] == {
-            "type": "content",
+            "type": "thinking",
             "delta": "First I will inspect the workspace.",
             "content": "First I will inspect the workspace.",
             "metadata": {
-                "phase": "progress",
+                "phase": "pre_tool",
                 "source": "toolcall_agent",
             },
         }
@@ -539,15 +594,15 @@ class TestAgentLLMIntegration:
     def test_agent_configuration_compatibility(self):
         """Test that agent configuration works with both architectures."""
         # Test with manager architecture
-        with patch('spoon_ai.agents.spoon_react.create_configured_chatbot') as mock_create:
-            mock_chatbot = Mock(spec=ChatBot)
-            mock_chatbot.use_llm_manager = True
-            mock_create.return_value = mock_chatbot
-            
+        mock_chatbot = Mock(spec=ChatBot)
+        mock_chatbot.use_llm_manager = True
+
+        with patch('spoon_ai.agents.spoon_react.create_configured_chatbot'):
             agent_manager = SpoonReactAI(
                 name="manager_agent",
                 max_steps=5,
-                system_prompt="Custom system prompt"
+                system_prompt="Custom system prompt",
+                llm=mock_chatbot,
             )
             
             assert agent_manager.max_steps == 5
@@ -555,15 +610,15 @@ class TestAgentLLMIntegration:
             assert agent_manager.llm.use_llm_manager is True
         
         # Test with legacy architecture
-        with patch('spoon_ai.agents.spoon_react.create_configured_chatbot') as mock_create:
-            mock_chatbot = Mock(spec=ChatBot)
-            mock_chatbot.use_llm_manager = False
-            mock_create.return_value = mock_chatbot
-            
+        mock_chatbot = Mock(spec=ChatBot)
+        mock_chatbot.use_llm_manager = False
+
+        with patch('spoon_ai.agents.spoon_react.create_configured_chatbot'):
             agent_legacy = SpoonReactAI(
                 name="legacy_agent",
                 max_steps=3,
-                system_prompt="Legacy system prompt"
+                system_prompt="Legacy system prompt",
+                llm=mock_chatbot,
             )
             
             assert agent_legacy.max_steps == 3
@@ -580,19 +635,19 @@ class TestAgentMigrationCompatibility:
         # This test ensures that existing agent implementations
         # continue to work without any code changes
         
-        with patch('spoon_ai.agents.spoon_react.create_configured_chatbot') as mock_create:
-            mock_chatbot = Mock(spec=ChatBot)
-            mock_chatbot.use_llm_manager = True
-            mock_chatbot.ask_tool = AsyncMock(return_value=LLMResponse(
-                content="Compatibility test",
-                tool_calls=[],
-                finish_reason="stop",
-                native_finish_reason="stop"
-            ))
-            mock_create.return_value = mock_chatbot
+        mock_chatbot = Mock(spec=ChatBot)
+        mock_chatbot.use_llm_manager = True
+        mock_chatbot.ask_tool = AsyncMock(return_value=LLMResponse(
+            content="Compatibility test",
+            tool_calls=[],
+            finish_reason="stop",
+            native_finish_reason="stop"
+        ))
+
+        with patch('spoon_ai.agents.spoon_react.create_configured_chatbot'):
             
             # Create agent using existing pattern
-            agent = SpoonReactAI(name="compat_agent")
+            agent = SpoonReactAI(name="compat_agent", llm=mock_chatbot)
             
             # Run using existing pattern
             result = await agent.run("Test compatibility")
