@@ -536,9 +536,9 @@ result = await compiled.invoke({"counter": 0, "completed": False})
 # Result: {"counter": 1, "completed": True}
 ```
 
-📖 **[Complete Graph System Guide](doc/graph_agent.md)**
+🎯 **[RAG Graph Agent Demo](examples/rag_graph_agent_demo.py)**
 
-🎯 **[Comprehensive Demo](examples/llm_integrated_graph_demo.py)**
+🎯 **[Intent Graph Demo](examples/intent_graph_demo.py)**
 
 ## 🧩 Build Your Own Agent
 
