@@ -59,6 +59,9 @@ class OpenAIProvider(OpenAICompatibleProvider):
         tools: List[Dict[str, Any]] | None,
         kwargs: Dict[str, Any],
     ) -> bool:
+        base_url = str(self.config.get("base_url") or self.get_default_base_url() or "").lower().rstrip("/")
+        if "api.openai.com" not in base_url:
+            return False
         if not (kwargs.get("thinking") or kwargs.get("reasoning_effort")):
             return False
         try:
