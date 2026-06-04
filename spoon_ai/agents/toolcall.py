@@ -53,6 +53,7 @@ class ToolCallAgent(ReActAgent):
     # Track last tool error for higher-level fallbacks
     last_tool_error: Optional[str] = Field(default=None, exclude=True)
     last_reasoning_summary: Optional[str] = Field(default=None, exclude=True)
+    max_tool_calls_per_response: Optional[int] = Field(default=None, exclude=True)
 
     # Reduced default timeout as per user request (blockchain operations will focus on submission)
     _default_timeout: float = 120.0
@@ -127,6 +128,8 @@ class ToolCallAgent(ReActAgent):
     ) -> bool:
         self.last_reasoning_summary = None
         last_role = getattr(self.memory.messages[-1], "role", None) if self.memory.messages else None
+        if hasattr(last_role, "value"):
+            last_role = last_role.value
         if self.next_step_prompt and last_role != "user":
             await self.add_message("user", self.next_step_prompt)
 
@@ -230,6 +233,7 @@ class ToolCallAgent(ReActAgent):
             self.tool_calls = []
             return False
 
+        self._apply_tool_call_response_limit(response)
         self.tool_calls = response.tool_calls
         response_metadata = getattr(response, "metadata", {}) or {}
         if isinstance(response_metadata, dict):
@@ -297,6 +301,121 @@ class ToolCallAgent(ReActAgent):
             logger.error(traceback.format_exc())
             await self.add_message("assistant", f"Error encountered while thinking: {e}")
             return False
+
+    def _apply_tool_call_response_limit(self, response: Any) -> int:
+        """Limit unsafe tool batches while preserving safe read-only batches.
+
+        Some providers return multiple tool calls in one response even when the
+        runtime needs one state-changing result before the model decides the
+        next action. Pure read-only batches can execute together because they do
+        not change shared state. Batches containing setup/stateful/unknown tools
+        are trimmed to the configured limit so the next model turn sees real
+        evidence before choosing another side effect.
+        """
+        raw_limit = getattr(self, "max_tool_calls_per_response", None)
+        if raw_limit is None:
+            return 0
+        try:
+            limit = int(raw_limit)
+        except (TypeError, ValueError):
+            return 0
+        if limit < 1:
+            return 0
+
+        tool_calls = getattr(response, "tool_calls", None)
+        if not isinstance(tool_calls, list) or len(tool_calls) <= limit:
+            return 0
+        if self._tool_call_batch_is_parallel_safe(tool_calls):
+            metadata = getattr(response, "metadata", None)
+            if isinstance(metadata, dict):
+                metadata["tool_call_response_policy"] = "parallel_safe_read_only"
+            return 0
+
+        dropped = len(tool_calls) - limit
+        response.tool_calls = tool_calls[:limit]
+
+        metadata = getattr(response, "metadata", None)
+        if isinstance(metadata, dict):
+            metadata["tool_call_response_limit"] = limit
+            metadata["dropped_tool_calls"] = dropped
+            metadata["tool_call_response_policy"] = "deferred_unsafe_batch"
+        logger.info(
+            f"{self.name} limited model tool calls to {limit}; "
+            f"deferred {dropped} call(s) to later model turns"
+        )
+        return dropped
+
+    @staticmethod
+    def _normalize_tool_invocation_category(category: Any) -> str:
+        value = str(category or "").strip().casefold().replace("-", "_")
+        if value in {"read", "readonly", "read_only", "inspection", "inspect"}:
+            return "read_only"
+        if value in {"setup", "preparatory", "preparation"}:
+            return "setup"
+        if value in {"write", "mutation", "stateful", "progress", "side_effect"}:
+            return "stateful"
+        return ""
+
+    @staticmethod
+    def _tool_call_arguments_dict(tool_call: ToolCall) -> dict[str, Any]:
+        function = getattr(tool_call, "function", None)
+        if function is None:
+            return {}
+        getter = getattr(function, "get_arguments_dict", None)
+        if callable(getter):
+            try:
+                parsed = getter()
+                return parsed if isinstance(parsed, dict) else {}
+            except Exception:
+                return {}
+        raw = getattr(function, "arguments", None)
+        if isinstance(raw, dict):
+            return raw
+        if isinstance(raw, str):
+            try:
+                parsed = json.loads(raw) if raw.strip() else {}
+                return parsed if isinstance(parsed, dict) else {}
+            except Exception:
+                return {}
+        return {}
+
+    def _tool_call_invocation_category(self, tool_call: ToolCall) -> str:
+        function = getattr(tool_call, "function", None)
+        tool_name = str(getattr(function, "name", "") or "").strip()
+        if not tool_name:
+            return ""
+        tool_map = getattr(getattr(self, "available_tools", None), "tool_map", None)
+        tool = tool_map.get(tool_name) if isinstance(tool_map, dict) else None
+        if tool is None:
+            return ""
+        arguments = self._tool_call_arguments_dict(tool_call)
+
+        category_getter = getattr(tool, "runtime_invocation_category", None)
+        if callable(category_getter):
+            try:
+                category = self._normalize_tool_invocation_category(
+                    category_getter(arguments)
+                )
+                if category:
+                    return category
+            except Exception:
+                return ""
+
+        category = getattr(tool, "invocation_category", None)
+        if callable(category):
+            try:
+                return self._normalize_tool_invocation_category(category(arguments))
+            except Exception:
+                return ""
+        return self._normalize_tool_invocation_category(category)
+
+    def _tool_call_batch_is_parallel_safe(self, tool_calls: list[ToolCall]) -> bool:
+        if len(tool_calls) <= 1:
+            return False
+        for tool_call in tool_calls:
+            if self._tool_call_invocation_category(tool_call) != "read_only":
+                return False
+        return True
 
     async def run(
         self,
