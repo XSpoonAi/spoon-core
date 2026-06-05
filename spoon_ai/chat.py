@@ -1,6 +1,7 @@
 from logging import getLogger
 from typing import List, Optional, Union, Dict, Any, Tuple, AsyncIterator, Iterator
 import asyncio
+import os
 from datetime import datetime
 from uuid import uuid4
 
@@ -30,13 +31,34 @@ from spoon_ai.runnables import RunLogPatch, log_patches_from_events
 logger = getLogger(__name__)
 
 
+def _short_term_memory_max_tokens_default() -> int:
+    for env_name in (
+        "SPOON_AI_SHORT_TERM_MAX_TOKENS",
+        "SPOON_BOT_CONTEXT_WINDOW",
+        "SPOON_CONTEXT_WINDOW",
+        "CONTEXT_WINDOW",
+    ):
+        raw_value = os.getenv(env_name)
+        if not raw_value:
+            continue
+        try:
+            value = int(raw_value)
+        except ValueError:
+            logger.warning("Ignoring invalid %s=%r for short-term memory", env_name, raw_value)
+            continue
+        if value > 0:
+            return value
+        logger.warning("Ignoring non-positive %s=%r for short-term memory", env_name, raw_value)
+    return 1_000_000
+
+
 class ShortTermMemoryConfig(BaseModel):
     """Configuration for short-term memory management."""
     
     enabled: bool = True
     """Enable automatic short-term memory management."""
     
-    max_tokens: int = 8000
+    max_tokens: int = Field(default_factory=_short_term_memory_max_tokens_default)
     """Maximum token count before triggering trimming/summarization."""
     
     strategy: str = "summarize"  # "summarize" or "trim"
