@@ -34,6 +34,20 @@ PLACEHOLDER_REGEXES = [
     re.compile(r"^sk[-_a-z0-9]*your[-_a-z0-9]*$"),
 ]
 
+CYPHER_PROXY_TRUTHY = {"1", "true", "yes", "on"}
+
+
+def _cypher_llm_proxy_enabled() -> bool:
+    return os.getenv("CYPHER_LLM_PROXY_ENABLED", "").strip().lower() in CYPHER_PROXY_TRUTHY
+
+
+def _first_non_empty_env(*names: str) -> str | None:
+    for name in names:
+        value = os.getenv(name)
+        if value and value.strip():
+            return value.strip()
+    return None
+
 
 @dataclass
 class ProviderConfig:
@@ -244,6 +258,30 @@ class ConfigurationManager:
             else:
                 config[config_key] = env_value.strip()
 
+        if provider_name == 'openrouter':
+            if 'base_url' not in config:
+                proxy_base_url = _first_non_empty_env(
+                    'SPOON_BOT_DEFAULT_BASE_URL',
+                    'CYPHER_LLM_PROXY_BASE_URL',
+                )
+                if proxy_base_url:
+                    if self._is_placeholder_value(proxy_base_url):
+                        raise ConfigurationError(
+                            "SPOON_BOT_DEFAULT_BASE_URL is set to a placeholder value. "
+                            "Please provide a valid proxy URL.",
+                            config_key=provider_name,
+                        )
+                    config['base_url'] = proxy_base_url
+                    logger.info("Using Cypher proxy base URL for openrouter: %s", proxy_base_url)
+
+            if _cypher_llm_proxy_enabled():
+                proxy_token = _first_non_empty_env(
+                    'CYPHER_LLM_PROXY_TOKEN',
+                    'SPOON_BOT_LLM_PROXY_TOKEN',
+                )
+                if proxy_token and not self._is_placeholder_value(proxy_token):
+                    config['api_key'] = proxy_token
+                    logger.info("Using Cypher LLM proxy token for openrouter")
         # 2.1. Fallback to generic environment variables for backward compatibility
         if 'base_url' not in config:
             generic_base_url = os.getenv('BASE_URL')
@@ -402,12 +440,17 @@ class ConfigurationManager:
                     return provider
 
         # 2. Check environment variable for explicit preference
-        env_provider = os.getenv("LLM_PROVIDER") or os.getenv("DEFAULT_LLM_PROVIDER")
+        env_provider = _first_non_empty_env(
+            "LLM_PROVIDER",
+            "DEFAULT_LLM_PROVIDER",
+            "SPOON_BOT_DEFAULT_PROVIDER",
+            "SPOON_PROVIDER",
+        )
         if env_provider:
             normalized = env_provider.strip().lower()
             if normalized:
                 logger.info(
-                    "Using provider from environment (LLM_PROVIDER/DEFAULT_LLM_PROVIDER): %s",
+                    "Using provider from environment: %s",
                     normalized,
                 )
                 return normalized
@@ -541,6 +584,12 @@ class ConfigurationManager:
             if self._is_placeholder_value(env_value):
                 continue
             candidates.add(provider)
+
+        if _cypher_llm_proxy_enabled() and _first_non_empty_env(
+            'CYPHER_LLM_PROXY_TOKEN',
+            'SPOON_BOT_LLM_PROXY_TOKEN',
+        ):
+            candidates.add('openrouter')
 
         # Only consider a provider "configured" if it can supply a valid api_key
         # after applying the full resolution logic (config cache -> env -> defaults).
