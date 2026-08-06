@@ -112,12 +112,22 @@ async def test_tool_events_are_bounded_and_sensitive_values_redacted():
         ),
         tool_handler,
     )
+    runtime.messages.append(
+        Message(role="tool", content="raw Spoon tool result", tool_call_id="call-1")
+    )
     middleware.after_agent({}, runtime)
 
-    captured = client.sessions["session-1"].messages[-1]["content"]
-    assert "secret-value" not in captured
-    assert "[REDACTED]" in captured
-    assert len(captured) <= 200
+    messages = client.sessions["session-1"].messages
+    assert all(message["role"] in {"user", "assistant"} for message in messages)
+    captured_message = messages[-1]
+    captured = captured_message["parts"][0]
+    assert captured_message["role"] == "assistant"
+    assert captured["type"] == "tool"
+    assert captured["tool_id"] == "call-1"
+    assert captured["tool_status"] == "completed"
+    assert "secret-value" not in str(captured["tool_input"])
+    assert captured["tool_input"]["api_key"] == "[REDACTED]"
+    assert len(captured["tool_output"]) <= 200
 
 
 @pytest.mark.asyncio

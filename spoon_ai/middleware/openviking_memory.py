@@ -37,7 +37,7 @@ class _RunCapture:
     session_id: str
     message_start: int
     recalled_context: str = ""
-    tool_events: list[dict[str, str]] = field(default_factory=list)
+    tool_events: list[dict[str, Any]] = field(default_factory=list)
 
 
 class OpenVikingMemoryMiddleware(AgentMiddleware):
@@ -205,18 +205,15 @@ class OpenVikingMemoryMiddleware(AgentMiddleware):
         if self.capture_tool_events and request.runtime:
             capture = self._captures.get(self._capture_key(request.runtime))
             if capture:
-                payload = {
-                    "tool": request.tool_name,
-                    "arguments": self._sanitize(request.arguments),
-                    "success": result.success,
-                    "output": result.output if result.success else result.error,
-                }
+                output = result.output if result.success else result.error
                 capture.tool_events.append(
                     {
-                        "role": "tool",
-                        "content": json.dumps(payload, ensure_ascii=False, default=str)[
-                            : self.max_event_chars
-                        ],
+                        "type": "tool",
+                        "tool_id": request.tool_call_id,
+                        "tool_name": request.tool_name,
+                        "tool_input": self._sanitize(request.arguments),
+                        "tool_output": str(output or "")[: self.max_event_chars],
+                        "tool_status": "completed" if result.success else "error",
                     }
                 )
         return result
@@ -230,15 +227,36 @@ class OpenVikingMemoryMiddleware(AgentMiddleware):
         try:
             messages = []
             for message in runtime.messages[capture.message_start :]:
+                role = getattr(message.role, "value", message.role)
+                # OpenViking accepts only user/assistant message roles. Spoon
+                # tool messages are represented by the ToolParts captured by
+                # awrap_tool_call instead of being copied verbatim here.
+                if role not in {"user", "assistant"}:
+                    continue
                 content = message.text_content[: self.max_event_chars]
                 if content:
                     messages.append(
                         {
-                            "role": getattr(message.role, "value", message.role),
+                            "role": role,
                             "content": content,
                         }
                     )
-            messages.extend(capture.tool_events)
+            if capture.tool_events:
+                assistant = next(
+                    (
+                        message
+                        for message in reversed(messages)
+                        if message["role"] == "assistant"
+                    ),
+                    None,
+                )
+                if assistant is None:
+                    assistant = {"role": "assistant", "parts": []}
+                    messages.append(assistant)
+                else:
+                    content = assistant.pop("content")
+                    assistant["parts"] = [{"type": "text", "text": content}]
+                assistant["parts"].extend(capture.tool_events)
             session = self.client.session(capture.session_id)
             if messages:
                 session.batch_add_messages(messages)
