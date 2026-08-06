@@ -83,6 +83,9 @@ dependencies = [ # Complete dependencies from requirements.txt for out-of-the-bo
 memory = [
     "mem0ai>=0.0.1",
 ]
+openviking = [
+    "openviking-sdk>=0.1.6,<0.2",
+]
 
 [project.urls]
 "Homepage" = "https://github.com/XSpoonAi/spoon-core" # Project URL

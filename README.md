@@ -147,6 +147,40 @@ from dotenv import load_dotenv
 load_dotenv(override=True)
 ```
 
+### Optional OpenViking agent memory
+
+OpenViking can be attached as middleware to recall long-term context before an
+agent run and commit messages and bounded tool activity after it. It does not
+replace SpoonOS graph state, checkpoints, interrupts, authorization, or Mem0.
+
+```bash
+pip install -e '.[openviking]'
+
+# Local server
+export OPENVIKING_URL=http://localhost:1933
+
+# Remote server (add the key supplied by the server operator)
+export OPENVIKING_URL=https://memory.example.com
+export OPENVIKING_API_KEY=your-api-key
+```
+
+```python
+from spoon_ai.agents import SpoonReactAI
+from spoon_ai.middleware import OpenVikingMemoryMiddleware
+
+memory = OpenVikingMemoryMiddleware(
+    session_id="stable-conversation-id",
+    user="alice",
+    actor_peer_id="research-agent",
+)
+
+agent = SpoonReactAI(..., middleware=[memory])
+```
+
+See `examples/openviking_memory_middleware_demo.py` for a complete runnable
+example. OpenViking is disabled unless this middleware is explicitly added, and
+service failures do not block the agent run.
+
 ## 🪙 x402 Payments
 
 SpoonOS now ships with a first-class x402 integration, letting agents pay for external services and expose their own paywalled endpoints.

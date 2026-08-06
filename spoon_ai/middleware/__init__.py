@@ -95,6 +95,11 @@ from .planning import (
     PlanStep,
 )
 
+from .openviking_memory import (
+    OpenVikingMemoryMiddleware,
+    create_openviking_memory_middleware,
+)
+
 __all__ = [
     # Core classes
     "AgentMiddleware",
@@ -162,4 +167,8 @@ __all__ = [
     "create_planning_middleware",
     "Plan",
     "PlanStep",
+
+    # OpenViking memory
+    "OpenVikingMemoryMiddleware",
+    "create_openviking_memory_middleware",
 ]
