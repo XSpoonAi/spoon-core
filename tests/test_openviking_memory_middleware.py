@@ -1,6 +1,8 @@
 from __future__ import annotations
 
+import asyncio
 import sys
+import time
 from types import SimpleNamespace
 from uuid import uuid4
 
@@ -18,20 +20,25 @@ from spoon_ai.schema import Message
 
 
 class FakeSession:
-    def __init__(self) -> None:
+    def __init__(self, *, fail_commit=False) -> None:
         self.messages = []
         self.commits = 0
+        self.fail_commit = fail_commit
 
     def batch_add_messages(self, messages):
         self.messages.extend(messages)
 
     def commit(self):
+        if self.fail_commit:
+            raise RuntimeError("commit failed")
         self.commits += 1
 
 
 class FakeClient:
-    def __init__(self, *, fail=False) -> None:
+    def __init__(self, *, fail=False, fail_commit=False, search_result=None) -> None:
         self.fail = fail
+        self.fail_commit = fail_commit
+        self.search_result = search_result
         self.initialized = False
         self.searches = []
         self.sessions = {}
@@ -42,15 +49,19 @@ class FakeClient:
         self.initialized = True
 
     def get_session(self, session_id, *, auto_create=False):
-        self.sessions.setdefault(session_id, FakeSession())
+        self.sessions.setdefault(session_id, FakeSession(fail_commit=self.fail_commit))
         return {"session_id": session_id}
 
     def search(self, **kwargs):
         self.searches.append(kwargs)
-        return {"memories": [{"abstract": "User prefers concise answers"}]}
+        return self.search_result or {
+            "memories": [{"abstract": "User prefers concise answers"}]
+        }
 
     def session(self, session_id):
-        return self.sessions.setdefault(session_id, FakeSession())
+        return self.sessions.setdefault(
+            session_id, FakeSession(fail_commit=self.fail_commit)
+        )
 
     def close(self):
         self.initialized = False
@@ -75,6 +86,7 @@ async def test_recall_is_injected_and_run_is_committed():
     middleware.before_agent({}, runtime)
 
     async def model_handler(request):
+        assert request.system_prompt.startswith("Be helpful\n\n")
         assert "User prefers concise answers" in request.system_prompt
         assert "potentially stale background" in request.system_prompt
         return ModelResponse(content="Concise answers.")
@@ -84,6 +96,7 @@ async def test_recall_is_injected_and_run_is_committed():
     )
     runtime.messages.append(Message(role="assistant", content="Concise answers."))
     middleware.after_agent({}, runtime)
+    middleware.close()
 
     session = client.sessions["session-1"]
     assert client.searches[0]["session_id"] == "session-1"
@@ -95,18 +108,24 @@ async def test_recall_is_injected_and_run_is_committed():
 async def test_tool_events_are_bounded_and_sensitive_values_redacted():
     client = FakeClient()
     middleware = OpenVikingMemoryMiddleware(
-        client=client, session_id="session-1", max_event_chars=200
+        client=client, session_id="session-1", max_event_chars=120
     )
     runtime = make_runtime([Message(role="user", content="Call it")])
     middleware.before_agent({}, runtime)
 
     async def tool_handler(request):
-        return ToolCallResult(output="done")
+        return ToolCallResult(
+            output="token=output-secret refresh_token=second-secret " + "y" * 200
+        )
 
     await middleware.awrap_tool_call(
         ToolCallRequest(
             tool_name="service",
-            arguments={"api_key": "secret-value", "query": "safe"},
+            arguments={
+                "api_key": "secret-value",
+                "nested": {"accessToken": "nested-secret"},
+                "query": "token=input-secret " + "x" * 200,
+            },
             tool_call_id="call-1",
             runtime=runtime,
         ),
@@ -116,18 +135,21 @@ async def test_tool_events_are_bounded_and_sensitive_values_redacted():
         Message(role="tool", content="raw Spoon tool result", tool_call_id="call-1")
     )
     middleware.after_agent({}, runtime)
+    middleware.close()
 
     messages = client.sessions["session-1"].messages
     assert all(message["role"] in {"user", "assistant"} for message in messages)
-    captured_message = messages[-1]
-    captured = captured_message["parts"][0]
-    assert captured_message["role"] == "assistant"
+    captured = messages[-1]["parts"][0]
     assert captured["type"] == "tool"
     assert captured["tool_id"] == "call-1"
     assert captured["tool_status"] == "completed"
     assert "secret-value" not in str(captured["tool_input"])
-    assert captured["tool_input"]["api_key"] == "[REDACTED]"
-    assert len(captured["tool_output"]) <= 200
+    assert "nested-secret" not in str(captured["tool_input"])
+    assert "input-secret" not in str(captured["tool_input"])
+    assert "output-secret" not in captured["tool_output"]
+    assert "second-secret" not in captured["tool_output"]
+    assert len(str(captured["tool_input"])) <= 122
+    assert len(captured["tool_output"]) <= 120
 
 
 @pytest.mark.asyncio
@@ -143,6 +165,7 @@ async def test_openviking_failure_does_not_stop_agent():
     response = await middleware.awrap_model_call(ModelRequest(runtime=runtime), handler)
     assert response.content == "still running"
     assert middleware.after_agent({}, runtime) is None
+    middleware.close()
 
 
 def test_identity_configuration_is_forwarded_to_sdk(monkeypatch):
@@ -155,7 +178,7 @@ def test_identity_configuration_is_forwarded_to_sdk(monkeypatch):
     monkeypatch.setitem(
         sys.modules, "openviking_sdk", SimpleNamespace(SyncHTTPClient=Client)
     )
-    OpenVikingMemoryMiddleware(
+    middleware = OpenVikingMemoryMiddleware(
         url="https://memory.example",
         api_key="key",
         account="team",
@@ -169,7 +192,9 @@ def test_identity_configuration_is_forwarded_to_sdk(monkeypatch):
         "account": "team",
         "user": "alice",
         "actor_peer_id": "research-agent",
+        "timeout": 5.0,
     }
+    middleware.close()
 
 
 def test_recall_and_commit_can_be_disabled():
@@ -184,6 +209,142 @@ def test_recall_and_commit_can_be_disabled():
 
     middleware.before_agent({}, runtime)
     middleware.after_agent({}, runtime)
+    middleware.close()
 
     assert client.searches == []
     assert client.sessions["session-1"].commits == 0
+
+
+@pytest.mark.asyncio
+async def test_recall_keeps_memories_and_resources_with_context_limit():
+    client = FakeClient(
+        search_result={
+            "memories": [{"abstract": "remembered"}],
+            "resources": [{"abstract": "resource"}],
+        }
+    )
+    middleware = OpenVikingMemoryMiddleware(
+        client=client, session_id="session-1", max_context_chars=100
+    )
+    runtime = make_runtime([Message(role="user", content="Recall both")])
+    middleware.before_agent({}, runtime)
+
+    async def handler(request):
+        assert "remembered" in request.system_prompt
+        assert "resource" in request.system_prompt
+        return ModelResponse(content="ok")
+
+    await middleware.awrap_model_call(ModelRequest(runtime=runtime), handler)
+    assert len(middleware._render_recall(client.search_result)) == 100
+    middleware.close()
+
+
+@pytest.mark.asyncio
+async def test_message_trimming_does_not_drop_current_request():
+    client = FakeClient()
+    middleware = OpenVikingMemoryMiddleware(client=client, session_id="session-1")
+    current_request = Message(role="user", content="current request")
+    runtime = make_runtime(
+        [Message(role="assistant", content=f"old-{index}") for index in range(99)]
+        + [current_request]
+    )
+    middleware.before_agent({}, runtime)
+
+    runtime.messages.pop(0)
+    runtime.messages.append(Message(role="assistant", content="middle reply"))
+    runtime.messages.pop(0)
+    runtime.messages.append(Message(role="assistant", content="final"))
+    middleware.after_agent({}, runtime)
+    middleware.close()
+
+    assert client.sessions["session-1"].messages == [
+        {"role": "user", "content": "current request"},
+        {"role": "assistant", "content": "middle reply"},
+        {"role": "assistant", "content": "final"},
+    ]
+
+
+@pytest.mark.asyncio
+async def test_tool_events_preserve_message_order():
+    client = FakeClient()
+    middleware = OpenVikingMemoryMiddleware(client=client, session_id="session-1")
+    runtime = make_runtime([Message(role="user", content="run tools")])
+    middleware.before_agent({}, runtime)
+
+    async def run_tool(request):
+        return ToolCallResult(output=f"result-{request.tool_call_id}")
+
+    for index in (1, 2):
+        runtime.messages.append(Message(role="assistant", content=f"step-{index}"))
+        await middleware.awrap_tool_call(
+            ToolCallRequest(
+                tool_name="service",
+                arguments={"step": index},
+                tool_call_id=f"call-{index}",
+                runtime=runtime,
+            ),
+            run_tool,
+        )
+        runtime.messages.append(
+            Message(role="tool", content="raw", tool_call_id=f"call-{index}")
+        )
+    runtime.messages.append(Message(role="assistant", content="final"))
+    middleware.after_agent({}, runtime)
+    middleware.close()
+
+    messages = client.sessions["session-1"].messages
+    assert [message.get("content") for message in messages] == [
+        "run tools",
+        "step-1",
+        None,
+        "step-2",
+        None,
+        "final",
+    ]
+    assert messages[2]["parts"][0]["tool_id"] == "call-1"
+    assert messages[4]["parts"][0]["tool_id"] == "call-2"
+
+
+@pytest.mark.asyncio
+async def test_slow_provider_does_not_block_event_loop():
+    class SlowClient(FakeClient):
+        def search(self, **kwargs):
+            time.sleep(0.05)
+            return super().search(**kwargs)
+
+    middleware = OpenVikingMemoryMiddleware(
+        client=SlowClient(),
+        session_id="session-1",
+        provider_timeout_seconds=0.02,
+    )
+    runtime = make_runtime([Message(role="user", content="keep loop responsive")])
+    middleware.before_agent({}, runtime)
+    loop_advanced = False
+
+    async def handler(request):
+        return ModelResponse(content="ok")
+
+    async def tick():
+        nonlocal loop_advanced
+        await asyncio.sleep(0.01)
+        loop_advanced = True
+
+    await asyncio.gather(
+        middleware.awrap_model_call(ModelRequest(runtime=runtime), handler), tick()
+    )
+    assert loop_advanced
+    middleware.close()
+
+
+def test_commit_failure_is_fail_open(caplog):
+    client = FakeClient(fail_commit=True)
+    middleware = OpenVikingMemoryMiddleware(client=client, session_id="session-1")
+    runtime = make_runtime([Message(role="user", content="continue")])
+
+    middleware.before_agent({}, runtime)
+    runtime.messages.append(Message(role="assistant", content="done"))
+    assert middleware.after_agent({}, runtime) is None
+    middleware.close()
+
+    assert client.sessions["session-1"].messages
+    assert "capture unavailable" in caplog.text

@@ -172,6 +172,7 @@ memory = OpenVikingMemoryMiddleware(
     session_id="stable-conversation-id",
     user="alice",
     actor_peer_id="research-agent",
+    provider_timeout_seconds=5.0,
 )
 
 agent = SpoonReactAI(..., middleware=[memory])
