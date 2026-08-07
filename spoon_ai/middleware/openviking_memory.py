@@ -23,7 +23,6 @@ from spoon_ai.middleware.base import (
 logger = logging.getLogger(__name__)
 
 _SENSITIVE_KEYS = {
-    "api_key",
     "apikey",
     "authorization",
     "cookie",
@@ -76,6 +75,7 @@ class OpenVikingMemoryMiddleware(AgentMiddleware):
             raise ValueError("context and event limits must be positive")
         if provider_timeout_seconds <= 0:
             raise ValueError("provider_timeout_seconds must be positive")
+        self._owns_client = client is None
         if client is None:
             try:
                 from openviking_sdk import SyncHTTPClient
@@ -138,7 +138,9 @@ class OpenVikingMemoryMiddleware(AgentMiddleware):
             return ""
         if isinstance(result, dict):
             recalled = {
-                key: result[key] for key in ("memories", "resources") if result.get(key)
+                key: result[key]
+                for key in ("memories", "resources", "skills")
+                if result.get(key)
             }
             result = recalled or result
         try:
@@ -157,12 +159,26 @@ class OpenVikingMemoryMiddleware(AgentMiddleware):
 
     @staticmethod
     def _sanitize_text(value: str) -> str:
-        value = re.sub(r"(?i)\bBearer\s+[^\s,;]+", "Bearer [REDACTED]", value)
+        def redact(match: re.Match[str]) -> str:
+            original = match.group("value")
+            redacted = (
+                f"{original[0]}[REDACTED]{original[0]}"
+                if original[0] in {'"', "'"}
+                else "[REDACTED]"
+            )
+            return (
+                f"{match.group('quote')}{match.group('key')}{match.group('quote')}"
+                f"{match.group('separator')}{redacted}"
+            )
+
+        value = re.sub(r"(?i)\bBearer\s+[^\s,;\"'}\]}]+", "Bearer [REDACTED]", value)
         return re.sub(
-            r"(?i)\b([a-z0-9_-]*(?:api[-_]?key|authorization|cookie|credential|"
-            r"password|private[-_]?key|secret|token)[a-z0-9_-]*)\s*[:=]\s*"
-            r"(?:\"[^\"]*\"|'[^']*'|[^\s,;}\]]+)",
-            lambda match: f"{match.group(1)}=[REDACTED]",
+            r"(?i)(?P<quote>[\"']?)\b(?P<key>[a-z0-9_-]*"
+            r"(?:api[-_]?key|authorization|cookie|credential|password|"
+            r"private[-_]?key|secret|token)[a-z0-9_-]*)\b(?P=quote)"
+            r"(?P<separator>\s*[:=]\s*)"
+            r"(?P<value>\"[^\"]*\"|'[^']*'|[^\s,;}\]]+)",
+            redact,
             value,
         )
 
@@ -283,9 +299,9 @@ class OpenVikingMemoryMiddleware(AgentMiddleware):
             for index, message in enumerate(runtime.messages):
                 if getattr(message, "id", None) == start_id:
                     return runtime.messages[index:]
-        # The current request should normally survive trimming because it is the
-        # newest message at run start. If it did not, avoid uploading old history.
-        return []
+        # ChatMemory trims from the front, so once the anchor is gone all older
+        # history is gone too. Preserve the captured request and retained run tail.
+        return [start_message, *runtime.messages]
 
     def _commit_capture(self, capture: _RunCapture, run_messages: list[Any]) -> None:
         try:
@@ -335,11 +351,11 @@ class OpenVikingMemoryMiddleware(AgentMiddleware):
         return None
 
     def close(self) -> None:
-        """Close the owned OpenViking HTTP client."""
+        """Flush queued work and close an internally created OpenViking client."""
         self._executor.shutdown(wait=True)
-        if self._initialized:
+        if self._owns_client:
             self.client.close()
-            self._initialized = False
+        self._initialized = False
 
 
 def create_openviking_memory_middleware(**kwargs: Any) -> OpenVikingMemoryMiddleware:

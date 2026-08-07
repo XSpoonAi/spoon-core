@@ -178,6 +178,10 @@ memory = OpenVikingMemoryMiddleware(
 agent = SpoonReactAI(..., middleware=[memory])
 ```
 
+Call `memory.close()` during application shutdown to flush queued commits and
+release resources. A client passed through `client=` remains caller-owned and
+is not closed by the middleware.
+
 See `examples/openviking_memory_middleware_demo.py` for a complete runnable
 example. OpenViking is disabled unless this middleware is explicitly added, and
 service failures do not block the agent run.

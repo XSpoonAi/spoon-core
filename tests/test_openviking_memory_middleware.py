@@ -40,6 +40,7 @@ class FakeClient:
         self.fail_commit = fail_commit
         self.search_result = search_result
         self.initialized = False
+        self.closes = 0
         self.searches = []
         self.sessions = {}
 
@@ -64,6 +65,7 @@ class FakeClient:
         )
 
     def close(self):
+        self.closes += 1
         self.initialized = False
 
 
@@ -115,7 +117,11 @@ async def test_tool_events_are_bounded_and_sensitive_values_redacted():
 
     async def tool_handler(request):
         return ToolCallResult(
-            output="token=output-secret refresh_token=second-secret " + "y" * 200
+            output=(
+                '{"token":"json-secret","api_key":"api-secret"} '
+                "{'private_key': 'python-secret'} "
+                "token=output-secret refresh_token=second-secret " + "y" * 200
+            )
         )
 
     await middleware.awrap_tool_call(
@@ -148,6 +154,9 @@ async def test_tool_events_are_bounded_and_sensitive_values_redacted():
     assert "input-secret" not in str(captured["tool_input"])
     assert "output-secret" not in captured["tool_output"]
     assert "second-secret" not in captured["tool_output"]
+    assert "json-secret" not in captured["tool_output"]
+    assert "api-secret" not in captured["tool_output"]
+    assert "python-secret" not in captured["tool_output"]
     assert len(str(captured["tool_input"])) <= 122
     assert len(captured["tool_output"]) <= 120
 
@@ -175,6 +184,9 @@ def test_identity_configuration_is_forwarded_to_sdk(monkeypatch):
         def __init__(self, **kwargs):
             created.update(kwargs)
 
+        def close(self):
+            created["closed"] = True
+
     monkeypatch.setitem(
         sys.modules, "openviking_sdk", SimpleNamespace(SyncHTTPClient=Client)
     )
@@ -195,6 +207,17 @@ def test_identity_configuration_is_forwarded_to_sdk(monkeypatch):
         "timeout": 5.0,
     }
     middleware.close()
+    assert created["closed"] is True
+
+
+def test_close_does_not_close_injected_client():
+    client = FakeClient()
+    middleware = OpenVikingMemoryMiddleware(client=client)
+    middleware._ensure_initialized()
+
+    middleware.close()
+
+    assert client.closes == 0
 
 
 def test_recall_and_commit_can_be_disabled():
@@ -240,6 +263,29 @@ async def test_recall_keeps_memories_and_resources_with_context_limit():
 
 
 @pytest.mark.asyncio
+async def test_recall_keeps_skills_alongside_other_context():
+    client = FakeClient(
+        search_result={
+            "memories": [{"abstract": "remembered"}],
+            "resources": [{"abstract": "resource"}],
+            "skills": [{"abstract": "skill"}],
+        }
+    )
+    middleware = OpenVikingMemoryMiddleware(client=client, session_id="session-1")
+    runtime = make_runtime([Message(role="user", content="Recall everything")])
+    middleware.before_agent({}, runtime)
+
+    async def handler(request):
+        assert "remembered" in request.system_prompt
+        assert "resource" in request.system_prompt
+        assert "skill" in request.system_prompt
+        return ModelResponse(content="ok")
+
+    await middleware.awrap_model_call(ModelRequest(runtime=runtime), handler)
+    middleware.close()
+
+
+@pytest.mark.asyncio
 async def test_message_trimming_does_not_drop_current_request():
     client = FakeClient()
     middleware = OpenVikingMemoryMiddleware(client=client, session_id="session-1")
@@ -260,6 +306,24 @@ async def test_message_trimming_does_not_drop_current_request():
     assert client.sessions["session-1"].messages == [
         {"role": "user", "content": "current request"},
         {"role": "assistant", "content": "middle reply"},
+        {"role": "assistant", "content": "final"},
+    ]
+
+
+@pytest.mark.asyncio
+async def test_message_trimming_keeps_run_when_current_request_is_evicted():
+    client = FakeClient()
+    middleware = OpenVikingMemoryMiddleware(client=client, session_id="session-1")
+    current_request = Message(role="user", content="current request")
+    runtime = make_runtime([current_request])
+    middleware.before_agent({}, runtime)
+
+    runtime.messages[:] = [Message(role="assistant", content="final")]
+    middleware.after_agent({}, runtime)
+    middleware.close()
+
+    assert client.sessions["session-1"].messages == [
+        {"role": "user", "content": "current request"},
         {"role": "assistant", "content": "final"},
     ]
 
