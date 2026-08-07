@@ -22,16 +22,11 @@ from spoon_ai.middleware.base import (
 
 logger = logging.getLogger(__name__)
 
-_SENSITIVE_KEYS = {
-    "apikey",
-    "authorization",
-    "cookie",
-    "credential",
-    "password",
-    "private_key",
-    "secret",
-    "token",
-}
+_MAX_BATCH_MESSAGES = 100
+_SENSITIVE_KEY_PATTERN = (
+    r"(?:api[-_]?key|authorization|cookie|credential|password|"
+    r"private[-_]?key|secret|token)"
+)
 
 
 @dataclass
@@ -152,10 +147,7 @@ class OpenVikingMemoryMiddleware(AgentMiddleware):
     @staticmethod
     def _is_sensitive_key(key: Any) -> bool:
         normalized = re.sub(r"[^a-z0-9]", "", str(key).lower())
-        return any(
-            re.sub(r"[^a-z0-9]", "", sensitive) in normalized
-            for sensitive in _SENSITIVE_KEYS
-        )
+        return re.search(_SENSITIVE_KEY_PATTERN, normalized) is not None
 
     @staticmethod
     def _sanitize_text(value: str) -> str:
@@ -174,8 +166,8 @@ class OpenVikingMemoryMiddleware(AgentMiddleware):
         value = re.sub(r"(?i)\bBearer\s+[^\s,;\"'}\]}]+", "Bearer [REDACTED]", value)
         return re.sub(
             r"(?i)(?P<quote>[\"']?)\b(?P<key>[a-z0-9_-]*"
-            r"(?:api[-_]?key|authorization|cookie|credential|password|"
-            r"private[-_]?key|secret|token)[a-z0-9_-]*)\b(?P=quote)"
+            + _SENSITIVE_KEY_PATTERN
+            + r"[a-z0-9_-]*)\b(?P=quote)"
             r"(?P<separator>\s*[:=]\s*)"
             r"(?P<value>\"[^\"]*\"|'[^']*'|[^\s,;}\]]+)",
             redact,
@@ -201,7 +193,7 @@ class OpenVikingMemoryMiddleware(AgentMiddleware):
         rendered = json.dumps(sanitized, ensure_ascii=False, default=str)
         if len(rendered) <= self.max_event_chars:
             return sanitized
-        return rendered[: self.max_event_chars]
+        return {"truncated": True}
 
     def _recall(self, capture: _RunCapture, query: str) -> str:
         try:
@@ -331,8 +323,10 @@ class OpenVikingMemoryMiddleware(AgentMiddleware):
                 if event["tool_id"] not in emitted_tool_ids:
                     messages.append({"role": "assistant", "parts": [event]})
             session = self.client.session(capture.session_id)
-            if messages:
-                session.batch_add_messages(messages)
+            for start in range(0, len(messages), _MAX_BATCH_MESSAGES):
+                session.batch_add_messages(
+                    messages[start : start + _MAX_BATCH_MESSAGES]
+                )
             if self.auto_commit:
                 session.commit()
         except Exception as exc:  # noqa: BLE001 - memory must fail open

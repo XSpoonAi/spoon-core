@@ -22,10 +22,12 @@ from spoon_ai.schema import Message
 class FakeSession:
     def __init__(self, *, fail_commit=False) -> None:
         self.messages = []
+        self.batch_sizes = []
         self.commits = 0
         self.fail_commit = fail_commit
 
     def batch_add_messages(self, messages):
+        self.batch_sizes.append(len(messages))
         self.messages.extend(messages)
 
     def commit(self):
@@ -152,6 +154,7 @@ async def test_tool_events_are_bounded_and_sensitive_values_redacted():
     assert "secret-value" not in str(captured["tool_input"])
     assert "nested-secret" not in str(captured["tool_input"])
     assert "input-secret" not in str(captured["tool_input"])
+    assert captured["tool_input"] == {"truncated": True}
     assert "output-secret" not in captured["tool_output"]
     assert "second-secret" not in captured["tool_output"]
     assert "json-secret" not in captured["tool_output"]
@@ -326,6 +329,25 @@ async def test_message_trimming_keeps_run_when_current_request_is_evicted():
         {"role": "user", "content": "current request"},
         {"role": "assistant", "content": "final"},
     ]
+
+
+@pytest.mark.asyncio
+async def test_capture_respects_openviking_batch_limit():
+    client = FakeClient()
+    middleware = OpenVikingMemoryMiddleware(client=client, session_id="session-1")
+    current_request = Message(role="user", content="current request")
+    runtime = make_runtime([current_request])
+    middleware.before_agent({}, runtime)
+
+    runtime.messages[:] = [
+        Message(role="assistant", content=f"reply-{index}") for index in range(100)
+    ]
+    middleware.after_agent({}, runtime)
+    middleware.close()
+
+    session = client.sessions["session-1"]
+    assert len(session.messages) == 101
+    assert session.batch_sizes == [100, 1]
 
 
 @pytest.mark.asyncio
