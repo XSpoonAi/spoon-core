@@ -18,7 +18,14 @@ from spoon_ai.schema import (
     TextContent, ImageContent, ImageUrlContent, DocumentContent, FileContent, ContentBlock
 )
 from ..interface import LLMProviderInterface, LLMResponse, ProviderMetadata, ProviderCapability
-from ..errors import ProviderError, AuthenticationError, RateLimitError, ModelNotFoundError, NetworkError
+from ..errors import (
+    ProviderError,
+    AuthenticationError,
+    RateLimitError,
+    InsufficientCreditsError,
+    ModelNotFoundError,
+    NetworkError,
+)
 from ..message_utils import drop_orphaned_tool_messages
 from spoon_ai.callbacks.base import BaseCallbackHandler
 from spoon_ai.callbacks.manager import CallbackManager
@@ -1315,9 +1322,54 @@ class OpenAICompatibleProvider(LLMProviderInterface):
         error_str = str(error).lower()
         provider_name = self.get_provider_name()
 
+        # cypher_api's billing gate returns HTTP 402 with a structured
+        # insufficient_funds error. Check this before generic quota matching.
+        status_code = getattr(error, "status_code", None)
+        response = getattr(error, "response", None)
+        if not isinstance(status_code, int) and response is not None:
+            response_status = getattr(response, "status_code", None)
+            if isinstance(response_status, int):
+                status_code = response_status
+
+        body = getattr(error, "body", None)
+        error_payload = body.get("error", body) if isinstance(body, dict) else {}
+        if not isinstance(error_payload, dict):
+            error_payload = {}
+        error_code = str(error_payload.get("code") or "").strip().lower()
+        error_type = str(error_payload.get("type") or "").strip().lower()
+        insufficient_credit = (
+            status_code == 402
+            or (
+                status_code != 429
+                and (
+                    error_code in {"insufficient_funds", "insufficient_credit"}
+                    or error_type == "insufficient_quota"
+                    or "insufficient_funds" in error_str
+                )
+            )
+        )
+        if insufficient_credit:
+            raise InsufficientCreditsError(
+                provider_name,
+                status_code=status_code if isinstance(status_code, int) else 402,
+                error_code=error_code or "insufficient_funds",
+                context={
+                    "original_error": str(error),
+                    "status_code": status_code,
+                    "error_type": error_type,
+                    "error_code": error_code,
+                },
+            )
+
         if "authentication" in error_str or "api key" in error_str or "unauthorized" in error_str:
             raise AuthenticationError(provider_name, context={"original_error": str(error)})
-        elif "rate limit" in error_str or "quota" in error_str:
+        elif (
+            status_code == 429
+            or error_type == "rate_limit_error"
+            or error_code == "rate_limit_exceeded"
+            or "rate limit" in error_str
+            or "quota" in error_str
+        ):
             raise RateLimitError(provider_name, context={"original_error": str(error)})
         elif "model" in error_str and ("not found" in error_str or "not available" in error_str):
             raise ModelNotFoundError(provider_name, self.model, context={"original_error": str(error)})

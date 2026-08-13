@@ -65,6 +65,21 @@ class RateLimitError(ProviderError):
         super().__init__(provider, message, context=context)
 
 
+class InsufficientCreditsError(ProviderError):
+    """The account does not have enough credits to complete the request."""
+
+    def __init__(
+        self,
+        provider: str,
+        status_code: int = 402,
+        error_code: str = "insufficient_funds",
+        context: dict[str, Any] | None = None,
+    ):
+        self.status_code = status_code
+        self.error_code = error_code
+        super().__init__(provider, "Insufficient credits", context=context)
+
+
 class AuthenticationError(ProviderError):
     """Authentication failed error."""
 
