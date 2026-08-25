@@ -250,13 +250,7 @@ class PatchToolCallsMiddleware(AgentMiddleware):
 
         if len(patched) != len(messages):
             # Create new request with patched messages
-            request = ModelRequest(
-                messages=patched,
-                system_prompt=request.system_prompt,
-                tools=request.tools,
-                phase=request.phase,
-                runtime=request.runtime,
-            )
+            request = request.override(messages=patched)
 
             # Update agent memory if accessible
             if request.runtime and hasattr(request.runtime, '_agent_instance'):

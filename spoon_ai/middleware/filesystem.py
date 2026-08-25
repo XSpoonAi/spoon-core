@@ -657,13 +657,7 @@ class FilesystemMiddleware(AgentMiddleware):
             new_prompt = self.system_prompt
 
         # Create new request with updated system prompt
-        request = ModelRequest(
-            messages=request.messages,
-            system_prompt=new_prompt,
-            tools=request.tools,
-            phase=request.phase,
-            runtime=request.runtime,
-        )
+        request = request.override(system_prompt=new_prompt)
 
         return await handler(request)
 

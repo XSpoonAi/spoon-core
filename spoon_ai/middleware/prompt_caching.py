@@ -301,12 +301,9 @@ class AnthropicPromptCachingMiddleware(AgentMiddleware):
 
         # Create new request if changes were made
         if new_system_prompt != request.system_prompt or new_tools != request.tools:
-            request = ModelRequest(
-                messages=request.messages,
+            request = request.override(
                 system_prompt=new_system_prompt,
                 tools=new_tools,
-                phase=request.phase,
-                runtime=request.runtime,
             )
 
         return await handler(request)

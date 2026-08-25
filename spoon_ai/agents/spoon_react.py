@@ -195,6 +195,7 @@ class SpoonReactAI(MCPClientMixin, ToolCallAgent):
         timeout: Optional[float] = None,
         thinking: bool = False,
         reasoning_effort: Optional[str] = None,
+        model: Optional[str] = None,
     ) -> str:
         """Ensure prompts reflect current tools before running."""
         self._refresh_prompts()
@@ -207,4 +208,6 @@ class SpoonReactAI(MCPClientMixin, ToolCallAgent):
             kwargs["thinking"] = True
         if reasoning_effort is not None:
             kwargs["reasoning_effort"] = reasoning_effort
+        if model is not None:
+            kwargs["model"] = model
         return await super().run(**kwargs)

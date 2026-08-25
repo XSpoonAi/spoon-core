@@ -603,6 +603,7 @@ class SummarizationMiddleware(AgentMiddleware):
         self,
         messages: List[Message],
         llm: ChatBot,
+        model: Optional[str] = None,
     ) -> str:
         """Generate summary for the given messages."""
         if not messages:
@@ -618,7 +619,8 @@ class SummarizationMiddleware(AgentMiddleware):
 
             response = await llm.ask(
                 messages=[Message(role=Role.USER, content=prompt)],
-                system_msg="You are a helpful assistant that extracts and preserves important context."
+                system_msg="You are a helpful assistant that extracts and preserves important context.",
+                model=model,
             )
 
             if hasattr(response, 'content'):
@@ -680,7 +682,11 @@ class SummarizationMiddleware(AgentMiddleware):
             return await handler(request)
 
         # Generate summary
-        summary = await self._create_summary(messages_to_summarize, llm)
+        summary = await self._create_summary(
+            messages_to_summarize,
+            llm,
+            model=request.model,
+        )
         summary_message = self._build_summary_message(summary)
 
         # Build new message list
@@ -698,13 +704,7 @@ class SummarizationMiddleware(AgentMiddleware):
         )
 
         # Create new request with summarized messages
-        new_request = ModelRequest(
-            messages=new_messages,
-            system_prompt=request.system_prompt,
-            tools=request.tools,
-            phase=request.phase,
-            runtime=request.runtime,
-        )
+        new_request = request.override(messages=new_messages)
 
         # Also update agent's memory if accessible
         if request.runtime and hasattr(request.runtime, '_agent_instance'):

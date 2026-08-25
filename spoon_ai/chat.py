@@ -893,22 +893,33 @@ class ChatBot:
 
         return normalized
 
-    async def ask(self, messages: List[Union[dict, Message]], system_msg: Optional[str] = None, output_queue: Optional[asyncio.Queue] = None) -> str:
+    async def ask(
+        self,
+        messages: List[Union[dict, Message]],
+        system_msg: Optional[str] = None,
+        output_queue: Optional[asyncio.Queue] = None,
+        *,
+        model: Optional[str] = None,
+    ) -> str:
         """Ask method using the LLM manager architecture.
         
         Automatically applies short-term memory strategy if enabled.
         """
+        effective_model = str(model or self.model_name or "").strip() or None
         formatted_messages = self._format_messages(messages, system_msg)
         messages_with_long_term, user_query = await self._inject_long_term_context(formatted_messages)
         processed_messages = await self._apply_short_term_memory_strategy(
             messages_with_long_term,
-            model=self.model_name,
+            model=effective_model,
         )
 
-        response = await self.llm_manager.chat(
-            messages=processed_messages,
-            provider=self.llm_provider
-        )
+        request_kwargs: Dict[str, Any] = {
+            "messages": processed_messages,
+            "provider": self.llm_provider,
+        }
+        if effective_model:
+            request_kwargs["model"] = effective_model
+        response = await self.llm_manager.chat(**request_kwargs)
 
         await self._store_long_term_memory(user_query, response.content)
 
@@ -921,11 +932,16 @@ class ChatBot:
         """
         formatted_messages = self._format_messages(messages, system_msg)
         messages_with_long_term, user_query = await self._inject_long_term_context(formatted_messages)
+        request_kwargs = self._normalize_tool_request_kwargs(kwargs)
+        effective_model = str(request_kwargs.get("model") or self.model_name or "").strip() or None
+        if effective_model:
+            request_kwargs["model"] = effective_model
+        else:
+            request_kwargs.pop("model", None)
         processed_messages = await self._apply_short_term_memory_strategy(
             messages_with_long_term,
-            model=self.model_name,
+            model=effective_model,
         )
-        request_kwargs = self._normalize_tool_request_kwargs(kwargs)
 
         response = await self.llm_manager.chat_with_tools(
             messages=processed_messages,
@@ -1097,11 +1113,16 @@ class ChatBot:
         **kwargs: Any,
     ) -> AsyncIterator[LLMResponseChunk]:
         """Stream LLM responses chunk by chunk."""
-        prepared_messages, all_callbacks = await self._prepare_run(
-            messages, system_msg, callbacks
-        )
         stream_kwargs = sanitize_stream_kwargs(
             self._normalize_tool_request_kwargs(kwargs)
+        )
+        effective_model = str(stream_kwargs.get("model") or self.model_name or "").strip() or None
+        if effective_model:
+            stream_kwargs["model"] = effective_model
+        else:
+            stream_kwargs.pop("model", None)
+        prepared_messages, all_callbacks = await self._prepare_run(
+            messages, system_msg, callbacks, model=effective_model
         )
 
         async for chunk in self._stream_chat(
@@ -1190,11 +1211,16 @@ class ChatBot:
         
         raw_messages_dump = [message_to_dict(m) for m in messages]
 
-        processed_messages, all_callbacks = await self._prepare_run(
-            messages, system_msg, callbacks
-        )
         stream_kwargs = sanitize_stream_kwargs(
             self._normalize_tool_request_kwargs(kwargs)
+        )
+        effective_model = str(stream_kwargs.get("model") or self.model_name or "").strip() or None
+        if effective_model:
+            stream_kwargs["model"] = effective_model
+        else:
+            stream_kwargs.pop("model", None)
+        processed_messages, all_callbacks = await self._prepare_run(
+            messages, system_msg, callbacks, model=effective_model
         )
         
         # Chain start event
@@ -1202,7 +1228,7 @@ class ChatBot:
             chain_run_id,
             component_name,
             inputs={"messages": [msg.model_dump() for msg in processed_messages]},
-            metadata={"provider": self.llm_provider, "model": self.model_name},
+            metadata={"provider": self.llm_provider, "model": effective_model},
         )
 
         prompt_run_id = uuid4()
@@ -1211,7 +1237,7 @@ class ChatBot:
             f"{component_name}.prompt",
             inputs={"messages": raw_messages_dump, "system": system_msg},
             parent_ids=[str(chain_run_id)],
-            metadata={"model": self.model_name},
+            metadata={"model": effective_model},
         )
 
         yield StreamEventBuilder.prompt_end(
@@ -1219,7 +1245,7 @@ class ChatBot:
             f"{component_name}.prompt",
             output={"messages": [msg.model_dump() for msg in processed_messages]},
             parent_ids=[str(chain_run_id)],
-            metadata={"model": self.model_name},
+            metadata={"model": effective_model},
         )
 
         retriever_run_id = None
@@ -1243,7 +1269,7 @@ class ChatBot:
             llm_run_id,
             llm_name,
             messages=[msg.model_dump() for msg in processed_messages],
-            model=self.model_name,
+            model=effective_model,
             provider=self.llm_provider,
             parent_ids=[str(chain_run_id)],
         )
@@ -1360,6 +1386,7 @@ class ChatBot:
         messages: List[Union[dict, Message]],
         system_msg: Optional[str],
         callbacks: Optional[List[BaseCallbackHandler]],
+        model: Optional[str] = None,
     ) -> Tuple[List[Message], List[BaseCallbackHandler]]:
         """Normalize messages and merge callbacks for streaming."""
         formatted: List[Message] = []
@@ -1375,7 +1402,7 @@ class ChatBot:
         
         processed = await self._apply_short_term_memory_strategy(
             formatted,
-            model=self.model_name,
+            model=model or self.model_name,
         )
         
         merged_callbacks = list(callbacks) if callbacks else []

@@ -125,6 +125,7 @@ class ToolCallAgent(ReActAgent):
         self,
         thinking: bool = False,
         reasoning_effort: Optional[str] = None,
+        model: Optional[str] = None,
     ) -> bool:
         self.last_reasoning_summary = None
         last_role = getattr(self.memory.messages[-1], "role", None) if self.memory.messages else None
@@ -208,6 +209,8 @@ class ToolCallAgent(ReActAgent):
                     unique_tools_list,
                     llm_timeout,
                     thinking=thinking,
+                    reasoning_effort=reasoning_effort,
+                    model=model,
                 )
             else:
                 # Fallback: direct LLM call without middleware
@@ -222,6 +225,8 @@ class ToolCallAgent(ReActAgent):
                     ask_tool_kwargs["thinking"] = True
                 if reasoning_effort:
                     ask_tool_kwargs["reasoning_effort"] = reasoning_effort
+                if model:
+                    ask_tool_kwargs["model"] = model
                 response = await asyncio.wait_for(
                     self.llm.ask_tool(**ask_tool_kwargs),
                     timeout=llm_timeout,
@@ -423,6 +428,7 @@ class ToolCallAgent(ReActAgent):
         timeout: Optional[float] = None,
         thinking: bool = False,
         reasoning_effort: Optional[str] = None,
+        model: Optional[str] = None,
     ) -> str:
         """
 
@@ -527,7 +533,11 @@ class ToolCallAgent(ReActAgent):
                                 break
 
                     step_result = await asyncio.wait_for(
-                        self.step(thinking=thinking, reasoning_effort=reasoning_effort),
+                        self.step(
+                            thinking=thinking,
+                            reasoning_effort=reasoning_effort,
+                            model=model,
+                        ),
                         timeout=step_timeout,
                     )
                     if await self.is_stuck():
@@ -560,7 +570,7 @@ class ToolCallAgent(ReActAgent):
                 logger.info(f"Step {self.current_step}: {step_result}")
 
             if self.current_step >= self.max_steps:
-                final_content = await self._maybe_finalize_after_tool_budget()
+                final_content = await self._maybe_finalize_after_tool_budget(model=model)
                 if final_content:
                     return final_content
                 results.append(f"Step {self.current_step}: Stuck in loop. Resetting state.")
@@ -599,11 +609,13 @@ class ToolCallAgent(ReActAgent):
         self,
         thinking: bool = False,
         reasoning_effort: Optional[str] = None,
+        model: Optional[str] = None,
     ) -> str:
         """Override the step method to handle finish_reason termination properly."""
         should_act = await self.think(
             thinking=thinking,
             reasoning_effort=reasoning_effort,
+            model=model,
         )
         if not should_act:
             if self.state == AgentState.FINISHED:
@@ -780,7 +792,11 @@ class ToolCallAgent(ReActAgent):
         self.last_tool_error = None
         return err
 
-    async def _maybe_finalize_after_tool_budget(self) -> str:
+    async def _maybe_finalize_after_tool_budget(
+        self,
+        *,
+        model: Optional[str] = None,
+    ) -> str:
         """Allow one final, tool-free summary turn after the last tool step."""
         last_message = self.memory.messages[-1] if self.memory.messages else None
         if getattr(last_message, "role", None) != "tool":
@@ -797,6 +813,7 @@ class ToolCallAgent(ReActAgent):
             final_content = await self.llm.ask(
                 messages=self.memory.messages,
                 system_msg=self.system_prompt,
+                model=model,
             )
             final_content = (final_content or "").strip()
             if not final_content:
@@ -840,6 +857,8 @@ class ToolCallAgent(ReActAgent):
         timeout: float,
         *,
         thinking: bool = False,
+        reasoning_effort: Optional[str] = None,
+        model: Optional[str] = None,
     ):
         """Call LLM through middleware pipeline for observability.
 
@@ -857,6 +876,11 @@ class ToolCallAgent(ReActAgent):
         )
 
         # Create model request
+        extra_params: dict[str, Any] = {}
+        if thinking:
+            extra_params["thinking"] = thinking
+        if reasoning_effort:
+            extra_params["reasoning_effort"] = reasoning_effort
         request = ModelRequest(
             system_prompt=self.system_prompt,
             messages=self.memory.messages,
@@ -864,12 +888,16 @@ class ToolCallAgent(ReActAgent):
             tool_choice=tool_choice,
             runtime=runtime,
             phase=AgentPhase.THINK,
-            extra_params={"thinking": thinking} if thinking else {},
+            model=model,
+            extra_params=extra_params,
         )
 
         # Define base handler that calls the actual LLM
         async def base_handler(req: ModelRequest) -> ModelResponse:
             # Call LLM directly
+            request_kwargs = dict(req.extra_params)
+            if req.model:
+                request_kwargs["model"] = req.model
             llm_response = await asyncio.wait_for(
                 self.llm.ask_tool(
                     messages=req.messages,
@@ -877,7 +905,7 @@ class ToolCallAgent(ReActAgent):
                     tools=req.tools,
                     tool_choice=req.tool_choice,
                     output_queue=self.output_queue,
-                    **req.extra_params,
+                    **request_kwargs,
                 ),
                 timeout=timeout,
             )
