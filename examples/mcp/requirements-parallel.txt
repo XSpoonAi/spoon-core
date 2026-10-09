@@ -1,0 +1,4 @@
+# Compatible with Spoon's existing MCPTool transport imports.
+fastmcp==2.12.5
+# MCP 1.16 uses a Pydantic helper removed in 2.12.
+pydantic>=2.10.4,<2.12

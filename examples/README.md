@@ -44,6 +44,7 @@ Runnable SpoonAI examples and configs.
 ## MCP Examples (`examples/mcp`) 
 
 Model Context Protocol demos for calling external tools. 
+- [Parallel Search MCP](mcp/parallel_search.md): opt-in, keyless web search and page fetch through `MCPTool`, without an LLM. Run `python -m examples.mcp.parallel_search_demo` after following its setup instructions.
 - Scripts: `deepwiki_demo.py`, `mcp_thirdweb_collection.py`, `SpoonThirdWebagent.py`, `spoon_search_agent.py`
 - Typical prereqs: Python deps; LLM key; Thirdweb `client_id`; `TAVILY_API_KEY`; port 8765 free for FastMCP.
 - Run from repo root, e.g.:
