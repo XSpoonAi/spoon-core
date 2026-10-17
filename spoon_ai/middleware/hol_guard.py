@@ -34,8 +34,9 @@ class HolGuardMiddleware(AgentMiddleware):
 
     def _evaluate_command(self, command: str) -> tuple[bool, str]:
         try:
+            # Keep arbitrary command text positional, including a leading `-`.
             result = subprocess.run(
-                [self.executable, "command", "test", command, "--json"],
+                [self.executable, "command", "test", "--json", "--", command],
                 capture_output=True,
                 text=True,
                 timeout=self.timeout_seconds,
