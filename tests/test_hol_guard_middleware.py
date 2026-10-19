@@ -165,3 +165,26 @@ def test_unguarded_tool_passes_through_without_guard(monkeypatch):
 
     assert result.output == "read"
     assert guard_calls == []
+
+
+def test_command_arguments_preserve_leading_dashes_and_exact_command_text(monkeypatch):
+    """Regression: user command text must not be parsed as Guard CLI switches."""
+    for command in ("--help", "-n", "echo 'quoted value'", "printf first\nprintf second"):
+        actual_calls = []
+        tool_calls = []
+
+        def capture_subprocess(argv, **kwargs):
+            actual_calls.append((argv, kwargs))
+            return _guard_result(benign=True, action="allow")
+
+        monkeypatch.setattr("spoon_ai.middleware.hol_guard.subprocess.run", capture_subprocess)
+        result = HolGuardMiddleware().wrap_tool_call(
+            _request(command=command),
+            lambda request: tool_calls.append(request) or ToolCallResult.from_string("executed"),
+        )
+        assert result.error is None
+        assert len(tool_calls) == 1
+        assert actual_calls == [(
+            ["hol-guard", "command", "test", "--json", "--", command],
+            {"capture_output": True, "text": True, "timeout": 10.0, "check": False},
+        )]
