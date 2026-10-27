@@ -1,3 +1,4 @@
+import subprocess
 from types import SimpleNamespace
 
 from spoon_ai.middleware.base import ToolCallRequest, ToolCallResult
@@ -94,6 +95,24 @@ def test_nonzero_guard_exit_blocks(monkeypatch):
     )
 
     assert result.error == "HOL Guard blocked tool execution: guard_error"
+    assert calls == []
+
+
+def test_guard_timeout_stops_handler(monkeypatch):
+    """A stalled Guard subprocess must never reach the protected tool."""
+    middleware = HolGuardMiddleware(timeout_seconds=0.1)
+    calls = []
+
+    def stalled(*args, **kwargs):
+        raise subprocess.TimeoutExpired(args[0], kwargs["timeout"])
+
+    monkeypatch.setattr("spoon_ai.middleware.hol_guard.subprocess.run", stalled)
+    result = middleware.wrap_tool_call(
+        _request(command="rm -rf build"),
+        lambda request: calls.append(request) or ToolCallResult.from_string("executed"),
+    )
+
+    assert result.error == "HOL Guard blocked tool execution: guard_timeout"
     assert calls == []
 
 
