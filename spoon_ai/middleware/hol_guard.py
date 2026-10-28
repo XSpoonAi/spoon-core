@@ -71,6 +71,17 @@ class HolGuardMiddleware(AgentMiddleware):
         ):
             return False, "guard_block"
 
+        # Optional hook-level decisions must not contradict a benign classifier.
+        policy_action = payload.get("policy_action")
+        if policy_action is not None and policy_action != "allow":
+            return False, "guard_block"
+        hook_output = payload.get("hookSpecificOutput")
+        if hook_output is not None and (
+            not isinstance(hook_output, dict)
+            or hook_output.get("permissionDecision") != "allow"
+        ):
+            return False, "guard_block"
+
         if (
             classification.get("explicitly_benign") is True
             and payload.get("minimum_action") == "allow"
