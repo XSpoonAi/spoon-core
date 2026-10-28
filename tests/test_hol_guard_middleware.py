@@ -334,3 +334,28 @@ def test_malformed_tool_arguments_fail_closed(monkeypatch):
         assert result.error == "HOL Guard blocked tool execution: invalid tool arguments"
     assert guard_calls == []
     assert handler_calls == []
+
+
+def test_guard_stdout_rejects_extra_verdicts_and_diagnostics(monkeypatch):
+    """A single valid allow must not survive additional stdout content."""
+    import json
+
+    allow = json.dumps({
+        "classification": {"explicitly_benign": True},
+        "minimum_action": "allow",
+    })
+    middleware = HolGuardMiddleware()
+    handler_calls = []
+    for raw_stdout in (allow + "\n" + allow, "status: ok\n" + allow, allow + "\nstatus: ok"):
+        monkeypatch.setattr(
+            "spoon_ai.middleware.hol_guard.subprocess.run",
+            lambda *args, **kwargs: SimpleNamespace(
+                returncode=0, stdout=raw_stdout, stderr=""
+            ),
+        )
+        result = middleware.wrap_tool_call(
+            _request(command="git status"),
+            lambda request: handler_calls.append(request) or ToolCallResult.from_string("executed"),
+        )
+        assert result.error == "HOL Guard blocked tool execution: guard_invalid_output"
+    assert handler_calls == []
