@@ -47,6 +47,54 @@ def test_explicit_benign_allow_reaches_handler(monkeypatch):
     assert len(calls) == 1
 
 
+def test_inspection_only_benign_classification_preserves_safe_command(monkeypatch):
+    """The command-test CLI may report not_run without running runtime policy."""
+    import json
+
+    middleware = HolGuardMiddleware()
+    payload = {
+        "policy_action": "not_run",
+        "minimum_action": "allow",
+        "classification": {"explicitly_benign": True},
+    }
+    monkeypatch.setattr(
+        "spoon_ai.middleware.hol_guard.subprocess.run",
+        lambda *args, **kwargs: SimpleNamespace(
+            returncode=0, stdout=json.dumps(payload), stderr=""
+        ),
+    )
+    calls = []
+    result = middleware.wrap_tool_call(
+        _request(command="git status"),
+        lambda request: calls.append(request) or ToolCallResult.from_string("executed"),
+    )
+    assert result.error is None
+    assert result.output == "executed"
+    assert len(calls) == 1
+
+    for contradictory in (
+        {"minimum_action": "review"},
+        {"classification": {"explicitly_benign": False}},
+        {"policy_action": "warn"},
+        {"continue": False},
+        {"hookSpecificOutput": {"permissionDecision": "allow", "hookEventName": "PostToolUse"}},
+    ):
+        calls.clear()
+        unsafe = {**payload, **contradictory}
+        monkeypatch.setattr(
+            "spoon_ai.middleware.hol_guard.subprocess.run",
+            lambda *args, **kwargs: SimpleNamespace(
+                returncode=0, stdout=json.dumps(unsafe), stderr=""
+            ),
+        )
+        stopped = middleware.wrap_tool_call(
+            _request(command="git status"),
+            lambda request: calls.append(request) or ToolCallResult.from_string("executed"),
+        )
+        assert stopped.error == "HOL Guard blocked tool execution: guard_block"
+        assert calls == []
+
+
 def test_review_blocks_before_handler(monkeypatch):
     middleware = HolGuardMiddleware()
     calls = []
