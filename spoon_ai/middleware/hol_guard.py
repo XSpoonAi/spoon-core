@@ -63,6 +63,14 @@ class HolGuardMiddleware(AgentMiddleware):
         if not isinstance(classification, dict):
             return False, "guard_invalid_output"
 
+        # The classifier cannot override an explicit Guard stop signal.
+        decision = payload.get("decision")
+        if payload.get("continue") is False or (
+            decision is not None
+            and (not isinstance(decision, str) or decision.strip().lower() != "allow")
+        ):
+            return False, "guard_block"
+
         if (
             classification.get("explicitly_benign") is True
             and payload.get("minimum_action") == "allow"
