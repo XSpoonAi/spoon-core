@@ -313,3 +313,24 @@ def test_command_arguments_preserve_leading_dashes_and_exact_command_text(monkey
             ["hol-guard", "command", "test", "--json", "--", command],
             {"capture_output": True, "text": True, "timeout": 10.0, "check": False},
         )]
+
+def test_malformed_tool_arguments_fail_closed(monkeypatch):
+    """A malformed guarded request must never reach Guard or the tool handler."""
+    guard_calls = []
+    handler_calls = []
+    monkeypatch.setattr(
+        "spoon_ai.middleware.hol_guard.subprocess.run",
+        lambda *args, **kwargs: guard_calls.append((args, kwargs)),
+    )
+    middleware = HolGuardMiddleware()
+    for arguments in (None, "git status", ["git status"]):
+        request = ToolCallRequest(
+            tool_name="execute", arguments=arguments, tool_call_id="malformed-1",
+        )
+        result = middleware.wrap_tool_call(
+            request,
+            lambda current: handler_calls.append(current) or ToolCallResult.from_string("executed"),
+        )
+        assert result.error == "HOL Guard blocked tool execution: invalid tool arguments"
+    assert guard_calls == []
+    assert handler_calls == []
