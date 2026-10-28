@@ -65,7 +65,7 @@ class HolGuardMiddleware(AgentMiddleware):
 
         # The classifier cannot override an explicit Guard stop signal.
         decision = payload.get("decision")
-        if payload.get("continue") is False or (
+        if ("continue" in payload and payload["continue"] is not True) or (
             decision is not None
             and (not isinstance(decision, str) or decision.strip().lower() != "allow")
         ):
