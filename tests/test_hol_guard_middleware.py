@@ -106,6 +106,35 @@ def test_explicit_guard_stop_overrides_benign_classification(monkeypatch):
         assert calls == []
 
 
+def test_conflicting_hook_verdict_blocks_even_when_classifier_says_allow(monkeypatch):
+    import json
+
+    middleware = HolGuardMiddleware()
+    for contradictory in (
+        {"policy_action": "block"},
+        {"hookSpecificOutput": {"permissionDecision": "deny"}},
+        {"hookSpecificOutput": "malformed"},
+    ):
+        calls = []
+        payload = {
+            "classification": {"explicitly_benign": True},
+            "minimum_action": "allow",
+            **contradictory,
+        }
+        monkeypatch.setattr(
+            "spoon_ai.middleware.hol_guard.subprocess.run",
+            lambda *args, **kwargs: SimpleNamespace(
+                returncode=0, stdout=json.dumps(payload), stderr=""
+            ),
+        )
+        result = middleware.wrap_tool_call(
+            _request(command="git status"),
+            lambda request: calls.append(request) or ToolCallResult.from_string("executed"),
+        )
+        assert result.error == "HOL Guard blocked tool execution: guard_block"
+        assert calls == []
+
+
 def test_nonzero_guard_exit_blocks(monkeypatch):
     middleware = HolGuardMiddleware()
     calls = []
