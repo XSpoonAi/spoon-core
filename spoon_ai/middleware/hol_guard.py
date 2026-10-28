@@ -73,10 +73,10 @@ class HolGuardMiddleware(AgentMiddleware):
 
         # Optional hook-level decisions must not contradict a benign classifier.
         policy_action = payload.get("policy_action")
-        if policy_action is not None and policy_action not in {"allow", "not_run"}:
+        if "policy_action" in payload and policy_action not in {"allow", "not_run"}:
             return False, "guard_block"
         hook_output = payload.get("hookSpecificOutput")
-        if hook_output is not None and (
+        if "hookSpecificOutput" in payload and (
             not isinstance(hook_output, dict)
             or hook_output.get("permissionDecision") != "allow"
             or hook_output.get("hookEventName") != "PreToolUse"
