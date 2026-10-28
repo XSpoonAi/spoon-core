@@ -85,7 +85,7 @@ def test_explicit_guard_stop_overrides_benign_classification(monkeypatch):
     import json
 
     middleware = HolGuardMiddleware()
-    for stop_signal in ({"continue": False}, {"decision": "deny"}, {"decision": "review"}):
+    for stop_signal in ({"continue": False}, {"continue": "false"}, {"continue": None}, {"decision": "deny"}, {"decision": "review"}):
         calls = []
         payload = {
             "minimum_action": "allow",
