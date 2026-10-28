@@ -160,6 +160,8 @@ def test_conflicting_hook_verdict_blocks_even_when_classifier_says_allow(monkeyp
     middleware = HolGuardMiddleware()
     for contradictory in (
         {"policy_action": "block"},
+        {"policy_action": None},
+        {"hookSpecificOutput": None},
         {"hookSpecificOutput": {"permissionDecision": "deny"}},
         {"hookSpecificOutput": "malformed"},
     ):
