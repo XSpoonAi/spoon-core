@@ -66,14 +66,16 @@ class HolGuardMiddleware(AgentMiddleware):
         # The classifier cannot override an explicit Guard stop signal.
         decision = payload.get("decision")
         if ("continue" in payload and payload["continue"] is not True) or (
-            decision is not None
+            "decision" in payload
             and (not isinstance(decision, str) or decision.strip().lower() != "allow")
         ):
             return False, "guard_block"
 
         # Optional hook-level decisions must not contradict a benign classifier.
         policy_action = payload.get("policy_action")
-        if "policy_action" in payload and policy_action not in {"allow", "not_run"}:
+        if "policy_action" in payload and (
+            not isinstance(policy_action, str) or policy_action not in {"allow", "not_run"}
+        ):
             return False, "guard_block"
         hook_output = payload.get("hookSpecificOutput")
         if "hookSpecificOutput" in payload and (
