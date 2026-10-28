@@ -81,6 +81,31 @@ def test_implicit_allow_blocks_before_handler(monkeypatch):
     assert calls == []
 
 
+def test_explicit_guard_stop_overrides_benign_classification(monkeypatch):
+    import json
+
+    middleware = HolGuardMiddleware()
+    for stop_signal in ({"continue": False}, {"decision": "deny"}, {"decision": "review"}):
+        calls = []
+        payload = {
+            "minimum_action": "allow",
+            "classification": {"explicitly_benign": True},
+            **stop_signal,
+        }
+        monkeypatch.setattr(
+            "spoon_ai.middleware.hol_guard.subprocess.run",
+            lambda *args, **kwargs: SimpleNamespace(
+                returncode=0, stdout=json.dumps(payload), stderr=""
+            ),
+        )
+        result = middleware.wrap_tool_call(
+            _request(command="git status"),
+            lambda request: calls.append(request) or ToolCallResult.from_string("executed"),
+        )
+        assert result.error == "HOL Guard blocked tool execution: guard_block"
+        assert calls == []
+
+
 def test_nonzero_guard_exit_blocks(monkeypatch):
     middleware = HolGuardMiddleware()
     calls = []
