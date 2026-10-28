@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import json
 import subprocess
-from collections.abc import Callable, Iterable
+from collections.abc import Callable, Iterable, Mapping
 from typing import Any
 
 from .base import AgentMiddleware, ToolCallRequest, ToolCallResult
@@ -99,6 +99,11 @@ class HolGuardMiddleware(AgentMiddleware):
     ) -> ToolCallResult:
         if request.tool_name not in self.guarded_tools:
             return handler(request)
+
+        if not isinstance(request.arguments, Mapping):
+            return ToolCallResult.from_error(
+                "HOL Guard blocked tool execution: invalid tool arguments"
+            )
 
         command = request.arguments.get("command")
         if not isinstance(command, str) or not command.strip():
