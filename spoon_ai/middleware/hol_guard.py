@@ -64,7 +64,7 @@ class HolGuardMiddleware(AgentMiddleware):
 
         try:
             payload: Any = json.loads(result.stdout, object_pairs_hook=_reject_duplicate_keys)
-        except (json.JSONDecodeError, TypeError, ValueError):
+        except (json.JSONDecodeError, TypeError, ValueError, RecursionError):
             return False, "guard_invalid_output"
 
         if not isinstance(payload, dict):
