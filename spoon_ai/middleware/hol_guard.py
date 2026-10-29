@@ -34,6 +34,7 @@ class HolGuardMiddleware(AgentMiddleware):
         executable: str = "hol-guard",
         timeout_seconds: float = 10.0,
         guarded_tools: Iterable[str] = ("execute",),
+        working_directory: str | None = None,
     ) -> None:
         super().__init__()
         if timeout_seconds <= 0:
@@ -41,16 +42,28 @@ class HolGuardMiddleware(AgentMiddleware):
         self.executable = executable
         self.timeout_seconds = timeout_seconds
         self.guarded_tools = frozenset(guarded_tools)
+        if working_directory is not None and (
+            not isinstance(working_directory, str) or not working_directory.strip()
+        ):
+            raise ValueError("working_directory must be a nonempty path or None")
+        # Match the effective local sandbox root, not an unrelated launcher cwd.
+        # This cannot emulate a remote/container filesystem.
+        self.working_directory = working_directory
 
     def _evaluate_command(self, command: str) -> tuple[bool, str]:
         try:
             # Keep arbitrary command text positional, including a leading `-`.
+            run_kwargs = (
+                {"cwd": self.working_directory}
+                if self.working_directory is not None else {}
+            )
             result = subprocess.run(
                 [self.executable, "command", "test", "--json", "--", command],
                 capture_output=True,
                 text=True,
                 timeout=self.timeout_seconds,
                 check=False,
+                **run_kwargs,
             )
         except FileNotFoundError:
             return False, "guard_unavailable"
