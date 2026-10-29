@@ -10,6 +10,16 @@ from typing import Any
 from .base import AgentMiddleware, ToolCallRequest, ToolCallResult
 
 
+def _reject_duplicate_keys(pairs: list[tuple[str, Any]]) -> dict[str, Any]:
+    """Reject contradictory JSON members instead of taking the last verdict."""
+    payload: dict[str, Any] = {}
+    for key, value in pairs:
+        if key in payload:
+            raise ValueError("duplicate JSON key in Guard response")
+        payload[key] = value
+    return payload
+
+
 class HolGuardMiddleware(AgentMiddleware):
     """Gate selected command-bearing tools through the HOL Guard CLI.
 
@@ -53,8 +63,8 @@ class HolGuardMiddleware(AgentMiddleware):
             return False, "guard_error"
 
         try:
-            payload: Any = json.loads(result.stdout)
-        except (json.JSONDecodeError, TypeError):
+            payload: Any = json.loads(result.stdout, object_pairs_hook=_reject_duplicate_keys)
+        except (json.JSONDecodeError, TypeError, ValueError):
             return False, "guard_invalid_output"
 
         if not isinstance(payload, dict):
