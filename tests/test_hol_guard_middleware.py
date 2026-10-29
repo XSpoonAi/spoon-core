@@ -376,3 +376,27 @@ def test_subprocess_value_error_blocks_before_handler(monkeypatch):
 
     assert result.error == "HOL Guard blocked tool execution: guard_error"
     assert calls == []
+
+
+def test_duplicate_guard_json_keys_block(monkeypatch):
+    """Even a final allow cannot override a conflicting earlier JSON member."""
+    middleware = HolGuardMiddleware()
+    handler_calls = []
+    for stdout in (
+        '{"classification":{"explicitly_benign":true},"minimum_action":"deny","minimum_action":"allow"}',
+        '{"classification":{"explicitly_benign":false,"explicitly_benign":true},"minimum_action":"allow"}',
+        '{"classification":{"explicitly_benign":true},"continue":false,"continue":true,"minimum_action":"allow"}',
+    ):
+        monkeypatch.setattr(
+            "spoon_ai.middleware.hol_guard.subprocess.run",
+            lambda *args, **kwargs: SimpleNamespace(
+                returncode=0, stdout=stdout, stderr=""
+            ),
+        )
+        result = middleware.wrap_tool_call(
+            _request(command="git status"),
+            lambda request: handler_calls.append(request)
+            or ToolCallResult.from_string("executed"),
+        )
+        assert result.error == "HOL Guard blocked tool execution: guard_invalid_output"
+    assert handler_calls == []
