@@ -519,3 +519,21 @@ def test_invalid_timeout_configuration_is_rejected():
     for timeout in (0, -1, float("inf"), float("-inf"), float("nan"), True, "10", None):
         with pytest.raises(ValueError, match="finite positive number"):
             HolGuardMiddleware(timeout_seconds=timeout)
+
+def test_unexpected_guard_adapter_failure_blocks_execution(monkeypatch):
+    """Unexpected Guard integration failures must never invoke the tool handler."""
+    middleware = HolGuardMiddleware()
+    handler_calls = []
+
+    def fail_unexpectedly(command):
+        raise RuntimeError("unexpected Guard adapter failure")
+
+    monkeypatch.setattr(middleware, "_evaluate_command", fail_unexpectedly)
+    result = middleware.wrap_tool_call(
+        _request(command="git status"),
+        lambda request: handler_calls.append(request)
+        or ToolCallResult.from_string("executed"),
+    )
+
+    assert result.error == "HOL Guard blocked tool execution: guard_error"
+    assert handler_calls == []
