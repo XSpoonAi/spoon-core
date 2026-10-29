@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import math
 import subprocess
 from collections.abc import Callable, Iterable, Mapping
 from typing import Any
@@ -37,8 +38,14 @@ class HolGuardMiddleware(AgentMiddleware):
         working_directory: str | None = None,
     ) -> None:
         super().__init__()
-        if timeout_seconds <= 0:
-            raise ValueError("timeout_seconds must be positive")
+        # A non-finite timeout could let a stalled security check hang forever.
+        if (
+            isinstance(timeout_seconds, bool)
+            or not isinstance(timeout_seconds, (int, float))
+            or not math.isfinite(timeout_seconds)
+            or timeout_seconds <= 0
+        ):
+            raise ValueError("timeout_seconds must be a finite positive number")
         self.executable = executable
         self.timeout_seconds = timeout_seconds
         # A bare string is iterable character-by-character. Without this guard,
