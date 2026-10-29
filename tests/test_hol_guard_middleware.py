@@ -485,7 +485,17 @@ def test_string_guarded_tools_rejected_before_unprotected_execution():
 
     # A tuple of bytes/other values previously built a silent nonmatching
     # filter, letting the actual execute tool run without a Guard decision.
-    for invalid in ((b"execute",), (None,), (" ",), (123,), ("execute", None)):
+    for invalid in (
+        (b"execute",),
+        (None,),
+        (" ",),
+        (123,),
+        ("execute", None),
+        (" execute",),
+        ("execute ",),
+        ("\texecute",),
+        ("execute\n",),
+    ):
         with pytest.raises(ValueError, match="guarded_tools"):
             HolGuardMiddleware(guarded_tools=invalid)
 
