@@ -400,3 +400,24 @@ def test_duplicate_guard_json_keys_block(monkeypatch):
         )
         assert result.error == "HOL Guard blocked tool execution: guard_invalid_output"
     assert handler_calls == []
+
+
+def test_overdeep_guard_verdict_blocks_before_handler(monkeypatch):
+    """Malformed deeply nested Guard output must not escape the tool gate."""
+    middleware = HolGuardMiddleware()
+    calls = []
+    stdout = "[" * 20000 + "]" * 20000
+    monkeypatch.setattr(
+        "spoon_ai.middleware.hol_guard.subprocess.run",
+        lambda *args, **kwargs: SimpleNamespace(
+            returncode=0, stdout=stdout, stderr=""
+        ),
+    )
+
+    result = middleware.wrap_tool_call(
+        _request(command="git status"),
+        lambda request: calls.append(request) or ToolCallResult.from_string("executed"),
+    )
+
+    assert result.error == "HOL Guard blocked tool execution: guard_invalid_output"
+    assert calls == []
