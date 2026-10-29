@@ -5,6 +5,7 @@ from __future__ import annotations
 import json
 import math
 import os
+import shutil
 import subprocess
 from collections.abc import Callable, Iterable, Mapping
 from typing import Any
@@ -80,13 +81,21 @@ class HolGuardMiddleware(AgentMiddleware):
 
     def _evaluate_command(self, command: str) -> tuple[bool, str]:
         try:
+            # Bind the Guard binary before changing into the tool's directory.
+            # A relative PATH entry must not select a project-local executable.
+            executable = self.executable
+            if self.working_directory is not None:
+                resolved = shutil.which(executable)
+                if not resolved:
+                    return False, "guard_unavailable"
+                executable = os.path.realpath(resolved)
             # Keep arbitrary command text positional, including a leading `-`.
             run_kwargs = (
                 {"cwd": self.working_directory}
                 if self.working_directory is not None else {}
             )
             result = subprocess.run(
-                [self.executable, "command", "test", "--json", "--", command],
+                [executable, "command", "test", "--json", "--", command],
                 capture_output=True,
                 text=True,
                 timeout=self.timeout_seconds,
@@ -97,7 +106,7 @@ class HolGuardMiddleware(AgentMiddleware):
             return False, "guard_unavailable"
         except subprocess.TimeoutExpired:
             return False, "guard_timeout"
-        except (OSError, UnicodeError, ValueError):
+        except (OSError, UnicodeError, ValueError, TypeError):
             return False, "guard_error"
 
         if result.returncode != 0:
