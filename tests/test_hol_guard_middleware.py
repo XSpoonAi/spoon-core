@@ -470,7 +470,7 @@ def test_invalid_sandbox_directory_blocks_before_handler(monkeypatch, tmp_path):
 def test_invalid_working_directory_configuration_is_rejected():
     import pytest
 
-    for bad_directory in ("", " ", 123, []):
+    for bad_directory in ("", " ", 123, [], ".", "./different-project", "relative/worktree"):
         with pytest.raises(ValueError, match="working_directory"):
             HolGuardMiddleware(working_directory=bad_directory)
 
