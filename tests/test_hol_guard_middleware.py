@@ -421,3 +421,55 @@ def test_overdeep_guard_verdict_blocks_before_handler(monkeypatch):
 
     assert result.error == "HOL Guard blocked tool execution: guard_invalid_output"
     assert calls == []
+
+
+def test_guard_uses_configured_local_sandbox_working_directory(monkeypatch, tmp_path):
+    """The classifier must inspect local paths relative to the command sandbox."""
+    seen = {}
+    handler_calls = []
+
+    def fake_guard(argv, **kwargs):
+        seen["cwd"] = kwargs.get("cwd")
+        return _guard_result(benign=True, action="allow")
+
+    monkeypatch.setattr("spoon_ai.middleware.hol_guard.subprocess.run", fake_guard)
+    middleware = HolGuardMiddleware(working_directory=str(tmp_path))
+    result = middleware.wrap_tool_call(
+        _request(command="git status"),
+        lambda request: handler_calls.append(request)
+        or ToolCallResult.from_string("executed"),
+    )
+
+    assert result.error is None
+    assert result.output == "executed"
+    assert seen["cwd"] == str(tmp_path)
+    assert len(handler_calls) == 1
+
+
+def test_invalid_sandbox_directory_blocks_before_handler(monkeypatch, tmp_path):
+    """A failed Guard launch in the configured directory cannot run the tool."""
+    missing = str(tmp_path / "missing-sandbox")
+    handler_calls = []
+
+    def fail_in_directory(argv, **kwargs):
+        assert kwargs.get("cwd") == missing
+        raise FileNotFoundError("sandbox directory not found")
+
+    monkeypatch.setattr(
+        "spoon_ai.middleware.hol_guard.subprocess.run", fail_in_directory
+    )
+    result = HolGuardMiddleware(working_directory=missing).wrap_tool_call(
+        _request(command="git status"),
+        lambda request: handler_calls.append(request)
+        or ToolCallResult.from_string("executed"),
+    )
+    assert result.error == "HOL Guard blocked tool execution: guard_unavailable"
+    assert handler_calls == []
+
+
+def test_invalid_working_directory_configuration_is_rejected():
+    import pytest
+
+    for bad_directory in ("", " ", 123, []):
+        with pytest.raises(ValueError, match="working_directory"):
+            HolGuardMiddleware(working_directory=bad_directory)
