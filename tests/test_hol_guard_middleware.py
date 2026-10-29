@@ -359,3 +359,20 @@ def test_guard_stdout_rejects_extra_verdicts_and_diagnostics(monkeypatch):
         )
         assert result.error == "HOL Guard blocked tool execution: guard_invalid_output"
     assert handler_calls == []
+
+def test_subprocess_value_error_blocks_before_handler(monkeypatch):
+    """Invalid subprocess argv must not accidentally bypass Guard."""
+    middleware = HolGuardMiddleware()
+    calls = []
+
+    def invalid_argv(*args, **kwargs):
+        raise ValueError("embedded null byte")
+
+    monkeypatch.setattr("spoon_ai.middleware.hol_guard.subprocess.run", invalid_argv)
+    result = middleware.wrap_tool_call(
+        _request(command="git status"),
+        lambda request: calls.append(request) or ToolCallResult.from_string("executed"),
+    )
+
+    assert result.error == "HOL Guard blocked tool execution: guard_error"
+    assert calls == []
