@@ -47,6 +47,9 @@ class HolGuardMiddleware(AgentMiddleware):
         if isinstance(guarded_tools, (str, bytes)):
             raise ValueError("guarded_tools must be an iterable of tool names")
         tool_names = tuple(guarded_tools)
+        # An empty filter would silently bypass every tool, even with Guard enabled.
+        if not tool_names:
+            raise ValueError("guarded_tools must contain at least one tool name")
         if any(not isinstance(name, str) or not name.strip() for name in tool_names):
             raise ValueError("guarded_tools must contain nonempty string tool names")
         self.guarded_tools = frozenset(tool_names)
