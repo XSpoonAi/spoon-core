@@ -473,3 +473,15 @@ def test_invalid_working_directory_configuration_is_rejected():
     for bad_directory in ("", " ", 123, []):
         with pytest.raises(ValueError, match="working_directory"):
             HolGuardMiddleware(working_directory=bad_directory)
+
+
+def test_string_guarded_tools_rejected_before_unprotected_execution():
+    """Misconfigured string filters must not turn 'execute' into character names."""
+    import pytest
+
+    for invalid in ("execute", b"execute"):
+        with pytest.raises(ValueError, match="guarded_tools"):
+            HolGuardMiddleware(guarded_tools=invalid)
+
+    valid = HolGuardMiddleware(guarded_tools=("execute",))
+    assert valid.guarded_tools == frozenset({"execute"})
