@@ -41,6 +41,11 @@ class HolGuardMiddleware(AgentMiddleware):
             raise ValueError("timeout_seconds must be positive")
         self.executable = executable
         self.timeout_seconds = timeout_seconds
+        # A bare string is iterable character-by-character. Without this guard,
+        # guarded_tools="execute" silently matches only individual letters and
+        # lets the actual execute tool run without its security check.
+        if isinstance(guarded_tools, (str, bytes)):
+            raise ValueError("guarded_tools must be an iterable of tool names")
         self.guarded_tools = frozenset(guarded_tools)
         if working_directory is not None and (
             not isinstance(working_directory, str) or not working_directory.strip()
