@@ -46,7 +46,7 @@ class HolGuardMiddleware(AgentMiddleware):
             return False, "guard_unavailable"
         except subprocess.TimeoutExpired:
             return False, "guard_timeout"
-        except (OSError, UnicodeError):
+        except (OSError, UnicodeError, ValueError):
             return False, "guard_error"
 
         if result.returncode != 0:
