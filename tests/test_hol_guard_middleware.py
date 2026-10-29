@@ -483,5 +483,11 @@ def test_string_guarded_tools_rejected_before_unprotected_execution():
         with pytest.raises(ValueError, match="guarded_tools"):
             HolGuardMiddleware(guarded_tools=invalid)
 
+    # A tuple of bytes/other values previously built a silent nonmatching
+    # filter, letting the actual execute tool run without a Guard decision.
+    for invalid in ((b"execute",), (None,), (" ",), (123,), ("execute", None)):
+        with pytest.raises(ValueError, match="guarded_tools"):
+            HolGuardMiddleware(guarded_tools=invalid)
+
     valid = HolGuardMiddleware(guarded_tools=("execute",))
     assert valid.guarded_tools == frozenset({"execute"})
