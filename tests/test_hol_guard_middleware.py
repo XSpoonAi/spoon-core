@@ -491,3 +491,12 @@ def test_string_guarded_tools_rejected_before_unprotected_execution():
 
     valid = HolGuardMiddleware(guarded_tools=("execute",))
     assert valid.guarded_tools == frozenset({"execute"})
+
+
+def test_empty_guarded_tool_filters_fail_closed_at_configuration_time():
+    """An enabled Guard must not silently become a no-op for an empty filter."""
+    import pytest
+
+    for tool_names in ((), [], iter(())):
+        with pytest.raises(ValueError, match="at least one tool name"):
+            HolGuardMiddleware(guarded_tools=tool_names)
