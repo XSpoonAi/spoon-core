@@ -500,3 +500,12 @@ def test_empty_guarded_tool_filters_fail_closed_at_configuration_time():
     for tool_names in ((), [], iter(())):
         with pytest.raises(ValueError, match="at least one tool name"):
             HolGuardMiddleware(guarded_tools=tool_names)
+
+
+def test_invalid_timeout_configuration_is_rejected():
+    """The security gate must never accept an unlimited or invalid deadline."""
+    import pytest
+
+    for timeout in (0, -1, float("inf"), float("-inf"), float("nan"), True, "10", None):
+        with pytest.raises(ValueError, match="finite positive number"):
+            HolGuardMiddleware(timeout_seconds=timeout)
