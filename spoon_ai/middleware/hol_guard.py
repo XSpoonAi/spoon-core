@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import math
+import os
 import subprocess
 from collections.abc import Callable, Iterable, Mapping
 from typing import Any
@@ -61,9 +62,11 @@ class HolGuardMiddleware(AgentMiddleware):
             raise ValueError("guarded_tools must contain nonempty string tool names")
         self.guarded_tools = frozenset(tool_names)
         if working_directory is not None and (
-            not isinstance(working_directory, str) or not working_directory.strip()
+            not isinstance(working_directory, str)
+            or not working_directory.strip()
+            or not os.path.isabs(working_directory)
         ):
-            raise ValueError("working_directory must be a nonempty path or None")
+            raise ValueError("working_directory must be an absolute path or None")
         # Match the effective local sandbox root, not an unrelated launcher cwd.
         # This cannot emulate a remote/container filesystem.
         self.working_directory = working_directory
