@@ -537,3 +537,40 @@ def test_unexpected_guard_adapter_failure_blocks_execution(monkeypatch):
 
     assert result.error == "HOL Guard blocked tool execution: guard_error"
     assert handler_calls == []
+
+
+def test_async_pipeline_enforces_guard_before_execute_handler(monkeypatch):
+    """The real async agent pipeline must not bypass the sync Guard middleware."""
+    import asyncio
+
+    from spoon_ai.middleware.base import MiddlewarePipeline
+
+    middleware = HolGuardMiddleware()
+    pipeline = MiddlewarePipeline([middleware])
+    calls = []
+
+    async def execute(request):
+        calls.append(request)
+        return ToolCallResult.from_string("executed")
+
+    monkeypatch.setattr(
+        "spoon_ai.middleware.hol_guard.subprocess.run",
+        lambda *args, **kwargs: _guard_result(benign=False, action="review"),
+    )
+    blocked = asyncio.run(
+        pipeline.awrap_tool_call(_request(command="rm -rf build"), execute)
+    )
+    assert blocked.error is not None
+    assert "HOL Guard blocked" in blocked.error
+    assert not calls
+
+    monkeypatch.setattr(
+        "spoon_ai.middleware.hol_guard.subprocess.run",
+        lambda *args, **kwargs: _guard_result(benign=True, action="allow"),
+    )
+    allowed = asyncio.run(
+        pipeline.awrap_tool_call(_request(command="git status"), execute)
+    )
+    assert allowed.error is None
+    assert allowed.output == "executed"
+    assert len(calls) == 1
