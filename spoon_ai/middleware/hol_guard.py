@@ -46,7 +46,10 @@ class HolGuardMiddleware(AgentMiddleware):
         # lets the actual execute tool run without its security check.
         if isinstance(guarded_tools, (str, bytes)):
             raise ValueError("guarded_tools must be an iterable of tool names")
-        self.guarded_tools = frozenset(guarded_tools)
+        tool_names = tuple(guarded_tools)
+        if any(not isinstance(name, str) or not name.strip() for name in tool_names):
+            raise ValueError("guarded_tools must contain nonempty string tool names")
+        self.guarded_tools = frozenset(tool_names)
         if working_directory is not None and (
             not isinstance(working_directory, str) or not working_directory.strip()
         ):
