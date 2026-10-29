@@ -425,10 +425,18 @@ def test_overdeep_guard_verdict_blocks_before_handler(monkeypatch):
 
 def test_guard_uses_configured_local_sandbox_working_directory(monkeypatch, tmp_path):
     """The classifier must inspect local paths relative to the command sandbox."""
+    import os
+
     seen = {}
     handler_calls = []
+    expected_executable = os.path.realpath("./trusted/hol-guard")
+    monkeypatch.setattr(
+        "spoon_ai.middleware.hol_guard.shutil.which",
+        lambda executable: "./trusted/hol-guard",
+    )
 
     def fake_guard(argv, **kwargs):
+        seen["executable"] = argv[0]
         seen["cwd"] = kwargs.get("cwd")
         return _guard_result(benign=True, action="allow")
 
@@ -443,6 +451,7 @@ def test_guard_uses_configured_local_sandbox_working_directory(monkeypatch, tmp_
     assert result.error is None
     assert result.output == "executed"
     assert seen["cwd"] == str(tmp_path)
+    assert seen["executable"] == expected_executable
     assert len(handler_calls) == 1
 
 
@@ -458,6 +467,10 @@ def test_invalid_sandbox_directory_blocks_before_handler(monkeypatch, tmp_path):
     monkeypatch.setattr(
         "spoon_ai.middleware.hol_guard.subprocess.run", fail_in_directory
     )
+    monkeypatch.setattr(
+        "spoon_ai.middleware.hol_guard.shutil.which",
+        lambda executable: "/usr/bin/hol-guard",
+    )
     result = HolGuardMiddleware(working_directory=missing).wrap_tool_call(
         _request(command="git status"),
         lambda request: handler_calls.append(request)
@@ -465,6 +478,29 @@ def test_invalid_sandbox_directory_blocks_before_handler(monkeypatch, tmp_path):
     )
     assert result.error == "HOL Guard blocked tool execution: guard_unavailable"
     assert handler_calls == []
+
+
+
+def test_missing_guard_binary_with_sandbox_blocks_without_running_handler(monkeypatch, tmp_path):
+    """A failed executable lookup must not fall through to the protected handler."""
+    calls = []
+    monkeypatch.setattr(
+        "spoon_ai.middleware.hol_guard.shutil.which",
+        lambda executable: None,
+    )
+
+    def must_not_launch(*args, **kwargs):
+        raise AssertionError("Guard must not launch without a resolved executable")
+
+    monkeypatch.setattr(
+        "spoon_ai.middleware.hol_guard.subprocess.run", must_not_launch
+    )
+    result = HolGuardMiddleware(working_directory=str(tmp_path)).wrap_tool_call(
+        _request(command="git status"),
+        lambda request: calls.append(request) or ToolCallResult.from_string("executed"),
+    )
+    assert result.error == "HOL Guard blocked tool execution: guard_unavailable"
+    assert calls == []
 
 
 def test_invalid_working_directory_configuration_is_rejected():
