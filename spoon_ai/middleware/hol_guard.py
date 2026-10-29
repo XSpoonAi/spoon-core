@@ -58,8 +58,15 @@ class HolGuardMiddleware(AgentMiddleware):
         # An empty filter would silently bypass every tool, even with Guard enabled.
         if not tool_names:
             raise ValueError("guarded_tools must contain at least one tool name")
-        if any(not isinstance(name, str) or not name.strip() for name in tool_names):
-            raise ValueError("guarded_tools must contain nonempty string tool names")
+        if any(
+            not isinstance(name, str)
+            or not name.strip()
+            or name != name.strip()
+            for name in tool_names
+        ):
+            # Whitespace-padded tool names never match the real tool name.
+            # Reject them rather than silently skipping the Guard check.
+            raise ValueError("guarded_tools must contain nonempty, unpadded tool names")
         self.guarded_tools = frozenset(tool_names)
         if working_directory is not None and (
             not isinstance(working_directory, str)
