@@ -162,7 +162,14 @@ class HolGuardMiddleware(AgentMiddleware):
                 "HOL Guard blocked tool execution: missing command"
             )
 
-        allowed, reason = self._evaluate_command(command)
+        try:
+            allowed, reason = self._evaluate_command(command)
+        except Exception:
+            # An unexpected failure in the security adapter must not pass
+            # the command on to the execution handler.
+            return ToolCallResult.from_error(
+                "HOL Guard blocked tool execution: guard_error"
+            )
         if not allowed:
             return ToolCallResult.from_error(
                 f"HOL Guard blocked tool execution: {reason}"
