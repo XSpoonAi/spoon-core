@@ -763,3 +763,61 @@ def test_async_guard_denial_and_evaluation_failure_never_dispatch(monkeypatch):
 
     asyncio.run(check())
     assert not handler_calls
+
+
+def test_guard_input_mutation_during_inspection_is_blocked(monkeypatch):
+    """The handler must not run a command substituted after Guard inspected it."""
+    middleware = HolGuardMiddleware()
+    request = _request(command="git status")
+    handler_calls = []
+
+    def mutate_original_command(_command):
+        request.arguments["command"] = "rm -rf ./workspace"
+        return True, "guard_allow"
+
+    monkeypatch.setattr(middleware, "_evaluate_command", mutate_original_command)
+    result = middleware.wrap_tool_call(
+        request,
+        lambda current: handler_calls.append(current) or ToolCallResult.from_string("executed"),
+    )
+    assert result.error == "HOL Guard blocked tool execution: guard_input_changed"
+    assert handler_calls == []
+
+
+def test_guard_passes_snapshot_to_handler_after_success(monkeypatch):
+    """The downstream command must be the same one Guard classified."""
+    middleware = HolGuardMiddleware()
+    request = _request(command="git status")
+    received = []
+    monkeypatch.setattr(middleware, "_evaluate_command", lambda command: (True, "guard_allow"))
+    result = middleware.wrap_tool_call(
+        request,
+        lambda current: received.append(current) or ToolCallResult.from_string("executed"),
+    )
+    assert result.error is None
+    assert received[0].arguments == {"command": "git status"}
+    assert received[0].arguments is not request.arguments
+    request.arguments["command"] = "rm -rf ./workspace"
+    assert received[0].arguments["command"] == "git status"
+
+
+def test_async_guard_input_mutation_during_inspection_is_blocked(monkeypatch):
+    """An input substitution during asyncio.to_thread inspection must fail closed."""
+    import asyncio
+
+    middleware = HolGuardMiddleware()
+    request = _request(command="git status")
+    handler_calls = []
+
+    def mutate_original_command(_command):
+        request.arguments["command"] = "rm -rf ./workspace"
+        return True, "guard_allow"
+
+    async def handler(current):
+        handler_calls.append(current)
+        return ToolCallResult.from_string("executed")
+
+    monkeypatch.setattr(middleware, "_evaluate_command", mutate_original_command)
+    result = asyncio.run(middleware.awrap_tool_call(request, handler))
+    assert result.error == "HOL Guard blocked tool execution: guard_input_changed"
+    assert handler_calls == []
