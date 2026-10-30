@@ -23,6 +23,19 @@ def _reject_duplicate_keys(pairs: list[tuple[str, Any]]) -> dict[str, Any]:
     return payload
 
 
+def _worktree_root(cwd: str) -> str:
+    """Locate the outermost Git checkout marker, including linked worktrees."""
+    current = os.path.realpath(cwd)
+    root = current
+    while True:
+        if os.path.lexists(os.path.join(current, ".git")):
+            root = current
+        parent = os.path.dirname(current)
+        if parent == current:
+            return root
+        current = parent
+
+
 class HolGuardMiddleware(AgentMiddleware):
     """Gate selected command-bearing tools through the HOL Guard CLI.
 
@@ -88,7 +101,19 @@ class HolGuardMiddleware(AgentMiddleware):
                 resolved = shutil.which(executable)
                 if not resolved:
                     return False, "guard_unavailable"
-                executable = os.path.realpath(resolved)
+                selected_executable = os.path.abspath(resolved)
+                executable = os.path.realpath(selected_executable)
+                # A project-controlled PATH entry can impersonate Guard and
+                # return forged benign JSON. Check the symlink and its target.
+                root = _worktree_root(self.working_directory)
+                try:
+                    if any(
+                        os.path.commonpath((candidate, root)) == root
+                        for candidate in (selected_executable, executable)
+                    ):
+                        return False, "guard_untrusted_executable"
+                except ValueError:
+                    return False, "guard_untrusted_executable"
             # Keep arbitrary command text positional, including a leading `-`.
             run_kwargs = (
                 {"cwd": self.working_directory}
