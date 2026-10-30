@@ -9,6 +9,7 @@ import math
 import os
 import shutil
 import subprocess
+from dataclasses import replace
 from collections.abc import Callable, Iterable, Mapping
 from typing import Any
 
@@ -179,6 +180,20 @@ class HolGuardMiddleware(AgentMiddleware):
             return True, "guard_allow"
         return False, "guard_block"
 
+    @staticmethod
+    def _guarded_request_unchanged(
+        request: ToolCallRequest, guarded_request: ToolCallRequest
+    ) -> bool:
+        """Refuse a tool call if its command or other arguments changed during inspection."""
+        try:
+            return (
+                request.tool_name == guarded_request.tool_name
+                and isinstance(request.arguments, Mapping)
+                and dict(request.arguments) == guarded_request.arguments
+            )
+        except Exception:
+            return False
+
     def wrap_tool_call(
         self,
         request: ToolCallRequest,
@@ -192,7 +207,15 @@ class HolGuardMiddleware(AgentMiddleware):
                 "HOL Guard blocked tool execution: invalid tool arguments"
             )
 
-        command = request.arguments.get("command")
+        try:
+            # Inspect a stable copy; concurrent async callers can mutate the
+            # original arguments while the Guard subprocess is running.
+            guarded_request = replace(request, arguments=dict(request.arguments))
+        except Exception:
+            return ToolCallResult.from_error(
+                "HOL Guard blocked tool execution: invalid tool arguments"
+            )
+        command = guarded_request.arguments.get("command")
         if not isinstance(command, str) or not command.strip():
             return ToolCallResult.from_error(
                 "HOL Guard blocked tool execution: missing command"
@@ -210,8 +233,12 @@ class HolGuardMiddleware(AgentMiddleware):
             return ToolCallResult.from_error(
                 f"HOL Guard blocked tool execution: {reason}"
             )
+        if not self._guarded_request_unchanged(request, guarded_request):
+            return ToolCallResult.from_error(
+                "HOL Guard blocked tool execution: guard_input_changed"
+            )
 
-        return handler(request)
+        return handler(guarded_request)
 
     async def awrap_tool_call(
         self,
@@ -233,7 +260,15 @@ class HolGuardMiddleware(AgentMiddleware):
                 "HOL Guard blocked tool execution: invalid tool arguments"
             )
 
-        command = request.arguments.get("command")
+        try:
+            # Inspect a stable copy; concurrent async callers can mutate the
+            # original arguments while the Guard subprocess is running.
+            guarded_request = replace(request, arguments=dict(request.arguments))
+        except Exception:
+            return ToolCallResult.from_error(
+                "HOL Guard blocked tool execution: invalid tool arguments"
+            )
+        command = guarded_request.arguments.get("command")
         if not isinstance(command, str) or not command.strip():
             return ToolCallResult.from_error(
                 "HOL Guard blocked tool execution: missing command"
@@ -249,10 +284,14 @@ class HolGuardMiddleware(AgentMiddleware):
             return ToolCallResult.from_error(
                 f"HOL Guard blocked tool execution: {reason}"
             )
+        if not self._guarded_request_unchanged(request, guarded_request):
+            return ToolCallResult.from_error(
+                "HOL Guard blocked tool execution: guard_input_changed"
+            )
 
         # Keep downstream tool callbacks on the event-loop thread; only the
         # subprocess-bound inspection is dispatched to a worker.
-        result = handler(request)
+        result = handler(guarded_request)
         return await result if inspect.isawaitable(result) else result
 
 
