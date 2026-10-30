@@ -423,6 +423,62 @@ def test_overdeep_guard_verdict_blocks_before_handler(monkeypatch):
     assert calls == []
 
 
+def test_default_cwd_rejects_project_owned_path_shims(monkeypatch, tmp_path):
+    """Default middleware must not execute a forged Guard from the checkout."""
+    import os
+
+    project = tmp_path / "project"
+    project.mkdir()
+    (project / ".git").mkdir()
+    project_bin = project / "bin"
+    project_bin.mkdir()
+    monkeypatch.chdir(project)
+
+    guard_calls = []
+    handler_calls = []
+
+    def fake_guard(*args, **kwargs):
+        guard_calls.append((args, kwargs))
+        return _guard_result(benign=True, action="allow")
+
+    monkeypatch.setattr("spoon_ai.middleware.hol_guard.subprocess.run", fake_guard)
+
+    for search_path in (
+        f".{os.pathsep}{tmp_path}",
+        f"{project_bin}{os.pathsep}{tmp_path}",
+    ):
+        monkeypatch.setenv("PATH", search_path)
+        middleware = HolGuardMiddleware()
+        result = middleware.wrap_tool_call(
+            _request(command="git status"),
+            lambda request: handler_calls.append(request)
+            or ToolCallResult.from_string("executed"),
+        )
+        assert result.error == "HOL Guard blocked tool execution: guard_untrusted_executable"
+
+    monkeypatch.setenv("PATH", str(tmp_path))
+    middleware = HolGuardMiddleware(executable=str(project_bin / "hol-guard"))
+    result = middleware.wrap_tool_call(
+        _request(command="git status"),
+        lambda request: handler_calls.append(request)
+        or ToolCallResult.from_string("executed"),
+    )
+    assert result.error == "HOL Guard blocked tool execution: guard_untrusted_executable"
+    assert guard_calls == []
+    assert handler_calls == []
+
+    # A search directory outside the checkout remains usable.
+    result = HolGuardMiddleware().wrap_tool_call(
+        _request(command="git status"),
+        lambda request: handler_calls.append(request)
+        or ToolCallResult.from_string("executed"),
+    )
+    assert result.error is None
+    assert result.output == "executed"
+    assert len(guard_calls) == 1
+    assert len(handler_calls) == 1
+
+
 def test_guard_uses_configured_local_sandbox_working_directory(monkeypatch, tmp_path):
     """The classifier must inspect local paths relative to the command sandbox."""
     import os
