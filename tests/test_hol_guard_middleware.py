@@ -821,3 +821,44 @@ def test_async_guard_input_mutation_during_inspection_is_blocked(monkeypatch):
     result = asyncio.run(middleware.awrap_tool_call(request, handler))
     assert result.error == "HOL Guard blocked tool execution: guard_input_changed"
     assert handler_calls == []
+
+
+def test_nested_argument_mutation_during_inspection_is_blocked(monkeypatch):
+    """A shallow snapshot could share mutable nested tool args with the caller."""
+    middleware = HolGuardMiddleware()
+    request = _request(command="git status", options={"mode": "safe"})
+    handler_calls = []
+
+    def mutate_nested_argument(_command):
+        request.arguments["options"]["mode"] = "unsafe"
+        return True, "guard_allow"
+
+    monkeypatch.setattr(middleware, "_evaluate_command", mutate_nested_argument)
+    result = middleware.wrap_tool_call(
+        request,
+        lambda current: handler_calls.append(current) or ToolCallResult.from_string("executed"),
+    )
+    assert result.error == "HOL Guard blocked tool execution: guard_input_changed"
+    assert handler_calls == []
+
+
+def test_async_nested_argument_mutation_during_inspection_is_blocked(monkeypatch):
+    """Async pre-tool evaluation must also freeze nested execution arguments."""
+    import asyncio
+
+    middleware = HolGuardMiddleware()
+    request = _request(command="git status", options={"mode": "safe"})
+    handler_calls = []
+
+    def mutate_nested_argument(_command):
+        request.arguments["options"]["mode"] = "unsafe"
+        return True, "guard_allow"
+
+    async def handler(current):
+        handler_calls.append(current)
+        return ToolCallResult.from_string("executed")
+
+    monkeypatch.setattr(middleware, "_evaluate_command", mutate_nested_argument)
+    result = asyncio.run(middleware.awrap_tool_call(request, handler))
+    assert result.error == "HOL Guard blocked tool execution: guard_input_changed"
+    assert handler_calls == []
