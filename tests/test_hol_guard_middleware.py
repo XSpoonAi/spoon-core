@@ -485,10 +485,12 @@ def test_guard_uses_configured_local_sandbox_working_directory(monkeypatch, tmp_
 
     seen = {}
     handler_calls = []
-    expected_executable = os.path.realpath("./trusted/hol-guard")
+    trusted_binary = tmp_path / "trusted" / "hol-guard"
+    trusted_binary.parent.mkdir()
+    expected_executable = os.path.realpath(trusted_binary)
     monkeypatch.setattr(
         "spoon_ai.middleware.hol_guard.shutil.which",
-        lambda executable: "./trusted/hol-guard",
+        lambda executable: str(trusted_binary),
     )
 
     def fake_guard(argv, **kwargs):
@@ -535,6 +537,39 @@ def test_invalid_sandbox_directory_blocks_before_handler(monkeypatch, tmp_path):
     assert result.error == "HOL Guard blocked tool execution: guard_unavailable"
     assert handler_calls == []
 
+
+
+def test_alternate_sandbox_rejects_guard_from_launch_worktree(monkeypatch, tmp_path):
+    """Bash running in another checkout does not trust the launcher repository."""
+    launcher = tmp_path / "launcher"
+    launcher.mkdir()
+    (launcher / ".git").mkdir()
+    project_bin = launcher / ".bin"
+    project_bin.mkdir()
+    shim = project_bin / "hol-guard"
+    shim.write_text("#!/bin/sh\\nexit 0\\n")
+    other_checkout = tmp_path / "other-checkout"
+    other_checkout.mkdir()
+    (other_checkout / ".git").mkdir()
+    monkeypatch.chdir(launcher)
+    monkeypatch.setattr(
+        "spoon_ai.middleware.hol_guard.shutil.which", lambda _: str(shim)
+    )
+    guard_calls = []
+    handler_calls = []
+    monkeypatch.setattr(
+        "spoon_ai.middleware.hol_guard.subprocess.run",
+        lambda *args, **kwargs: guard_calls.append((args, kwargs)),
+    )
+    middleware = HolGuardMiddleware(working_directory=str(other_checkout))
+    result = middleware.wrap_tool_call(
+        _request(command="git status"),
+        lambda request: handler_calls.append(request)
+        or ToolCallResult.from_string("executed"),
+    )
+    assert result.error == "HOL Guard blocked tool execution: guard_untrusted_executable"
+    assert guard_calls == []
+    assert handler_calls == []
 
 
 def test_worktree_guard_shim_cannot_impersonate_cli(monkeypatch, tmp_path):
