@@ -953,3 +953,44 @@ def test_async_nested_argument_mutation_during_inspection_is_blocked(monkeypatch
     result = asyncio.run(middleware.awrap_tool_call(request, handler))
     assert result.error == "HOL Guard blocked tool execution: guard_input_changed"
     assert handler_calls == []
+
+
+def test_default_cwd_rejects_symlinked_guard_from_external_path(monkeypatch, tmp_path):
+    """An external PATH directory cannot point Guard back into the checkout."""
+    import os
+
+    import pytest
+
+    if os.name == "nt":
+        pytest.skip("POSIX executable symlink fixture")
+
+    project = tmp_path / "project"
+    (project / "bin").mkdir(parents=True)
+    (project / ".git").mkdir()
+    fake_guard = project / "bin" / "hol-guard"
+    fake_guard.write_text("#!/bin/sh\\nexit 0\\n", encoding="utf-8")
+    fake_guard.chmod(0o755)
+
+    external_bin = tmp_path / "external-bin"
+    external_bin.mkdir()
+    (external_bin / "hol-guard").symlink_to(fake_guard)
+    monkeypatch.chdir(project)
+    monkeypatch.setenv("PATH", str(external_bin))
+
+    guard_calls = []
+    handler_calls = []
+    monkeypatch.setattr(
+        "spoon_ai.middleware.hol_guard.subprocess.run",
+        lambda *args, **kwargs: guard_calls.append((args, kwargs))
+        or _guard_result(benign=True, action="allow"),
+    )
+
+    result = HolGuardMiddleware().wrap_tool_call(
+        _request(command="git status"),
+        lambda request: handler_calls.append(request)
+        or ToolCallResult.from_string("executed"),
+    )
+
+    assert result.error == "HOL Guard blocked tool execution: guard_untrusted_executable"
+    assert guard_calls == []
+    assert handler_calls == []
