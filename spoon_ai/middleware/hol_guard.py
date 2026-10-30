@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import asyncio
+import inspect
 import json
 import math
 import os
@@ -210,6 +212,48 @@ class HolGuardMiddleware(AgentMiddleware):
             )
 
         return handler(request)
+
+    async def awrap_tool_call(
+        self,
+        request: ToolCallRequest,
+        handler: Callable[[ToolCallRequest], ToolCallResult],
+    ) -> ToolCallResult:
+        """Inspect Guard off the event loop, then dispatch the handler on-loop.
+
+        The base middleware async adapter calls the synchronous wrapper inline.
+        A slow Guard CLI would therefore otherwise block every other agent task
+        for up to the configured security-check timeout.
+        """
+        if request.tool_name not in self.guarded_tools:
+            result = handler(request)
+            return await result if inspect.isawaitable(result) else result
+
+        if not isinstance(request.arguments, Mapping):
+            return ToolCallResult.from_error(
+                "HOL Guard blocked tool execution: invalid tool arguments"
+            )
+
+        command = request.arguments.get("command")
+        if not isinstance(command, str) or not command.strip():
+            return ToolCallResult.from_error(
+                "HOL Guard blocked tool execution: missing command"
+            )
+
+        try:
+            allowed, reason = await asyncio.to_thread(self._evaluate_command, command)
+        except Exception:
+            return ToolCallResult.from_error(
+                "HOL Guard blocked tool execution: guard_error"
+            )
+        if not allowed:
+            return ToolCallResult.from_error(
+                f"HOL Guard blocked tool execution: {reason}"
+            )
+
+        # Keep downstream tool callbacks on the event-loop thread; only the
+        # subprocess-bound inspection is dispatched to a worker.
+        result = handler(request)
+        return await result if inspect.isawaitable(result) else result
 
 
 def create_hol_guard_middleware(**kwargs: Any) -> HolGuardMiddleware:
