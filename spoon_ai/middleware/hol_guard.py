@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import copy
 import inspect
 import json
 import math
@@ -208,9 +209,11 @@ class HolGuardMiddleware(AgentMiddleware):
             )
 
         try:
-            # Inspect a stable copy; concurrent async callers can mutate the
-            # original arguments while the Guard subprocess is running.
-            guarded_request = replace(request, arguments=dict(request.arguments))
+            # Inspect a deep copy; concurrent callers may mutate nested arguments
+            # while Guard is evaluating the original request.
+            guarded_request = replace(
+                request, arguments=copy.deepcopy(dict(request.arguments))
+            )
         except Exception:
             return ToolCallResult.from_error(
                 "HOL Guard blocked tool execution: invalid tool arguments"
@@ -261,9 +264,11 @@ class HolGuardMiddleware(AgentMiddleware):
             )
 
         try:
-            # Inspect a stable copy; concurrent async callers can mutate the
-            # original arguments while the Guard subprocess is running.
-            guarded_request = replace(request, arguments=dict(request.arguments))
+            # Inspect a deep copy; concurrent callers may mutate nested arguments
+            # while Guard is evaluating the original request.
+            guarded_request = replace(
+                request, arguments=copy.deepcopy(dict(request.arguments))
+            )
         except Exception:
             return ToolCallResult.from_error(
                 "HOL Guard blocked tool execution: invalid tool arguments"
