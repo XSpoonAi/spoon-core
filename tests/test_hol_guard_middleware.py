@@ -968,7 +968,7 @@ def test_default_cwd_rejects_symlinked_guard_from_external_path(monkeypatch, tmp
     (project / "bin").mkdir(parents=True)
     (project / ".git").mkdir()
     fake_guard = project / "bin" / "hol-guard"
-    fake_guard.write_text("#!/bin/sh\\nexit 0\\n", encoding="utf-8")
+    fake_guard.write_text("#!/bin/sh\nexit 0\n", encoding="utf-8")
     fake_guard.chmod(0o755)
 
     external_bin = tmp_path / "external-bin"
