@@ -687,3 +687,79 @@ def test_async_pipeline_enforces_guard_before_execute_handler(monkeypatch):
     assert allowed.error is None
     assert allowed.output == "executed"
     assert len(calls) == 1
+
+
+def test_async_guard_check_keeps_loop_responsive_and_handler_on_loop(monkeypatch):
+    """A slow Guard CLI must not stall the agent's async event loop."""
+    import asyncio
+    import threading
+
+    middleware = HolGuardMiddleware()
+    loop_thread = threading.current_thread()
+    started = threading.Event()
+    release = threading.Event()
+    handler_threads = []
+
+    def guarded_command(_command):
+        started.set()
+        if not release.wait(timeout=4):
+            raise RuntimeError("test did not release Guard")
+        return True, "guard_allow"
+
+    monkeypatch.setattr(middleware, "_evaluate_command", guarded_command)
+
+    async def handler(_request):
+        handler_threads.append(threading.current_thread())
+        return ToolCallResult.from_string("executed")
+
+    async def check():
+        pending = asyncio.create_task(
+            middleware.awrap_tool_call(_request(command="git status"), handler)
+        )
+        try:
+            observed = await asyncio.wait_for(
+                asyncio.to_thread(started.wait, 2), timeout=3
+            )
+            assert observed
+            assert not pending.done()
+            await asyncio.sleep(0)
+            assert not pending.done()
+        finally:
+            release.set()
+        result = await asyncio.wait_for(pending, timeout=3)
+        assert result.output == "executed"
+        assert result.error is None
+
+    asyncio.run(check())
+    assert handler_threads == [loop_thread]
+
+
+def test_async_guard_denial_and_evaluation_failure_never_dispatch(monkeypatch):
+    """Async inspection has the same fail-closed behavior as the sync path."""
+    import asyncio
+
+    middleware = HolGuardMiddleware()
+    handler_calls = []
+
+    async def handler(request):
+        handler_calls.append(request)
+        return ToolCallResult.from_string("executed")
+
+    async def check():
+        monkeypatch.setattr(middleware, "_evaluate_command", lambda _: (False, "guard_block"))
+        denied = await middleware.awrap_tool_call(
+            _request(command="rm -rf build"), handler
+        )
+        assert denied.error == "HOL Guard blocked tool execution: guard_block"
+
+        def crash(_command):
+            raise RuntimeError("unexpected Guard adapter failure")
+
+        monkeypatch.setattr(middleware, "_evaluate_command", crash)
+        failed = await middleware.awrap_tool_call(
+            _request(command="git status"), handler
+        )
+        assert failed.error == "HOL Guard blocked tool execution: guard_error"
+
+    asyncio.run(check())
+    assert not handler_calls
