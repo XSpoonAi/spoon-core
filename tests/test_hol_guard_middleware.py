@@ -1,8 +1,23 @@
+import os
+import shutil
 import subprocess
 from types import SimpleNamespace
 
+import pytest
+
 from spoon_ai.middleware.base import ToolCallRequest, ToolCallResult
 from spoon_ai.middleware.hol_guard import HolGuardMiddleware
+
+
+@pytest.fixture(autouse=True)
+def _supply_trusted_cli_for_mocked_subprocess_tests(monkeypatch):
+    """Keep verdict-only tests independent of whether Guard is installed."""
+    original_which = shutil.which
+
+    def lookup(name):
+        return original_which(name) or "/__hol_guard_test__/bin/hol-guard"
+
+    monkeypatch.setattr("spoon_ai.middleware.hol_guard.shutil.which", lookup)
 
 
 def _request(tool_name: str = "execute", **arguments) -> ToolCallRequest:
@@ -310,7 +325,7 @@ def test_command_arguments_preserve_leading_dashes_and_exact_command_text(monkey
         assert result.error is None
         assert len(tool_calls) == 1
         assert actual_calls == [(
-            ["hol-guard", "command", "test", "--json", "--", command],
+            [os.path.realpath(shutil.which("hol-guard")), "command", "test", "--json", "--", command],
             {"capture_output": True, "text": True, "timeout": 10.0, "check": False},
         )]
 
@@ -994,3 +1009,52 @@ def test_default_cwd_rejects_symlinked_guard_from_external_path(monkeypatch, tmp
     assert result.error == "HOL Guard blocked tool execution: guard_untrusted_executable"
     assert guard_calls == []
     assert handler_calls == []
+
+
+def test_default_guard_launch_uses_checked_absolute_executable(monkeypatch):
+    """The subprocess must not redo a bare PATH lookup after validation."""
+    trusted = "/__hol_guard_test__/pinned/hol-guard"
+    monkeypatch.setattr(
+        "spoon_ai.middleware.hol_guard.shutil.which", lambda _name: trusted
+    )
+    launched = []
+    handled = []
+    monkeypatch.setattr(
+        "spoon_ai.middleware.hol_guard.subprocess.run",
+        lambda argv, **kwargs: (
+            launched.append(argv)
+            or _guard_result(benign=True, action="allow")
+        ),
+    )
+    result = HolGuardMiddleware().wrap_tool_call(
+        _request(command="git status"),
+        lambda request: handled.append(request)
+        or ToolCallResult.from_string("executed"),
+    )
+    assert result.error is None
+    assert len(handled) == 1
+    assert launched == [[
+        os.path.realpath(trusted),
+        "command", "test", "--json", "--", "git status",
+    ]]
+
+
+def test_default_guard_missing_executable_fails_closed(monkeypatch):
+    """No fallback to a second PATH lookup after an unavailable check."""
+    monkeypatch.setattr(
+        "spoon_ai.middleware.hol_guard.shutil.which", lambda _name: None
+    )
+    launched = []
+    handled = []
+    monkeypatch.setattr(
+        "spoon_ai.middleware.hol_guard.subprocess.run",
+        lambda *_args, **_kwargs: launched.append(True),
+    )
+    result = HolGuardMiddleware().wrap_tool_call(
+        _request(command="git status"),
+        lambda request: handled.append(request)
+        or ToolCallResult.from_string("executed"),
+    )
+    assert result.error == "HOL Guard blocked tool execution: guard_unavailable"
+    assert launched == []
+    assert handled == []
