@@ -131,6 +131,19 @@ class HolGuardMiddleware(AgentMiddleware):
                         return False, "guard_untrusted_executable"
                 except ValueError:
                     return False, "guard_untrusted_executable"
+                # An absolute PATH directory outside the checkout can still
+                # contain a hol-guard symlink pointing back into the checkout.
+                # Verify the selected executable, not just its PATH directory.
+                if not os.path.isabs(executable):
+                    resolved_executable = shutil.which(executable)
+                    if resolved_executable:
+                        try:
+                            if os.path.commonpath(
+                                (os.path.realpath(resolved_executable), launcher_root)
+                            ) == launcher_root:
+                                return False, "guard_untrusted_executable"
+                        except (OSError, ValueError):
+                            return False, "guard_untrusted_executable"
             if self.working_directory is not None:
                 resolved = shutil.which(executable)
                 if not resolved:
