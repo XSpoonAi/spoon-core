@@ -101,6 +101,36 @@ class HolGuardMiddleware(AgentMiddleware):
             # Bind the Guard binary before changing into the tool's directory.
             # A relative PATH entry must not select a project-local executable.
             executable = self.executable
+            if self.working_directory is None:
+                # Without an explicit cwd, subprocess inherits the project's
+                # launcher directory. Relative or repo-owned PATH entries can
+                # select a forged Guard that returns an allow verdict.
+                launcher_root = _worktree_root(os.getcwd())
+                path_entries = os.environ.get("PATH", os.defpath).split(os.pathsep)
+                try:
+                    if any(
+                        not os.path.isabs(entry)
+                        or os.path.commonpath(
+                            (os.path.realpath(entry), launcher_root)
+                        ) == launcher_root
+                        for entry in path_entries
+                    ):
+                        return False, "guard_untrusted_executable"
+                    if (
+                        os.path.isabs(executable)
+                        and os.path.commonpath(
+                            (os.path.realpath(executable), launcher_root)
+                        ) == launcher_root
+                    ) or (
+                        not os.path.isabs(executable)
+                        and (
+                            os.path.sep in executable
+                            or (os.path.altsep and os.path.altsep in executable)
+                        )
+                    ):
+                        return False, "guard_untrusted_executable"
+                except ValueError:
+                    return False, "guard_untrusted_executable"
             if self.working_directory is not None:
                 resolved = shutil.which(executable)
                 if not resolved:
