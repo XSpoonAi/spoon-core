@@ -139,10 +139,14 @@ class HolGuardMiddleware(AgentMiddleware):
                 executable = os.path.realpath(selected_executable)
                 # A project-controlled PATH entry can impersonate Guard and
                 # return forged benign JSON. Check the symlink and its target.
-                root = _worktree_root(self.working_directory)
+                roots = {
+                    _worktree_root(self.working_directory),
+                    _worktree_root(os.getcwd()),
+                }
                 try:
                     if any(
                         os.path.commonpath((candidate, root)) == root
+                        for root in roots
                         for candidate in (selected_executable, executable)
                     ):
                         return False, "guard_untrusted_executable"
