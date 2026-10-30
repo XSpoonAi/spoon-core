@@ -481,6 +481,83 @@ def test_invalid_sandbox_directory_blocks_before_handler(monkeypatch, tmp_path):
 
 
 
+def test_worktree_guard_shim_cannot_impersonate_cli(monkeypatch, tmp_path):
+    """A nested fake .git cannot hide an executable inside the real checkout."""
+    project = tmp_path / "project"
+    sandbox = project / "src" / "nested"
+    binary = project / ".venv" / "bin" / "hol-guard"
+    sandbox.mkdir(parents=True)
+    binary.parent.mkdir(parents=True)
+    binary.write_text("#!/bin/sh\\nexit 0\\n")
+    (project / ".git").mkdir()
+    (sandbox / ".git").write_text("fake nested marker")
+
+    monkeypatch.setattr(
+        "spoon_ai.middleware.hol_guard.shutil.which",
+        lambda _name: str(binary),
+    )
+
+    def must_not_launch(*_args, **_kwargs):
+        raise AssertionError("Never execute a project-controlled Guard binary")
+
+    monkeypatch.setattr(
+        "spoon_ai.middleware.hol_guard.subprocess.run", must_not_launch
+    )
+    handler_calls = []
+    result = HolGuardMiddleware(working_directory=str(sandbox)).wrap_tool_call(
+        _request(command="git status"),
+        lambda request: handler_calls.append(request)
+        or ToolCallResult.from_string("executed"),
+    )
+
+    assert result.error == (
+        "HOL Guard blocked tool execution: guard_untrusted_executable"
+    )
+    assert not handler_calls
+
+
+def test_worktree_guard_symlink_cannot_launder_external_target(monkeypatch, tmp_path):
+    """A project-owned PATH symlink remains untrusted when its target is outside."""
+    import pytest
+
+    project = tmp_path / "project"
+    project.mkdir()
+    (project / ".git").mkdir()
+    outside = tmp_path / "trusted" / "hol-guard"
+    outside.parent.mkdir()
+    outside.write_text("#!/bin/sh\\nexit 0\\n")
+    project_bin = project / ".bin"
+    project_bin.mkdir()
+    project_link = project_bin / "hol-guard"
+    try:
+        project_link.symlink_to(outside)
+    except (OSError, NotImplementedError):
+        pytest.skip("symlink creation unavailable")
+
+    monkeypatch.setattr(
+        "spoon_ai.middleware.hol_guard.shutil.which",
+        lambda _name: str(project_link),
+    )
+
+    def must_not_launch(*_args, **_kwargs):
+        raise AssertionError("Never execute a project-owned Guard symlink")
+
+    monkeypatch.setattr(
+        "spoon_ai.middleware.hol_guard.subprocess.run", must_not_launch
+    )
+    calls = []
+    result = HolGuardMiddleware(working_directory=str(project)).wrap_tool_call(
+        _request(command="git status"),
+        lambda request: calls.append(request)
+        or ToolCallResult.from_string("executed"),
+    )
+
+    assert result.error == (
+        "HOL Guard blocked tool execution: guard_untrusted_executable"
+    )
+    assert not calls
+
+
 def test_missing_guard_binary_with_sandbox_blocks_without_running_handler(monkeypatch, tmp_path):
     """A failed executable lookup must not fall through to the protected handler."""
     calls = []
