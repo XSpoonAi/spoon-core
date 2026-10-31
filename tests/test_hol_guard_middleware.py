@@ -890,6 +890,47 @@ def test_guard_input_mutation_during_inspection_is_blocked(monkeypatch):
     assert handler_calls == []
 
 
+def test_guard_tool_call_id_mutation_during_inspection_is_blocked(monkeypatch):
+    """A benign verdict for one tool call cannot authorize a changed call ID."""
+    middleware = HolGuardMiddleware()
+    request = _request(command="git status")
+    handler_calls = []
+
+    def change_call_identity(_command):
+        request.tool_call_id = "different-call"
+        return True, "guard_allow"
+
+    monkeypatch.setattr(middleware, "_evaluate_command", change_call_identity)
+    result = middleware.wrap_tool_call(
+        request,
+        lambda current: handler_calls.append(current) or ToolCallResult.from_string("executed"),
+    )
+    assert result.error == "HOL Guard blocked tool execution: guard_input_changed"
+    assert handler_calls == []
+
+
+def test_async_guard_tool_call_id_mutation_is_blocked(monkeypatch):
+    """Async review also binds the authorized command to its original call."""
+    import asyncio
+
+    middleware = HolGuardMiddleware()
+    request = _request(command="git status")
+    handler_calls = []
+
+    def change_call_identity(_command):
+        request.tool_call_id = "different-call"
+        return True, "guard_allow"
+
+    async def handler(current):
+        handler_calls.append(current)
+        return ToolCallResult.from_string("executed")
+
+    monkeypatch.setattr(middleware, "_evaluate_command", change_call_identity)
+    result = asyncio.run(middleware.awrap_tool_call(request, handler))
+    assert result.error == "HOL Guard blocked tool execution: guard_input_changed"
+    assert handler_calls == []
+
+
 def test_guard_passes_snapshot_to_handler_after_success(monkeypatch):
     """The downstream command must be the same one Guard classified."""
     middleware = HolGuardMiddleware()
