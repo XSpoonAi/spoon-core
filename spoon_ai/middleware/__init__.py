@@ -100,6 +100,11 @@ from .openviking_memory import (
     create_openviking_memory_middleware,
 )
 
+from .hol_guard import (
+    HolGuardMiddleware,
+    create_hol_guard_middleware,
+)
+
 __all__ = [
     # Core classes
     "AgentMiddleware",
@@ -171,4 +176,8 @@ __all__ = [
     # OpenViking memory
     "OpenVikingMemoryMiddleware",
     "create_openviking_memory_middleware",
+
+    # HOL Guard
+    "HolGuardMiddleware",
+    "create_hol_guard_middleware",
 ]
