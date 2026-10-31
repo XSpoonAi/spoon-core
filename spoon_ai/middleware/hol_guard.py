@@ -247,6 +247,7 @@ class HolGuardMiddleware(AgentMiddleware):
         try:
             return (
                 request.tool_name == guarded_request.tool_name
+                and request.tool_call_id == guarded_request.tool_call_id
                 and isinstance(request.arguments, Mapping)
                 and dict(request.arguments) == guarded_request.arguments
             )
