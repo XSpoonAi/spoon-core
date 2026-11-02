@@ -74,3 +74,5 @@ Secure signing and wallet management via Turnkey.
   - Repo deps incl. `web3`, `eth-utils`, `rlp`
   - `.env`: `TURNKEY_API_PUBLIC_KEY`, `TURNKEY_API_PRIVATE_KEY`, `TURNKEY_ORG_ID`, `TURNKEY_SIGN_WITH`
   - Optional : `WEB3_RPC_URL` + `TX_*` for building/broadcasting
+
+- [Local code inspection with Sem](mcp/sem_code.md): stdio MCP entity lookup without an LLM.
