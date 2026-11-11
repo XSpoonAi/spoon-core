@@ -56,6 +56,11 @@ scripts:
       type: python
       file: tavily_search.py
       timeout: 30
+    - name: keenable_search
+      description: Search the web for general information using Keenable API (no API key required)
+      type: python
+      file: keenable_search.py
+      timeout: 30
 ---
 
 # Research Skill
