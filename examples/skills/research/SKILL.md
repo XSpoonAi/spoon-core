@@ -56,6 +56,11 @@ scripts:
       type: python
       file: tavily_search.py
       timeout: 30
+    - name: specstream_search
+      description: Search the web for general information using SpecStream API
+      type: python
+      file: specstream_search.py
+      timeout: 30
 ---
 
 # Research Skill

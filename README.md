@@ -135,6 +135,7 @@ TURNKEY_ORG_ID=your-turnkey-organization-id
 
 # Tool-specific Keys
 TAVILY_API_KEY=your-tavily-api-key
+SPECSTREAM_API_KEY=your-specstream-api-key
 OKX_API_KEY=your-okx-api-key
 OKX_SECRET_KEY=your-okx-secret-key
 OKX_API_PASSPHRASE=your-okx-passphrase
@@ -325,6 +326,12 @@ Example agent with both tool types:
             "args": ["--yes", "tavily-mcp"],
             "env": {"TAVILY_API_KEY": "your-key"}
           }
+        },
+        {
+          "name": "specstream-search",
+          "type": "builtin",
+          "enabled": true,
+          "env": {"SPECSTREAM_API_KEY": "your-key"}
         },
         {
           "name": "crypto_powerdata_cex",
