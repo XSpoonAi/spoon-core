@@ -57,7 +57,7 @@ scripts:
       file: tavily_search.py
       timeout: 30
     - name: keenable_search
-      description: Search the web for general information using Keenable API (no API key required)
+      description: Search the web using Keenable API (opt-in, returns an error unless KEENABLE_SEARCH_ENABLED=1 is set)
       type: python
       file: keenable_search.py
       timeout: 30

@@ -2,6 +2,8 @@
 """
 Keenable Search Script for Research Skill
 This script uses the Keenable search API to search for information on any topic.
+
+Opt-in: it makes no request unless KEENABLE_SEARCH_ENABLED=1 is set.
 It works without an API key; set KEENABLE_API_KEY for higher rate limits.
 """
 
@@ -15,12 +17,27 @@ PUBLIC_SEARCH_URL = "https://api.keenable.ai/v1/search/public"
 KEYED_SEARCH_URL = "https://api.keenable.ai/v1/search"
 APP_TITLE = "spoon-core"
 MAX_CONTENT_CHARS = 1000
+ENABLE_ENV = "KEENABLE_SEARCH_ENABLED"
+
+
+def is_enabled() -> bool:
+    """Keenable search runs only when the user sets KEENABLE_SEARCH_ENABLED=1."""
+    return os.environ.get(ENABLE_ENV, "").strip().lower() in ("1", "true", "yes")
 
 
 def search(query: str, max_results: int = 5) -> dict:
     """
     Search using the Keenable API (keyless unless KEENABLE_API_KEY is set).
     """
+    if not is_enabled():
+        return {
+            "status": "error",
+            "message": (
+                "Keenable search is disabled. It is opt-in: set "
+                f"{ENABLE_ENV}=1 to send search queries to api.keenable.ai."
+            ),
+        }
+
     headers = {"X-Keenable-Title": APP_TITLE}
     api_key = os.environ.get("KEENABLE_API_KEY", "").strip()
     if api_key:
