@@ -66,6 +66,8 @@ class ScriptExecutor:
             'PYTHONPATH', 'NODE_PATH', 'VIRTUAL_ENV',
             # Common API keys
             'OPENAI_API_KEY', 'ANTHROPIC_API_KEY', 'TAVILY_API_KEY',
+            # Opt-in Keenable search in the research example skill
+            'KEENABLE_SEARCH_ENABLED', 'KEENABLE_API_KEY',
         ]
 
         # Detect available interpreters
