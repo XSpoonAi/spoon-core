@@ -68,6 +68,8 @@ class ScriptExecutor:
             'OPENAI_API_KEY', 'ANTHROPIC_API_KEY', 'TAVILY_API_KEY',
             # Opt-in Keenable search in the research example skill
             'KEENABLE_SEARCH_ENABLED', 'KEENABLE_API_KEY',
+            # Opt-in You.com search in the research example skill
+            'YOUCOM_SEARCH_ENABLED', 'YDC_API_KEY',
         ]
 
         # Detect available interpreters
