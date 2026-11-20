@@ -61,6 +61,11 @@ scripts:
       type: python
       file: keenable_search.py
       timeout: 30
+    - name: youcom_search
+      description: Search the web using You.com API (opt-in, returns an error unless YOUCOM_SEARCH_ENABLED=1 is set)
+      type: python
+      file: youcom_search.py
+      timeout: 30
 ---
 
 # Research Skill
